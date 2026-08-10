@@ -32,7 +32,8 @@ COMPANION_DEFAULT_LOCATION_ID=region_abandoned_mining_village
 다중 사용자, 계정 선택, Save Slot 선택과 Companion 선택은 현재 범위에 없습니다.
 
 기존 random Device 등록·pairing 코드는 호환성을 위해 남아 있지만 제품 client는 사용하지
-않습니다. 그 경로만 `DEVICE_CREDENTIAL_PEPPER`와 `DEV_GAME_DEVICE_TOKEN`이 필요합니다.
+않습니다. Pepper가 비어 있으면 고정 demo key를 사용하며, `register-game` 경로만 별도의
+`DEV_GAME_DEVICE_TOKEN`이 필요합니다.
 
 대화 관련 저장은 세 층입니다.
 

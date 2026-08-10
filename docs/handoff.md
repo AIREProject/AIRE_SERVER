@@ -8,7 +8,7 @@
 - Git
 - Python 3.13 (`>=3.13,<3.14`)
 - [uv](https://docs.astral.sh/uv/)
-- 서버를 열 포트. 기본 예시는 `8000`
+- 서버를 열 포트. 기본 예시는 `8010`
 
 Dockerfile과 Compose 파일은 현재 저장소에 없습니다. 이 문서의 `uv + Alembic + Uvicorn`
 절차가 검증 가능한 기준입니다. Docker로 감쌀 때도 실행 순서는 동일합니다.
@@ -20,8 +20,11 @@ Dockerfile과 Compose 파일은 현재 저장소에 없습니다. 이 문서의 
 Windows PowerShell:
 
 ```powershell
+$sourceRoot = Join-Path $env:USERPROFILE "source"
+New-Item -ItemType Directory -Force $sourceRoot | Out-Null
+Set-Location $sourceRoot
 git clone https://github.com/AIREProject/AIRE_SERVER.git
-Set-Location AIRE_SERVER
+Set-Location .\AIRE_SERVER
 uv sync --dev
 ```
 
@@ -88,7 +91,7 @@ DB입니다. 다시 `uv run alembic upgrade head`를 실행합니다.
 ### 2.4 서버 실행
 
 ```powershell
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8010
 ```
 
 운영 기준은 단일 process/worker입니다. SQLite와 process-local 대화 상태를 사용하므로
@@ -97,7 +100,7 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ### 2.5 실행 확인
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health
+Invoke-RestMethod http://127.0.0.1:8010/health
 ```
 
 예상 예시:
@@ -117,7 +120,7 @@ Invoke-RestMethod http://127.0.0.1:8000/health
 Swagger UI:
 
 ```text
-http://127.0.0.1:8000/docs
+http://127.0.0.1:8010/docs
 ```
 
 ## 3. 제품 인증과 첫 요청
@@ -231,7 +234,7 @@ Migration downgrade는 데이터 손실 가능성을 검토하기 전에는 실�
 
 ```text
 uv run alembic upgrade head
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8010
 ```
 
 실제 Dockerfile/Compose가 추가되기 전에는 문서만 보고 `docker compose up`이 된다고 가정하지

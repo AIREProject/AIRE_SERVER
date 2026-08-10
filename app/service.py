@@ -11,10 +11,8 @@
 보관하지 않는다**: `ChatRequest` 자체는 더 이상 신원을 담지 않고, 인증된
 `AuthenticatedDevice` 와 그 인증을 만든 `CredentialProtector` 를 호출자가 매 요청마다
 넘긴다 — `docs/temporary-scaffolds.md` §2 가 예고한 대로 `player_name` 자기신고를
-대체했다. `CompanionService` 가 protector 를 앱 조립 시점에 붙잡아 두지 않는 이유는,
-그러면 pepper 설정이 비어 있을 때 **앱 시작 자체**가 실패하기 때문이다 — 인증 없이
-헬스체크·기존 세계관 조회 같은 나머지 기능까지 죽일 이유가 없다. `get_credential_protector`
-(`app/dependencies.py`) 가 그 실패를 요청 하나로 좁힌다(503 `AuthenticationUnavailable`).
+대체했다. `CompanionService`는 요청마다 전달받은 protector로 profile/save 범위의 안정적인
+player key를 만든다. 별도 pepper가 없는 단일 플레이어 demo에서는 고정 demo key를 사용한다.
 """
 
 from __future__ import annotations

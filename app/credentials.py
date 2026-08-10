@@ -1,8 +1,7 @@
-"""디바이스 토큰·페어링 코드를 HMAC 으로 만들고 검증한다.
+"""디바이스 토큰·페어링 코드와 플레이어 범위 키를 HMAC으로 만든다.
 
-`settings.device_credential_pepper` 를 키로 쓴다 — 비어 있으면 인증 전체가 동작할 수
-없으므로 즉시 `CredentialProtectionNotConfiguredError` 로 실패한다(조용히 약한 키로
-넘어가지 않는다).
+현재 단일 플레이어 demo는 별도 설정 없이 실행되어야 하므로 pepper가 비어 있으면 고정 demo
+키를 사용한다. `DEVICE_CREDENTIAL_PEPPER`를 설정하면 기존처럼 그 값을 우선한다.
 """
 
 from __future__ import annotations
@@ -15,10 +14,11 @@ from typing import TYPE_CHECKING
 
 from pydantic import SecretStr
 
-from app.errors import AuthenticationUnavailableError
-
 if TYPE_CHECKING:
     from app.settings import Settings
+
+
+DEMO_CREDENTIAL_PEPPER = SecretStr("AIRE_OPEN_DEMO_CREDENTIAL_PEPPER")
 
 
 class CredentialProtectionNotConfiguredError(RuntimeError):
@@ -61,9 +61,7 @@ class CredentialProtector:
 def build_credential_protector(settings: Settings) -> CredentialProtector:
     """트랜스포트에 독립적인 protector 조립. `service.py`, `dependencies.py`, WS 가 공유한다."""
 
-    try:
-        return CredentialProtector(settings.device_credential_pepper)
-    except CredentialProtectionNotConfiguredError as error:
-        raise AuthenticationUnavailableError(
-            "Persistent device authentication is not configured."
-        ) from error
+    configured = settings.device_credential_pepper
+    if configured is not None and configured.get_secret_value():
+        return CredentialProtector(configured)
+    return CredentialProtector(DEMO_CREDENTIAL_PEPPER)

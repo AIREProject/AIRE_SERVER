@@ -8,7 +8,7 @@
 
 | 항목 | 값 |
 |---|---|
-| Base URL | 로컬 예시 `http://127.0.0.1:8000` |
+| Base URL | 로컬 예시 `http://127.0.0.1:8010` |
 | 제품 인증 | UE `Bearer AIRE_GAME`, Web `Bearer AIRE_WEB` |
 | Profile | `AIRE_OPEN` |
 | Save Slot | `demo-slot-1` |
@@ -251,10 +251,10 @@ receipt API는 아직 없습니다.
 남아 있습니다. 현재 UE/Web 제품은 이 경로를 사용하지 않고 `AIRE_GAME`, `AIRE_WEB`을 바로
 사용합니다.
 
-기존 경로를 별도로 사용할 때만 다음 설정이 필요합니다.
+기존 `register-game` 경로를 별도로 사용할 때만 bootstrap token이 필요합니다. Pepper가 비어
+있으면 현재 단일 플레이어 demo용 고정 key를 사용합니다.
 
 ```dotenv
-DEVICE_CREDENTIAL_PEPPER=replace-with-random-value
 DEV_GAME_DEVICE_TOKEN=replace-with-bootstrap-token
 ```
 

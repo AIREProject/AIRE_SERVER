@@ -20,19 +20,22 @@ Web surface입니다. 두 클라이언트가 같은 기억과 Offline Task를 �
 실행합니다.
 
 ```powershell
+$sourceRoot = Join-Path $env:USERPROFILE "source"
+New-Item -ItemType Directory -Force $sourceRoot | Out-Null
+Set-Location $sourceRoot
 git clone https://github.com/AIREProject/AIRE_SERVER.git
-Set-Location AIRE_SERVER
+Set-Location .\AIRE_SERVER
 uv sync --dev
 New-Item -ItemType Directory -Force data
 uv run alembic upgrade head
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8010
 ```
 
 브라우저에서 다음 주소를 확인합니다.
 
-- Health: `http://127.0.0.1:8000/health`
-- Swagger UI: `http://127.0.0.1:8000/docs`
-- OpenAPI JSON: `http://127.0.0.1:8000/openapi.json`
+- Health: `http://127.0.0.1:8010/health`
+- Swagger UI: `http://127.0.0.1:8010/docs`
+- OpenAPI JSON: `http://127.0.0.1:8010/openapi.json`
 
 `.env` 없이 실행하면 SQLite와 Mock LLM을 사용합니다. `companion.db` 파일만 생겼다고 DB가
 준비된 것은 아닙니다. Chat은 테이블을 자동 생성하지 않으므로 서버 시작 전에 반드시
@@ -70,7 +73,7 @@ $body = @{
 
 Invoke-RestMethod `
     -Method Post `
-    -Uri "http://127.0.0.1:8000/api/v1/chat" `
+    -Uri "http://127.0.0.1:8010/api/v1/chat" `
     -Headers $headers `
     -ContentType "application/json" `
     -Body $body
