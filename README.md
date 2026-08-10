@@ -17,7 +17,16 @@ Web surface입니다. 두 클라이언트가 같은 기억과 Offline Task를 �
 ## 처음 실행하기
 
 필수 도구는 Python 3.13과 [uv](https://docs.astral.sh/uv/)입니다. 명령은 저장소 루트에서
-실행합니다.
+실행합니다. 저장소가 Private이므로 처음 clone하는 PC는 GitHub read 권한과 인증이 필요합니다.
+
+먼저 인증을 확인합니다.
+
+```powershell
+gh auth status
+```
+
+실패하면 `gh auth login --hostname github.com --git-protocol https --web` 실행 후
+`gh auth setup-git`을 실행합니다. 인증 성공 뒤에만 다음 명령을 실행합니다.
 
 ```powershell
 $sourceRoot = Join-Path $env:USERPROFILE "source"
@@ -106,6 +115,7 @@ Copy-Item .env.example .env
 ## 문서
 
 - [인수인계·운영 가이드](docs/handoff.md) — 새 PC 설치, DB, 실행, 백업, 복구와 장애 대응
+- [공개 서버 배포 작업서](docs/하는방법.md) — 폴더를 통째로 전달해 기존 설정·DB를 보존하며 교체하고 검증
 - [LLM 설정](docs/llm-setup.md) — Mock, OpenAI, Local LLM과 Embedding
 - [API 사용법](docs/api-endpoints.md) — 고정 인증, Chat, Situation, Offline Task와 오류
 - [게임 데이터](docs/game-data.md) — seed 데이터, migration과 수정 절차

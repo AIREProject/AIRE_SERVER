@@ -6,16 +6,18 @@
 ## 처음 보는 사람의 읽기 순서
 
 1. [인수인계·운영 가이드](handoff.md)
-2. [LLM 설정](llm-setup.md)
-3. [API 사용법](api-endpoints.md)
-4. [게임 데이터](game-data.md)
-5. [현재 제한과 임시 경계](temporary-scaffolds.md)
+2. [공개 서버 배포 작업서](하는방법.md)
+3. [LLM 설정](llm-setup.md)
+4. [API 사용법](api-endpoints.md)
+5. [게임 데이터](game-data.md)
+6. [현재 제한과 임시 경계](temporary-scaffolds.md)
 
 ## 문서별 역할
 
 | 문서 | 용도 |
 |---|---|
 | `handoff.md` | 새 PC 설치, DB migration, 서버 시작, 업데이트, 백업·복구와 장애 대응 |
+| `하는방법.md` | AIRE_SERVER 폴더를 통째로 전달해 기존 설정·DB를 보존하며 교체하고 migration, 재시작, 검증하는 절차 |
 | `llm-setup.md` | Mock/OpenAI/Local LLM 및 장기기억 Embedding 설정 |
 | `api-endpoints.md` | 클라이언트가 호출하는 현행 `/api/v1/*` 계약과 예시 |
 | `game-data.md` | Item/Recipe/Enemy seed 데이터와 DB 반영 절차 |

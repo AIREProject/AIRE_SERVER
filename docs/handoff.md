@@ -6,6 +6,7 @@
 ## 1. 준비물
 
 - Git
+- Private 저장소를 읽을 수 있는 GitHub 인증 또는 read-only Deploy Key
 - Python 3.13 (`>=3.13,<3.14`)
 - [uv](https://docs.astral.sh/uv/)
 - 서버를 열 포트. 기본 예시는 `8010`
@@ -20,6 +21,12 @@ Dockerfile과 Compose 파일은 현재 저장소에 없습니다. 이 문서의 
 Windows PowerShell:
 
 ```powershell
+gh auth status
+```
+
+인증 성공 뒤:
+
+```powershell
 $sourceRoot = Join-Path $env:USERPROFILE "source"
 New-Item -ItemType Directory -Force $sourceRoot | Out-Null
 Set-Location $sourceRoot
@@ -31,6 +38,12 @@ uv sync --dev
 Linux:
 
 ```bash
+gh auth status
+```
+
+인증 성공 뒤:
+
+```bash
 git clone https://github.com/AIREProject/AIRE_SERVER.git
 cd AIRE_SERVER
 uv sync --dev
@@ -38,6 +51,10 @@ uv sync --dev
 
 `.venv/`는 Git에 포함되지 않습니다. `uv sync --dev`가 `uv.lock`을 기준으로 해당 PC에 맞는
 환경을 생성합니다.
+
+저장소가 Private이라 `gh auth status`가 실패하면 먼저 `gh auth login`과
+`gh auth setup-git`을 실행하거나 [공개 서버 배포 작업서](하는방법.md)의 읽기 전용 Deploy Key
+절차를 사용합니다.
 
 ### 2.2 기본 설정
 
