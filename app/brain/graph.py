@@ -16,7 +16,7 @@ from pydantic import JsonValue
 
 from app.models import CommandType
 
-from .contract import CompanionAction, CompanionTurn
+from .contract import CompanionAction, CompanionTurn, InventoryFacts, WorldContextFacts
 from .dialogue import SURFACE_PROFILES, DialogueScene, DialogueSpec, SurfaceProfile, render
 from .enemies import EnemyRepository
 from .gametime import describe
@@ -130,6 +130,68 @@ _TOP_ROUTES: dict[TopIntent, TopRoute] = {
 }
 
 
+def _inventory_fact(inventory: InventoryFacts) -> str:
+    items = ", ".join(
+        f"{item.item_id} {item.count}개" for item in inventory.item_totals
+    ) or "아이템 없음"
+    suffix = ", 일부 종류 생략" if inventory.truncated else ""
+    return (
+        f"인벤토리 {inventory.container_id}: 빈 슬롯 {inventory.free_slots}, "
+        f"{items}{suffix}"
+    )
+
+
+def _describe_world_context(context: WorldContextFacts) -> tuple[str, ...]:
+    if not context.is_available:
+        return ()
+
+    facts: list[str] = [
+        (
+            f"현재 위치 ID는 {context.location_id}다"
+            if context.location_id is not None
+            else "현재 위치 ID는 확인되지 않았다"
+        )
+    ]
+    threat = context.threat
+    if threat is not None and threat.present:
+        facts.append(
+            f"주변 위협은 {threat.count}개이며 가장 가까운 종류는 "
+            f"{threat.nearest_kind}다"
+            if threat.nearest_kind is not None
+            else f"주변 위협은 {threat.count}개다"
+        )
+    else:
+        facts.append("주변에 확인된 위협이 없다")
+
+    if context.nearby_resources:
+        resources = ", ".join(
+            f"{resource.kind} {resource.count}개" for resource in context.nearby_resources
+        )
+        facts.append(f"주변 자원은 {resources}다")
+    else:
+        facts.append("주변에 확인된 자원이 없다")
+
+    if context.available_workstations:
+        facts.append(
+            f"사용 가능한 작업대는 {', '.join(context.available_workstations)}다"
+        )
+    else:
+        facts.append("사용 가능한 작업대가 없다")
+
+    if context.current_work is not None:
+        facts.append(
+            f"현재 작업은 {context.current_work.type}/{context.current_work.state}다"
+        )
+    else:
+        facts.append("현재 진행 중인 작업이 없다")
+
+    if context.inventories:
+        facts.extend(_inventory_fact(inventory) for inventory in context.inventories)
+    else:
+        facts.append("확인된 인벤토리 요약이 없다")
+    return tuple(facts)
+
+
 def route_by_entry(state: CompanionState) -> EntryRoute:
     """되물어 둔 슬롯이 있으면 그 답인지부터 확인한다.
 
@@ -197,7 +259,7 @@ def build_companion_graph(
                 fallback=fallback,
                 surface=state["turn"].surface,
                 user_text=state["text"],
-                facts=facts,
+                facts=(*facts, *_describe_world_context(state["turn"].world_context)),
                 history=state.get("history", ()),
                 memories=state.get("long_term", ()),
                 situation=describe(state["turn"].game_time),
@@ -387,7 +449,7 @@ def build_companion_graph(
         }
 
     async def lore_node(state: CompanionState) -> CompanionUpdate:
-        fact = lore.fact_for(state["turn"].location_id)
+        fact = lore.fact_for(state["turn"].world_context.location_id)
         if fact is not None:
             return {"display_text": await say(state, "lore", fact.text, (fact.text,))}
         # 게임은 "지금 위치" 를 말할 수 있지만 폰은 그럴 위치가 없다.

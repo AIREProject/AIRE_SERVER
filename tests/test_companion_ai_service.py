@@ -29,6 +29,18 @@ METADATA = AIMetadata(provider="mock", model_version="mock-v1", prompt_version="
 PROTECTOR = CredentialProtector(SecretStr("test-only-pepper-not-for-production"))
 
 
+def empty_game_context(*, location_id: str | None = None) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "location_id": location_id,
+        "threat": {"present": False, "count": 0, "nearest_kind": None},
+        "nearby_resources": [],
+        "available_workstations": [],
+        "current_work": None,
+        "inventories": [],
+    }
+
+
 class RecordingProvider(MockLLMProvider):
     def __init__(self) -> None:
         self.dialogue_specs: list[DialogueSpec] = []
@@ -68,7 +80,7 @@ def make_request(
         message_id=message_id,
         user_message=user_message,
         time_context=time_context,
-        game_context=game_context or {},
+        game_context=game_context or empty_game_context(),
         allowed_commands=allowed_commands or [],
     )
 
@@ -393,7 +405,9 @@ async def test_lore_uses_location_from_game_context(
         identity,
         session,
         "이 마을은 어떤 곳이야?",
-        game_context={"location_id": "region_abandoned_mining_village"},
+        game_context=empty_game_context(
+            location_id="region_abandoned_mining_village"
+        ),
     )
 
     assert "광산" in result.display_text
@@ -424,7 +438,7 @@ async def test_default_location_does_not_override_location_from_game(
         identity,
         session,
         "이 마을은 어떤 곳이야?",
-        game_context={"location_id": "region_unknown"},
+        game_context=empty_game_context(location_id="region_unknown"),
     )
 
     assert "광산" not in result.display_text

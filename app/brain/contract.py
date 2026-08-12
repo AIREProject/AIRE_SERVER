@@ -14,6 +14,50 @@ from app.models import CommandType, Surface, TimeContext
 
 
 @dataclass(frozen=True, slots=True)
+class ThreatFacts:
+    present: bool
+    count: int
+    nearest_kind: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceFacts:
+    kind: str
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class WorkFacts:
+    type: str
+    state: str
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryItemFacts:
+    item_id: str
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryFacts:
+    container_id: str
+    free_slots: int
+    item_totals: tuple[InventoryItemFacts, ...]
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class WorldContextFacts:
+    is_available: bool = False
+    location_id: str | None = None
+    threat: ThreatFacts | None = None
+    nearby_resources: tuple[ResourceFacts, ...] = ()
+    available_workstations: tuple[str, ...] = ()
+    current_work: WorkFacts | None = None
+    inventories: tuple[InventoryFacts, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class CompanionTurn:
     """마코가 한 번 판단하는 데 필요한 전부.
 
@@ -42,7 +86,7 @@ class CompanionTurn:
     # 게임이 지금 받을 수 있는 명령. 마코가 만들지 않는 것(교전, 지점 이동 등)이 섞여 있어도
     # 무해하다 — 라우팅은 이 집합을 순회하지 않고 `in` 의 우변으로만 쓴다.
     allowed_actions: frozenset[CommandType] = frozenset()
-    location_id: str | None = None
+    world_context: WorldContextFacts = WorldContextFacts()
     game_time: TimeContext | None = None
 
     def __post_init__(self) -> None:

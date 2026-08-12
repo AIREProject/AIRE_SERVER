@@ -1,8 +1,15 @@
 # AIRE Server API 사용법
 
-현행 HTTP 계약의 코드 권위는 `app/models.py`, `app/offline_task_models.py`,
+현행 로컬 HTTP 계약의 코드 권위는 `app/models.py`, `app/offline_task_models.py`,
 `app/pairing_models.py`와 `app/routes/`입니다. 실행 중인 서버에서는 `/openapi.json`과 `/docs`를
-최우선으로 확인합니다.
+최우선으로 확인합니다. 2026-08-13 현재 배포
+`https://traip.mtvs2026.work/openapi.json`은 `ChatRequest.game_context`를 아직 generic
+object로 노출하므로, 아래 World Context v1은 `AIRE_SERVER/`의 AX-I05 목표 계약이다. 배포
+OpenAPI 반영이나 배포 smoke 성공을 이 문서로 주장하지 않는다.
+
+AX-I05 로컬 구현은 2026-08-13 전체 Backend pytest 572건, Ruff와 mypy를 통과했다. 이후
+서버에 접근할 수 없어 배포 적용과 runtime smoke는 미확인이다. 기존 Game client의 `{}` 요청은
+새 계약에서 거부되므로 full Context v1을 생성하는 AX-I04 client와 서버 적용 시점을 조정한다.
 
 ## 1. 공통 규칙
 
@@ -16,7 +23,8 @@
 | Content Type | `application/json` |
 | Request ID | body와 `X-Request-ID`가 모두 있으면 같은 값이어야 함 |
 | ID 형식 | 영문/숫자로 시작하는 1~128자, 이후 `._:-` 허용 |
-| Body 제한 | 기본 256KB |
+| Body 제한 | 기본 256KB (`413 RequestTooLarge`) |
+| Game Context 제한 | compact UTF-8 JSON 8KiB 이하 (`400 InvalidRequest`) |
 | Request timeout | 기본 30초 |
 
 Request model은 알 수 없는 body field를 `400 InvalidRequest`로 거부합니다. Response를 사용하는
@@ -88,7 +96,28 @@ X-Request-ID: chat-game-1
     "period": "Afternoon"
   },
   "recent_event_ids": [],
-  "game_context": {},
+  "game_context": {
+    "schema_version": 1,
+    "location_id": "region_abandoned_mining_village",
+    "threat": {
+      "present": true,
+      "count": 2,
+      "nearest_kind": "Enemy.TrenchCrawler"
+    },
+    "nearby_resources": [
+      {"kind": "wood", "count": 3}
+    ],
+    "available_workstations": ["Workbench.Basic"],
+    "current_work": {"type": "Harvesting", "state": "Working"},
+    "inventories": [
+      {
+        "container_id": "AIRE.Inventory.MAKO",
+        "free_slots": 12,
+        "item_totals": [{"item_id": "Branch", "count": 4}],
+        "truncated": false
+      }
+    ]
+  },
   "allowed_commands": []
 }
 ```
@@ -117,15 +146,67 @@ Header는 `Authorization: Bearer AIRE_WEB`을 사용하고 다음 field를 바�
     "period": "Afternoon"
   },
   "recent_event_ids": [],
-  "game_context": {},
   "allowed_commands": []
 }
 ```
 
+Mobile은 `game_context`를 생략하거나 `null`로 보낸다. `{}` 및 임의 자유 형식 object는
+허용하지 않는다. `surface=game`에서는 `game_context`가 반드시 위 Context v1이어야 한다.
+
 현재 `TimeContext`는 `GameWorld`와 `RealWorld` 모두 `day/hour/period` 구조를 사용합니다.
 `observed_at`, `timezone`, `interaction_mode`는 계약 field가 아닙니다.
 
-### 4.3 성공 응답
+### 4.3 Game Context v1
+
+`game_context`는 관측한 사실만 담는 strict 구조다. 배열 입력 순서는 의미가 없고 중복은
+거부한다. Backend는 prompt facts를 stable ID 기준으로 정렬해 만든다.
+
+```json
+{
+  "schema_version": 1,
+  "location_id": "region_abandoned_mining_village",
+  "threat": {
+    "present": true,
+    "count": 2,
+    "nearest_kind": "Enemy.TrenchCrawler"
+  },
+  "nearby_resources": [{"kind": "wood", "count": 3}],
+  "available_workstations": ["Workbench.Basic"],
+  "current_work": {"type": "Harvesting", "state": "Working"},
+  "inventories": [
+    {
+      "container_id": "AIRE.Inventory.MAKO",
+      "free_slots": 12,
+      "item_totals": [{"item_id": "Branch", "count": 4}],
+      "truncated": false
+    }
+  ]
+}
+```
+
+- 최상위 7개 field는 모두 필수다. `location_id`, `threat.nearest_kind`,
+  `current_work`만 `null`을 허용한다. GameWorld 시간은 최상위 `time_context`가 단일
+  권위이며 Context에 중복하지 않는다.
+- 모든 stable ID는 1~128자, `[A-Za-z0-9][A-Za-z0-9._:-]*`다. UObject/class path,
+  credential key와 임의 key는 `400 InvalidRequest`로 거부한다. ID의 catalogue 존재 여부는
+  이 계약에서 확인하지 않는다.
+- `threat.count`는 0~32이며 `present == (count > 0)`이다. count가 0이면
+  `nearest_kind`는 `null`이어야 한다.
+- `nearby_resources`는 중복 없는 최대 8종의 `{kind, count}` 집계이며 count는 1~32다.
+  `available_workstations`는 중복 없는 stable tag 최대 8개다.
+- `current_work`는 종료 시 `null`이다. type은 `Crafting | Harvesting |
+  StorageTransfer`, state는 `Requested | Moving | Working | PausedByCombat`만 허용한다.
+- `inventories`는 `AIRE.Inventory.MAKO`와 `AIRE.Inventory.SharedStorage` 중복 없는 최대
+  2개다. MAKO `free_slots`는 0~20, Shared Storage는 0~50이다. 컨테이너별 item kind는
+  최대 16종, 합계는 각각 1,980개/4,950개 이하이며 생략 시 `truncated=true`를 표시한다.
+- compact Context UTF-8 직렬화 결과가 8KiB를 넘으면 `400 InvalidRequest`다. 전체 HTTP
+  body 제한 256KiB를 넘는 경우에는 `413 RequestTooLarge`다.
+
+Context는 대사 생성용 facts-only 입력이다. 이를 근거로 Backend가 Command 후보를 추가·제거하거나
+`CraftItem`/gameplay를 실행하지 않는다. Command 후보는 기존 `allowed_commands` allowlist와
+후속 AX-I06 계약이 정한다.
+
+### 4.4 성공 응답
 
 ```json
 {
@@ -148,13 +229,14 @@ Header는 `Authorization: Bearer AIRE_WEB`을 사용하고 다음 field를 바�
 
 Response에는 최상위 `schema_version`, `interaction_mode`, `memory_candidates`가 없습니다.
 
-### 4.4 주요 field
+### 4.5 주요 field
 
 - `session_id`: 한 surface에서 이어지는 최근 대화와 되묻기 상태 범위
 - `save_slot_id`: 장기기억과 Offline Task 범위. 현재 `demo-slot-1`
 - `companion_id`: 현재 `mako`만 유효
 - `surface`: `game` 또는 `mobile`; 말투에 사용
-- `game_context`: 최대 32개 property. 현재 서비스는 `location_id`만 직접 사용
+- `game_context`: `surface=game`에서 필수인 Context v1; `surface=mobile`에서는 생략 또는
+  `null`만 허용
 - `allowed_commands`: 서버가 반환할 수 있는 command allowlist
 - `recent_event_ids`: 최대 32개를 검증하지만 현재 저장·사용하지 않음
 
@@ -445,6 +527,8 @@ Admin request/response는 실행 중인 `/docs`를 사용합니다.
 ## 10. WebSocket 호환 경로
 
 `WS /api/v1/chat`은 남아 있지만 AX client 기준은 HTTP입니다. WS는 frame마다 token을 넣습니다.
+`payload`는 HTTP `ChatRequest`와 같은 strict 모델을 사용한다. 따라서 game frame은 Context v1을
+포함해야 하고 mobile frame은 `game_context`를 생략하거나 `null`로만 보낼 수 있다.
 
 ```json
 {
@@ -458,6 +542,15 @@ Admin request/response는 실행 중인 `/docs`를 사용합니다.
     "companion_id": "mako",
     "user_message": "안녕",
     "surface": "game",
+    "game_context": {
+      "schema_version": 1,
+      "location_id": null,
+      "threat": {"present": false, "count": 0, "nearest_kind": null},
+      "nearby_resources": [],
+      "available_workstations": [],
+      "current_work": null,
+      "inventories": []
+    },
     "allowed_commands": []
   }
 }
@@ -485,7 +578,7 @@ Admin request/response는 실행 중인 `/docs`를 사용합니다.
 
 | HTTP | Code | 의미 |
 |---:|---|---|
-| 400 | `InvalidRequest` | field/type/request ID 오류 |
+| 400 | `InvalidRequest` | field/type/request ID 오류, Context v1 위반 또는 Context 8KiB 초과 |
 | 400 | `UnknownCompanion` | `mako` 외 companion |
 | 401 | `UnauthorizedDevice` | Bearer 누락/불일치 |
 | 403 | `DeviceRoleNotAllowed` | Client role에 허용되지 않은 작업 |

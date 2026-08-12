@@ -97,11 +97,11 @@ AX-I01 인증 계약
   ├→ AX-I02 UE 고정 인증 + HTTP Chat
   └→ AX-W01 Web 고정 인증 + Mobile Chat → AX-W02 Offline Task UI
 
-AX-I02
-      → AX-I03 Command Gateway Core ───────────────┐
-      → AX-I04 World Context v1 → AX-I05 Backend B1│
-                                                   ↓
-                                      AX-I06 행동 명령 수직 슬라이스
+AX-I02 → Context v1 계약·fixture 동결 ┬→ AX-I04 UE World Context 생성 ─┐
+                                      └→ AX-I05 Backend B1 소비 ──────┤
+AX-I03 Command Gateway Core ──────────────────────────────────────────┤
+                                                                     ↓
+                                              AX-I06 행동 명령 수직 슬라이스
 
 AX-I07 Inventory SaveGame → AX-I08 Sync Outbox ──────────────┐
                └→ AX-P01 서버시간 Task→UE Inventory Prototype
@@ -112,8 +112,8 @@ AX-I11 Backend B3 Offline Settlement ──────────────�
                             AX-I12 UE Offline 적용 + AX-W04 Mobile E2E
 ```
 
-Backend 변경은 `AX-I05`, `AX-I09`, `AX-I11` 세 Task로 제한한다. 조건부 Provider 교체는 현재
-Core Task 수와 이 세 변경에 포함하지 않으며, 품질 평가 뒤 파트너 결정이 있을 때만 별도
+Backend 변경은 `AX-I05`, `AX-I06`의 Command 계약 확장, `AX-I09`, `AX-I11`로 제한한다. 조건부
+Provider 교체는 현재 Core Task 수와 이 변경에 포함하지 않으며, 품질 평가 뒤 파트너 결정이 있을 때만 별도
 Adapter 작업으로 연다. 나머지는 UE/Web client, 계약 또는 통합 검증 작업이다. Web은 현재
 Vite+strict TypeScript 기반과 Chat UI가 있으므로 새 프로젝트를 만들지 않고 기존 `WebApp/`을
 갱신한다.
@@ -234,7 +234,7 @@ Vite+strict TypeScript 기반과 Chat UI가 있으므로 새 프로젝트를 만
 ### AX-I05. Backend B1 — 구조화 Chat Context 소비
 
 - 종류: Backend 최소 변경 1/3
-- 선행: AX-I04의 Context v1 계약
+- 선행: AX-I04와 공유하는 Context v1 계약·fixture 동결. AX-I04 구현 완료 자체에는 의존하지 않는다.
 - 목표: 현재 `location_id`만 읽는 Chat service가 허용된 World Context를 실제 LLM 입력으로 사용한다.
 
 구현 범위:
@@ -257,7 +257,7 @@ Vite+strict TypeScript 기반과 Chat UI가 있으므로 새 프로젝트를 만
 
 ### AX-I06. 행동 명령 수직 슬라이스
 
-- 종류: UE
+- 종류: Backend Command 계약 + UE 실행 통합
 - 선행: AX-I03, AX-I04, AX-I05
 - 대응 계획: `M04-E03-T01`, `M04-E03-T02`
 - 목표: 지원 명령만 동적으로 허용하고 UE가 최종 실행 여부를 결정한다.
@@ -267,6 +267,14 @@ Vite+strict TypeScript 기반과 Chat UI가 있으므로 새 프로젝트를 만
 1. `CancelCurrent`: 현재 WorkOrder ID와 취소 가능 상태 검증
 2. `GatherResource`: kind 일치, 반경, 고갈, 접근 가능 여부를 UE가 검사해 local Target 선택
 3. `Attack`: 현재 UE가 선택한 hostile/alive Threat만 허용
+4. `CraftItem`: LLM은 stable `recipe_id`의 제작 의도만 제안한다. UE는 protocol ID를 로컬 Recipe로
+   매핑하고 재료·상태·호환 작업대를 검증한 뒤, 실제 작업대 Actor는 로컬에서 선택해 기존
+   `FAIRECompanionCraftingWorkRequest`와 WorkOrder/StateTree 제작 흐름에 연결한다.
+
+`CraftItem`은 현재 배포 Chat `CommandType`에 없는 계획 항목이다. Backend model, allowlist, 구조화
+출력과 배포 OpenAPI에 같은 명령과 parameter 계약이 반영되기 전에는 UE가 광고하거나 성공으로
+처리하지 않는다. 첫 수직 슬라이스는 `recipe_id`와 수량 1만 지원하며, LLM이 Actor 이름·UObject·
+작업대 인스턴스를 직접 지정하지 않는다.
 
 Follow/Hold/Return은 production direct-command state가 준비된 뒤 별도 확장한다. 의미가 모호한
 `Switch`는 허용하지 않는다.
@@ -277,6 +285,8 @@ Follow/Hold/Return은 production direct-command state가 준비된 뒤 별도 �
 - command 중복, 만료와 Target 파괴가 안전하게 종료된다.
 - 각 command는 최종 local result 하나를 가진다.
 - Backend 단절 뒤 기존 Local AI로 복귀한다.
+- 자연어 제작 요청은 `CraftItem(recipe_id)` 후보가 되고, UE 검증 통과 시 호환 작업대로 이동해 기존
+  제작 WorkOrder를 실행한다. 레시피·재료·작업대 검증 실패는 Inventory 변경 없이 명시적으로 거부한다.
 
 ### AX-I07. Inventory SaveGame export/import
 
@@ -564,9 +574,12 @@ ledger를 사용해 `task_id`를 영속 처리 ID로 연결하고, 서버가 확
 2. AX-I02와 AX-W01 병렬
 3. AX-W02
 4. AX-I03
-5. AX-I04
-6. AX-I05
-7. AX-I06
+5. Context v1 계약·fixture 동결 후 AX-I04와 AX-I05 병렬
+6. AX-I06
+
+AX-I04는 UE Context producer, AX-I05는 Backend Context consumer를 소유한다. 둘은 같은 versioned
+fixture와 제한값을 사용하되 서로의 구현 파일을 공유하지 않는다. 실제 Chat 왕복과 `CraftItem` 후보·
+실행 연결은 두 Task가 끝난 뒤 AX-I06에서 수행한다.
 
 ### Iteration 2 — 저장과 조회
 

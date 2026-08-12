@@ -5,8 +5,10 @@
 
 ## 1. `COMPANION_DEFAULT_LOCATION_ID`
 
-현재 lore 응답은 `game_context.location_id`를 사용합니다. UE가 위치를 보내지 않는 동안
-`.env`의 `COMPANION_DEFAULT_LOCATION_ID`를 개발용 대체 위치로 사용할 수 있습니다.
+AX-I05부터 lore 응답과 대사 facts는 strict `GameContextV1.location_id`를 사용합니다.
+`location_id=null`인 개발 요청에 한해서만 `.env`의 `COMPANION_DEFAULT_LOCATION_ID`를 대체
+위치로 사용할 수 있습니다. 이 fallback은 외부 계약의 위치 사실을 임의로 바꾸는 기능이
+아닙니다.
 
 ```dotenv
 COMPANION_DEFAULT_LOCATION_ID=region_abandoned_mining_village
@@ -14,9 +16,10 @@ COMPANION_DEFAULT_LOCATION_ID=region_abandoned_mining_village
 
 규칙:
 
-- Request에 `location_id`가 있으면 request 값이 우선합니다.
-- 알 수 없는 `location_id`를 임의의 다른 장소로 바꾸지 않습니다.
-- UE가 stable location ID를 항상 보내기 시작하면 이 설정은 비웁니다.
+- Request의 typed `location_id`가 non-null이면 그 값이 우선합니다.
+- `location_id=null`일 때만 설정값을 사용하며, 알 수 없는 ID를 임의의 다른 장소로 바꾸지
+  않습니다.
+- 운영 클라이언트가 항상 위치 stable ID를 보내면 이 개발 fallback은 비웁니다.
 
 ## 2. Identity, 기억과 데이터 보존
 
@@ -80,20 +83,41 @@ Chat과 Situation의 `request_id`는 body/header 상관관계와 로그 추적�
 
 따라서 Task 완료를 보고 UE Inventory에 보상을 적용하는 exact-once 계약으로 사용하지 않습니다.
 
-## 6. World Context
+## 6. World Context v1 (AX-I05 확정 로컬 계약)
 
-ChatRequest의 `game_context`는 최대 32개 property를 받을 수 있지만 현재 서비스가 직접 사용하는
-값은 사실상 `location_id`입니다.
+`ChatRequest.game_context`는 더 이상 임의 key를 받는 generic object가 아니다. `surface=game`
+에서는 다음 7개 최상위 field가 모두 필요한 `GameContextV1`이고, `surface=mobile`에서는
+생략 또는 `null`만 허용한다. `{}`와 기존 자유 형식 object는 호환하지 않는다.
 
-다음 World 상태를 LLM이 구조적으로 이해하는 계약은 아직 없습니다.
+- `schema_version=1`, `location_id`, `threat`, `nearby_resources`, `available_workstations`,
+  `current_work`, `inventories`
+- `location_id`, `threat.nearest_kind`, `current_work`만 `null`을 허용한다.
+- stable ID는 1~128자와 `[A-Za-z0-9][A-Za-z0-9._:-]*`를 따르며, 임의 key, UObject/class
+  path, credential key는 거부한다. ID catalogue 존재 여부는 이 단계에서 조회하지 않는다.
+- `threat.count`는 0~32이고 `present == (count > 0)`이며 count 0이면 nearest kind는
+  `null`이다.
+- 주변 resource는 중복 없는 최대 8종, 종류별 count 1~32이고 workstation tag는 중복 없는
+  최대 8개다.
+- `current_work` type은 `Crafting | Harvesting | StorageTransfer`, state는
+  `Requested | Moving | Working | PausedByCombat`다. 종료된 work는 `null`이다.
+- inventory는 MAKO/Shared Storage 중복 없는 최대 2개다. free slots는 각각 0~20/0~50,
+  container별 item kind는 최대 16종, item 합계는 각각 1,980/4,950 이하이며 생략 시
+  `truncated=true`를 표시한다.
+- compact UTF-8 직렬화 결과는 8KiB 이하이며 초과 시 `400 InvalidRequest`다. 전체 HTTP
+  body 256KiB 제한 초과는 `413 RequestTooLarge`다.
 
-- 주변 나무·광물
-- 주변 적과 stable entity ID
-- 사용 가능한 Workbench
-- 현재 WorkOrder
-- MAKO/Storage Inventory snapshot
+배열 순서는 의미가 없고 Backend가 stable ID 기준으로 정렬해 prompt facts를 만든다. 이
+Context는 관측 facts를 대사 생성에 제공하는 경계일 뿐이며, Backend가 Context만으로
+Command 후보를 추가·제거하거나 `CraftItem`/gameplay를 실행하지 않는다. Command 통합과
+실행 권한은 AX-I06 범위다.
 
-UE에서 값을 임의 key로 보내기만 해서는 서버 Prompt가 자동으로 사용하지 않습니다.
+이 계약은 현재 `AIRE_SERVER/` 로컬 구현 문서의 목표다. 2026-08-13 현재 배포
+`/openapi.json`은 여전히 `game_context`를 generic object로 노출하므로 배포 반영이나 runtime
+smoke 성공을 의미하지 않는다.
+
+AX-I05 로컬 구현과 Backend test/lint/type Gate는 완료했다. 이후 서버에 접근할 수 없어 배포
+적용은 별도 운영 체크로 남겼다. strict 전환은 기존 `{}` Game 요청과 호환되지 않으므로 AX-I04
+producer 준비 없이 Backend만 선배포하지 않는다.
 
 ## 7. Health와 운영 readiness
 
@@ -132,9 +156,8 @@ OpenAI/Local provider의 분류·대사·기억 호출이 실패하면 Mock fall
 
 1. UE `AIRE_GAME` HTTP Chat 정합화
 2. Web `AIRE_WEB` Mobile Chat 정합화
-3. UE Command Gateway
-4. World Context v1
-5. Inventory Save/Sync와 Game State API
-6. Offline Task settlement receipt
+3. UE Command Gateway (AX-I06)
+4. Inventory Save/Sync와 Game State API
+5. Offline Task settlement receipt
 
 이 문서의 제한이 해소되면 해당 절을 삭제하거나 현행 계약 문서로 승격합니다.

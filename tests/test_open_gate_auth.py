@@ -63,7 +63,19 @@ async def test_open_gate_chat_works_without_pepper() -> None:
                     "period": "Afternoon",
                 },
                 "recent_event_ids": [],
-                "game_context": {},
+                "game_context": {
+                    "schema_version": 1,
+                    "location_id": None,
+                    "threat": {
+                        "present": False,
+                        "count": 0,
+                        "nearest_kind": None,
+                    },
+                    "nearby_resources": [],
+                    "available_workstations": [],
+                    "current_work": None,
+                    "inventories": [],
+                },
                 "allowed_commands": [],
             },
         )

@@ -21,10 +21,8 @@ import asyncio
 import json
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from uuid import uuid4
-
-from pydantic import JsonValue
 
 from app.brain import (
     COMPANION_PROFILES,
@@ -32,7 +30,13 @@ from app.brain import (
     CompanionBrain,
     CompanionReply,
     CompanionTurn,
+    InventoryFacts,
+    InventoryItemFacts,
+    ResourceFacts,
     SituationTurn,
+    ThreatFacts,
+    WorkFacts,
+    WorldContextFacts,
 )
 from app.brain.enemies import EnemyRepository
 from app.brain.llm import build_llm_provider
@@ -52,6 +56,7 @@ from app.errors import (
     AIServiceUnavailableError,
     UnknownCompanionError,
 )
+from app.game_context_models import GameContextV1
 from app.gamedata.dataset import DATASET, GameDataSet
 from app.identity import DeviceRole
 from app.models import (
@@ -181,7 +186,7 @@ class CompanionService:
             text=request.user_message,
             surface=request.surface,
             allowed_actions=frozenset(request.allowed_commands),
-            location_id=self._location_id(request.game_context),
+            world_context=self._world_context_facts(request.game_context),
             game_time=request.time_context,
             conversation_key=_conversation_key(
                 protector,
@@ -368,21 +373,50 @@ class CompanionService:
             if candidate.type not in allowed:
                 raise AIServiceInvalidOutputError
 
-    def _location_id(self, game_context: dict[str, JsonValue]) -> str | None:
-        """game_context 에서 세계관 조회 키로 쓸 location_id 를 안전하게 추출한다.
+    def _world_context_facts(self, context: GameContextV1 | None) -> WorldContextFacts:
+        """검증된 HTTP Context를 provider-neutral immutable facts로 한 번만 번역한다."""
 
-        **`default_location_id` 는 임시 발판이다.** 게임 클라이언트가 아직 위치를 실어
-        보내지 않아 세계관 질문이 전부 "확인된 이야기가 없다" 로 떨어지므로, 시험하는
-        동안만 설정으로 대체 위치를 채운다. 제거 절차 전체는
-        `docs/temporary-scaffolds.md` §1 에 있다.
+        if context is None:
+            return WorldContextFacts(location_id=self._default_location_id)
 
-        게임이 위치를 보냈다면 그 값이 이긴다. 목록에 없는 위치라도 마찬가지다 — 그건
-        진짜로 확인된 이야기가 없는 곳이고, 다른 곳 이야기를 들려주면 검증된 사실만
-        말한다는 전제가 깨진다. 대체는 위치가 아예 없을 때만 일어난다.
-        """
-
-        value: Literal[False] | JsonValue = game_context.get("location_id", False)
-        return value if isinstance(value, str) else self._default_location_id
+        location_id = context.location_id or self._default_location_id
+        current_work = (
+            WorkFacts(
+                type=context.current_work.type.value,
+                state=context.current_work.state.value,
+            )
+            if context.current_work is not None
+            else None
+        )
+        resources = tuple(
+            ResourceFacts(kind=resource.kind, count=resource.count)
+            for resource in sorted(context.nearby_resources, key=lambda item: item.kind)
+        )
+        inventories = tuple(
+            InventoryFacts(
+                container_id=inventory.container_id.value,
+                free_slots=inventory.free_slots,
+                item_totals=tuple(
+                    InventoryItemFacts(item_id=item.item_id, count=item.count)
+                    for item in sorted(inventory.item_totals, key=lambda item: item.item_id)
+                ),
+                truncated=inventory.truncated,
+            )
+            for inventory in sorted(context.inventories, key=lambda item: item.container_id.value)
+        )
+        return WorldContextFacts(
+            is_available=True,
+            location_id=location_id,
+            threat=ThreatFacts(
+                present=context.threat.present,
+                count=context.threat.count,
+                nearest_kind=context.threat.nearest_kind,
+            ),
+            nearby_resources=resources,
+            available_workstations=tuple(sorted(context.available_workstations)),
+            current_work=current_work,
+            inventories=inventories,
+        )
 
 
 def _conversation_key(

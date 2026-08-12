@@ -23,6 +23,18 @@ METADATA = AIMetadata(provider="mock", model_version="mock-v1", prompt_version="
 PROTECTOR = CredentialProtector(SecretStr("test-only-pepper-not-for-production"))
 
 
+def _empty_game_context() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "location_id": None,
+        "threat": {"present": False, "count": 0, "nearest_kind": None},
+        "nearby_resources": [],
+        "available_workstations": [],
+        "current_work": None,
+        "inventories": [],
+    }
+
+
 @pytest.fixture
 async def database() -> Database:
     return await make_database(make_settings())
@@ -55,6 +67,7 @@ def _request(user_message: str, **overrides: object) -> ChatRequest:
         "save_slot_id": "slot-1",
         "companion_id": "mako",
         "user_message": user_message,
+        "game_context": _empty_game_context(),
     }
     payload.update(overrides)
     return ChatRequest.model_validate(payload)

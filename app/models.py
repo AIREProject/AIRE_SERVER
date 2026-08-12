@@ -8,43 +8,11 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, model_validator
 
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-# game_context 는 위치 조회에만 쓰이지만, 나중에 프롬프트로 흘러갈 수 있는 확장 필드라
-# 비밀값으로 보이는 키는 애초에 막는다. 신원 인증과는 별개의 LLM 입력 안전장치다.
-FORBIDDEN_AI_CONTEXT_KEYS = frozenset(
-    {
-        "authorization",
-        "connectionstring",
-        "databaseconnectionstring",
-        "databaseurl",
-        "dbpassword",
-        "password",
-        "secret",
-        "token",
-    }
-)
-
-
-def validate_ai_context_values(value: JsonValue) -> None:
-    if isinstance(value, dict):
-        for key, nested_value in value.items():
-            normalized_key = "".join(
-                character for character in key.casefold() if character.isalnum()
-            )
-            if normalized_key in FORBIDDEN_AI_CONTEXT_KEYS or normalized_key.endswith(
-                ("password", "secret", "token")
-            ):
-                raise ValueError("Game context contains a forbidden sensitive key.")
-            validate_ai_context_values(nested_value)
-    elif isinstance(value, list):
-        for nested_value in value:
-            validate_ai_context_values(nested_value)
+from app.game_context_models import GameContextV1
+from app.model_types import StableId as StableId
+from app.model_types import StrictModel as StrictModel
 
 
 class Surface(StrEnum):
@@ -94,12 +62,6 @@ class CommandType(StrEnum):
     GATHER_RESOURCE = "Command.GatherResource"
     ATTACK = "Command.Attack"
     SWITCH = "Command.Switch"
-
-
-StableId = Annotated[
-    str,
-    Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"),
-]
 
 
 class CommandCandidate(StrictModel):
@@ -152,14 +114,15 @@ class ChatRequest(StrictModel):
     surface: Surface = Surface.GAME
     time_context: TimeContext | None = None
     recent_event_ids: list[StableId] = Field(default_factory=list, max_length=32)
-    game_context: dict[str, JsonValue] = Field(default_factory=dict)
+    game_context: GameContextV1 | None = None
     allowed_commands: list[CommandType] = Field(default_factory=list, max_length=16)
 
     @model_validator(mode="after")
     def validate_context_and_commands(self) -> Self:
-        if len(self.game_context) > 32:
-            raise ValueError("Game context must contain at most 32 properties.")
-        validate_ai_context_values(self.game_context)
+        if self.surface is Surface.GAME and self.game_context is None:
+            raise ValueError("Game chat requires a versioned game context.")
+        if self.surface is Surface.MOBILE and self.game_context is not None:
+            raise ValueError("Mobile chat must not contain a game context.")
         if len(self.allowed_commands) != len(set(self.allowed_commands)):
             raise ValueError("Allowed commands must be unique.")
         if len(self.recent_event_ids) != len(set(self.recent_event_ids)):

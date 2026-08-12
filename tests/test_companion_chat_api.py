@@ -21,6 +21,18 @@ from tests.conftest import make_authenticated_device, make_database, make_settin
 PROTECTOR = CredentialProtector(SecretStr("test-only-pepper-not-for-production"))
 
 
+def _empty_game_context() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "location_id": None,
+        "threat": {"present": False, "count": 0, "nearest_kind": None},
+        "nearby_resources": [],
+        "available_workstations": [],
+        "current_work": None,
+        "inventories": [],
+    }
+
+
 @pytest.fixture
 async def authed_client() -> Any:
     settings = make_settings(llm_provider="mock")
@@ -41,8 +53,11 @@ def _body(user_message: str, **overrides: Any) -> dict[str, Any]:
         "save_slot_id": "slot-1",
         "companion_id": "mako",
         "user_message": user_message,
+        "game_context": _empty_game_context(),
     }
     payload.update(overrides)
+    if payload.get("surface") == "mobile" and "game_context" not in overrides:
+        payload.pop("game_context")
     return payload
 
 
