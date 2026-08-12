@@ -177,6 +177,25 @@ class EpisodicMemoryModel(Base):
     embedding_model: Mapped[str | None] = mapped_column(String(128))
 
 
+class OfflineTaskPolicyModel(Base):
+    __tablename__ = "offline_task_policies"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_type",
+            "item_id",
+            name="uq_offline_task_policies_task_item",
+        ),
+    )
+
+    policy_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    task_type: Mapped[str] = mapped_column(String(16), index=True)
+    item_id: Mapped[str] = mapped_column(
+        ForeignKey("items.item_id"),
+        index=True,
+    )
+    seconds_per_item: Mapped[float] = mapped_column()
+
+
 class OfflineTaskModel(Base):
     __tablename__ = "offline_tasks"
     __table_args__ = (
@@ -211,3 +230,4 @@ class OfflineTaskModel(Base):
     creation_request_id: Mapped[str] = mapped_column(String(128))
     quantity: Mapped[int | None] = mapped_column(Integer)
     result_quantity: Mapped[int | None] = mapped_column(Integer)
+    seconds_per_item: Mapped[float | None] = mapped_column()

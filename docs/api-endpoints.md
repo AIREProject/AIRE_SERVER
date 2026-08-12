@@ -38,6 +38,7 @@ Chat과 Situation의 같은 `request_id` 재전송은 멱등하지 않습니다.
 | POST | `/api/v1/tasks/{id}/complete` | GameClient 작업 완료 |
 | POST | `/api/v1/tasks/{id}/claim` | GameClient 작업 수령 상태 전환 |
 | POST | `/api/v1/tasks/{id}/collect` | WebClient 시간 경과 작업 완료 |
+| DELETE | `/api/v1/tasks/{id}` | WebClient 미정산 예약 취소 |
 | `/api/v1/devices/*` | 여러 Method | 기존 random token/pairing 호환 경로 |
 | `/api/v1/admin/*` | 여러 Method | 운영자 CRUD, `ADMIN_API_TOKEN` 필요 |
 
@@ -201,6 +202,7 @@ X-Request-ID: situation-1
 | 완료 | `AIRE_GAME` |
 | Claim | `AIRE_GAME` |
 | Collect | `AIRE_WEB` |
+| 삭제 | `AIRE_WEB` |
 
 ### 6.2 생성
 
@@ -224,6 +226,9 @@ X-Request-ID: task-create-1
 Task type은 `Gathering`, `Crafting`, `Scouting`, 상태는 `Pending`, `InProgress`,
 `Completed`, `Claimed`입니다.
 
+`quantity`가 있는 시간 기반 Task는 생성 즉시 `InProgress`로 시작합니다. 수량 없는 legacy
+Task만 `Pending`으로 시작해 GameClient의 `/start`를 기다립니다.
+
 ### 6.3 목록
 
 ```http
@@ -232,6 +237,15 @@ Authorization: Bearer AIRE_WEB
 ```
 
 선택 query `status=InProgress`처럼 상태를 필터링할 수 있습니다.
+
+`InProgress` 수량 Task의 `progress_quantity`는 조회 시점 서버 시간으로 계산한 정수 완성
+수량입니다. GET은 상태나 DB 결과를 변경하지 않으므로 Web은 polling 없이 명시적 새로고침에서
+현재 수량만 확인할 수 있습니다.
+
+수량 Task의 `/complete` 또는 `/collect` 시 첫 단위 시간도 충족되지 않았다면 상태는
+`InProgress`, `progress_quantity=0`, `result_quantity=null`을 유지합니다. 이후 UE 실행이나
+명시적 동기화에서 다시 계산하며 Inventory 적용과 Claim은 수행하지 않습니다. 한 개 이상
+완성된 경우에만 정수 완성 수량을 확정하고 `Completed`로 전환합니다.
 
 ### 6.4 상태 전환
 
@@ -242,8 +256,40 @@ POST /api/v1/tasks/{task_id}/claim
 POST /api/v1/tasks/{task_id}/collect
 ```
 
+`AIRE_WEB`은 자기 프로필의 `Pending` 또는 `InProgress` 작업만 다음 경로로 삭제할 수
+있습니다. `Completed`와 `Claimed`는 UE Inventory 정산과 충돌할 수 있으므로 `409`로
+거부하고, 다른 프로필 또는 존재하지 않는 Task는 `404`로 응답합니다.
+
+```text
+DELETE /api/v1/tasks/{task_id}
+```
+
 현재 Claim은 서버 상태 전환입니다. UE Inventory에 보상을 정확히 한 번 적용하는 settlement
 receipt API는 아직 없습니다.
+
+### 6.5 관리자 작업 시간 정책
+
+Swagger의 Admin 경로에서 `ADMIN_API_TOKEN`으로 인증한 뒤 지원 Offline Task의 개당 현실
+시간을 조회·수정할 수 있습니다.
+
+```text
+GET   /api/v1/admin/offline-task-policies
+GET   /api/v1/admin/offline-task-policies/{policy_id}
+PATCH /api/v1/admin/offline-task-policies/{policy_id}
+```
+
+기본 `policy_id`는 `gathering-plant-stem`과 `crafting-shoddy-bandage`이며 각각 5초/개,
+10초/개입니다. PATCH body는 다음과 같습니다.
+
+```json
+{
+  "seconds_per_item": 10
+}
+```
+
+허용 범위는 `0초 초과, 86400초 이하`입니다. Task 생성 시점의 정책값을
+`offline_tasks.seconds_per_item`에 snapshot하므로 정책 변경은 이후 생성 Task에만 적용되고
+이미 존재하는 Task의 계산은 바뀌지 않습니다.
 
 ## 7. 기존 Device/Pairing 경로
 

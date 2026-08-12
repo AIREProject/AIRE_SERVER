@@ -37,6 +37,18 @@ def test_offline_task_migration_creates_scoped_table(tmp_path, monkeypatch) -> N
             for row in connection.execute("PRAGMA index_list(offline_tasks)")
             if row[2]
         }
+        policy_columns = {
+            row[1]: (row[2], row[3])
+            for row in connection.execute(
+                "PRAGMA table_info(offline_task_policies)"
+            )
+        }
+        policies = list(
+            connection.execute(
+                "SELECT policy_id, task_type, item_id, seconds_per_item "
+                "FROM offline_task_policies ORDER BY policy_id"
+            )
+        )
 
     assert columns["task_id"] == ("VARCHAR(128)", 1)
     assert columns["item_id"] == ("VARCHAR(128)", 0)
@@ -45,9 +57,16 @@ def test_offline_task_migration_creates_scoped_table(tmp_path, monkeypatch) -> N
     assert columns["started_at"] == ("DATETIME", 1)
     assert columns["quantity"] == ("INTEGER", 0)
     assert columns["result_quantity"] == ("INTEGER", 0)
+    assert columns["seconds_per_item"] == ("FLOAT", 0)
     assert foreign_keys == {"profiles", "save_slots", "devices", "items"}
     assert [
         "profile_id",
         "save_slot_row_id",
         "creation_request_id",
     ] in unique_indexes.values()
+    assert policy_columns["policy_id"] == ("VARCHAR(128)", 1)
+    assert policy_columns["seconds_per_item"] == ("FLOAT", 1)
+    assert policies == [
+        ("crafting-shoddy-bandage", "Crafting", "ShoddyBandage", 10.0),
+        ("gathering-plant-stem", "Gathering", "PlantStem", 5.0),
+    ]

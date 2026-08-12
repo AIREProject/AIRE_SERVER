@@ -32,6 +32,8 @@ from app.admin_models import (
     LocationCreateRequest,
     LocationResponse,
     LocationUpdateRequest,
+    OfflineTaskPolicyResponse,
+    OfflineTaskPolicyUpdateRequest,
     PairingCodeCreateRequest,
     PairingCodeUpdateRequest,
     ProfileCreateRequest,
@@ -562,6 +564,56 @@ async def update_episodic_memory(
 @router.delete("/episodic-memories/{row_id}", status_code=204)
 async def delete_episodic_memory(row_id: str, session: DatabaseSession) -> None:
     await _episodic_memories_service(session).delete_resource(row_id)
+
+
+# --- offline-task-policies ------------------------------------------------------------
+
+
+def _offline_task_policies_service(
+    session: DatabaseSession,
+) -> AdminCrudService[OfflineTaskPolicyResponse]:
+    return AdminCrudService(
+        ADMIN_RESOURCES_BY_NAME["offline-task-policies"],
+        AdminRepository(session),
+    )
+
+
+@router.get(
+    "/offline-task-policies",
+    response_model=list[OfflineTaskPolicyResponse],
+)
+async def list_offline_task_policies(
+    session: DatabaseSession,
+    limit: Limit = 50,
+    offset: Offset = 0,
+) -> list[OfflineTaskPolicyResponse]:
+    return await _offline_task_policies_service(session).list_resources(
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/offline-task-policies/{policy_id}",
+    response_model=OfflineTaskPolicyResponse,
+)
+async def get_offline_task_policy(
+    policy_id: str,
+    session: DatabaseSession,
+) -> OfflineTaskPolicyResponse:
+    return await _offline_task_policies_service(session).get_resource(policy_id)
+
+
+@router.patch(
+    "/offline-task-policies/{policy_id}",
+    response_model=OfflineTaskPolicyResponse,
+)
+async def update_offline_task_policy(
+    policy_id: str,
+    body: OfflineTaskPolicyUpdateRequest,
+    session: DatabaseSession,
+) -> OfflineTaskPolicyResponse:
+    return await _offline_task_policies_service(session).update_resource(policy_id, body)
 
 
 # --- offline-tasks --------------------------------------------------------------------

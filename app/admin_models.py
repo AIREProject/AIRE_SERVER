@@ -209,6 +209,32 @@ class RecipeResponse(StrictModel):
     ingredients: list[IngredientPayload]
 
 
+# --- offline_task_policies -----------------------------------------------------------
+
+
+class OfflineTaskPolicyCreateRequest(StrictModel):
+    policy_id: StableId
+    task_type: OfflineTaskType
+    item_id: StableId
+    seconds_per_item: float = Field(gt=0, le=86400, allow_inf_nan=False)
+
+
+class OfflineTaskPolicyUpdateRequest(StrictModel):
+    seconds_per_item: float | None = Field(
+        default=None,
+        gt=0,
+        le=86400,
+        allow_inf_nan=False,
+    )
+
+
+class OfflineTaskPolicyResponse(StrictModel):
+    policy_id: StableId
+    task_type: OfflineTaskType
+    item_id: StableId
+    seconds_per_item: float
+
+
 # --- smelting_recipes ----------------------------------------------------------------
 
 
@@ -339,6 +365,12 @@ class AdminOfflineTaskCreateRequest(StrictModel):
     creation_request_id: StableId
     quantity: int | None = None
     result_quantity: int | None = None
+    seconds_per_item: float | None = Field(
+        default=None,
+        gt=0,
+        le=86400,
+        allow_inf_nan=False,
+    )
 
 
 class AdminOfflineTaskUpdateRequest(StrictModel):
@@ -362,3 +394,4 @@ class AdminOfflineTaskResponse(StrictModel):
     creation_request_id: StableId
     quantity: int | None = None
     result_quantity: int | None = None
+    seconds_per_item: float | None = None

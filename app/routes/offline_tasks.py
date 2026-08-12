@@ -68,6 +68,15 @@ async def list_tasks(
     )
 
 
+@router.delete("/{task_id}", status_code=204)
+async def delete_task(
+    task_id: str,
+    identity: Annotated[AuthenticatedDevice, Depends(get_authenticated_device)],
+    session: DatabaseSession,
+) -> None:
+    await _service(session).delete(task_id, identity)
+
+
 @router.post("/{task_id}/start", response_model=OfflineTaskResponse)
 async def start_task(
     task_id: str,

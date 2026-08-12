@@ -1,4 +1,4 @@
-"""관리자 CRUD — 11개 테이블의 create/get/update/delete 순환.
+"""관리자 CRUD와 Offline Task 정책 운영 경계 검증.
 
 `AdminCrudService`(app/admin_service.py)는 테이블 이름을 모르는 공용 엔진이므로, 여기서는
 그 엔진이 각 테이블의 스펙(app/admin_registry.py)과 스키마(app/admin_models.py)를 통해
@@ -12,7 +12,13 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.db.models import DeviceModel, ItemModel, ProfileModel, SaveSlotModel
+from app.db.models import (
+    DeviceModel,
+    ItemModel,
+    OfflineTaskPolicyModel,
+    ProfileModel,
+    SaveSlotModel,
+)
 from app.main import create_app
 from tests.conftest import make_database, make_settings
 
@@ -58,6 +64,41 @@ async def seeded() -> Any:
                 aliases=[],
                 description="테스트용 아이템.",
             )
+        )
+        session.add_all(
+            [
+                ItemModel(
+                    item_id="PlantStem",
+                    item_type="Material",
+                    name_ko="나무",
+                    aliases=[],
+                    description="Offline Task 정책 테스트용 아이템.",
+                ),
+                ItemModel(
+                    item_id="ShoddyBandage",
+                    item_type="Consumable",
+                    name_ko="엉성한 붕대",
+                    aliases=[],
+                    description="Offline Task 정책 테스트용 아이템.",
+                ),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                OfflineTaskPolicyModel(
+                    policy_id="gathering-plant-stem",
+                    task_type="Gathering",
+                    item_id="PlantStem",
+                    seconds_per_item=5.0,
+                ),
+                OfflineTaskPolicyModel(
+                    policy_id="crafting-shoddy-bandage",
+                    task_type="Crafting",
+                    item_id="ShoddyBandage",
+                    seconds_per_item=10.0,
+                ),
+            ]
         )
         await session.commit()
     with TestClient(create_app(settings)) as client:
@@ -354,3 +395,45 @@ def test_offline_task_crud_cycle(seeded: Any) -> None:
 
     deleted = client.delete("/api/v1/admin/offline-tasks/task1", headers=HEADERS)
     assert deleted.status_code == 204
+
+
+def test_offline_task_policy_list_get_and_update(seeded: Any) -> None:
+    client, _ids = seeded
+
+    unauthorized = client.get("/api/v1/admin/offline-task-policies")
+    listed = client.get("/api/v1/admin/offline-task-policies", headers=HEADERS)
+    fetched = client.get(
+        "/api/v1/admin/offline-task-policies/gathering-plant-stem",
+        headers=HEADERS,
+    )
+    updated = client.patch(
+        "/api/v1/admin/offline-task-policies/gathering-plant-stem",
+        headers=HEADERS,
+        json={"seconds_per_item": 7.5},
+    )
+    invalid = client.patch(
+        "/api/v1/admin/offline-task-policies/gathering-plant-stem",
+        headers=HEADERS,
+        json={"seconds_per_item": 0},
+    )
+
+    assert unauthorized.status_code == 401
+    assert listed.status_code == 200
+    assert {row["policy_id"] for row in listed.json()} == {
+        "gathering-plant-stem",
+        "crafting-shoddy-bandage",
+    }
+    assert fetched.status_code == 200
+    assert fetched.json()["seconds_per_item"] == 5.0
+    assert updated.status_code == 200
+    assert updated.json()["seconds_per_item"] == 7.5
+    assert invalid.status_code == 400
+
+
+def test_offline_task_policy_routes_are_exposed_in_openapi(seeded: Any) -> None:
+    client, _ids = seeded
+    paths = client.get("/openapi.json").json()["paths"]
+
+    assert "get" in paths["/api/v1/admin/offline-task-policies"]
+    policy_path = paths["/api/v1/admin/offline-task-policies/{policy_id}"]
+    assert {"get", "patch"}.issubset(policy_path)

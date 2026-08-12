@@ -3,10 +3,15 @@
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, select, update
+from sqlalchemy import CursorResult, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ItemModel, OfflineTaskModel, SaveSlotModel
+from app.db.models import (
+    ItemModel,
+    OfflineTaskModel,
+    OfflineTaskPolicyModel,
+    SaveSlotModel,
+)
 from app.db.save_slot_repository import SaveSlotRepository
 
 
@@ -50,6 +55,22 @@ class SqlAlchemyOfflineTaskRepository:
                 OfflineTaskModel.profile_id == profile_id,
                 OfflineTaskModel.save_slot_row_id == save_slot_row_id,
                 OfflineTaskModel.creation_request_id == request_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def find_policy(
+        self,
+        *,
+        task_type: str,
+        item_id: str | None,
+    ) -> OfflineTaskPolicyModel | None:
+        if item_id is None:
+            return None
+        result = await self._session.execute(
+            select(OfflineTaskPolicyModel).where(
+                OfflineTaskPolicyModel.task_type == task_type,
+                OfflineTaskPolicyModel.item_id == item_id,
             )
         )
         return result.scalar_one_or_none()
@@ -107,6 +128,25 @@ class SqlAlchemyOfflineTaskRepository:
                     OfflineTaskModel.status == expected_status,
                 )
                 .values(status=new_status, **extra_values)
+            ),
+        )
+        return result.rowcount == 1
+
+    async def delete_owned_if_status(
+        self,
+        *,
+        task_id: str,
+        profile_id: str,
+        allowed_statuses: tuple[str, ...],
+    ) -> bool:
+        result = cast(
+            "CursorResult[Any]",
+            await self._session.execute(
+                delete(OfflineTaskModel).where(
+                    OfflineTaskModel.task_id == task_id,
+                    OfflineTaskModel.profile_id == profile_id,
+                    OfflineTaskModel.status.in_(allowed_statuses),
+                )
             ),
         )
         return result.rowcount == 1

@@ -1,0 +1,56 @@
+[project]
+name = "ai-companion-server"
+version = "0.1.0"
+description = "Mako companion server: a thin HTTP/WebSocket edge around the Mako companion brain"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "aiosqlite>=0.20,<1.0",
+    "alembic>=1.14,<2.0",
+    "fastapi>=0.115,<1.0",
+    "langgraph>=1.2.9",
+    "openai>=1.68,<2.0",
+    "pydantic>=2.10,<3.0",
+    "pydantic-settings>=2.7,<3.0",
+    "sqlalchemy[asyncio]>=2.0,<3.0",
+    "uvicorn[standard]>=0.34,<1.0",
+]
+
+[dependency-groups]
+dev = [
+    # starlette 의 TestClient 가 요구한다. 런타임 코드는 httpx 를 쓰지 않는다.
+    "httpx>=0.28,<1.0",
+    "mypy>=1.14",
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.9",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = ["live_llm: requires RUN_LIVE_LLM=1 and a configured OpenAI API key"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "C4", "PTH", "N", "T20", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# 실서버 수동 검증 스크립트. 콘솔 출력이 결과물 자체라 T20(print 금지)을 면제한다.
+# 서버 코드가 아니므로 mypy 대상(files=)에도 들어 있지 않다.
+"scripts/*.py" = ["T20"]
+
+[tool.mypy]
+python_version = "3.13"
+plugins = ["pydantic.mypy"]
+strict = true
+# 인자 없이 `mypy` 로 돌려도 패키지 전체를 본다.
+files = ["app"]

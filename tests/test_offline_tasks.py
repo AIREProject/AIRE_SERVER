@@ -9,7 +9,13 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from app.credentials import CredentialProtector
-from app.db.models import DeviceModel, ItemModel, OfflineTaskModel, ProfileModel
+from app.db.models import (
+    DeviceModel,
+    ItemModel,
+    OfflineTaskModel,
+    OfflineTaskPolicyModel,
+    ProfileModel,
+)
 from app.identity import DeviceRole
 from app.main import create_app
 from tests.conftest import make_authenticated_device, make_database, make_settings
@@ -58,7 +64,10 @@ async def _make_device(
 
 @pytest.fixture
 async def task_clients() -> Any:
-    settings = make_settings(llm_provider="mock")
+    settings = make_settings(
+        llm_provider="mock",
+        admin_api_token="admin-secret-for-tests",
+    )
     database = await make_database(settings)
     game_identity, game_token = await make_authenticated_device(database, PROTECTOR)
     web_token = await _make_device(
@@ -68,14 +77,47 @@ async def task_clients() -> Any:
         database, PROTECTOR, role=DeviceRole.WEB_CLIENT
     )
     async with database.session_factory() as session:
-        session.add(
-            ItemModel(
-                item_id="Branch",
-                item_type="Material",
-                name_ko="나뭇가지",
-                aliases=["나뭇가지"],
-                description="나무에서 떨어진 가지.",
-            )
+        session.add_all(
+            [
+                ItemModel(
+                    item_id="Branch",
+                    item_type="Material",
+                    name_ko="나뭇가지",
+                    aliases=["나뭇가지"],
+                    description="나무에서 떨어진 가지.",
+                ),
+                ItemModel(
+                    item_id="PlantStem",
+                    item_type="Material",
+                    name_ko="나무",
+                    aliases=[],
+                    description="Offline Task 정책 테스트용 아이템.",
+                ),
+                ItemModel(
+                    item_id="ShoddyBandage",
+                    item_type="Consumable",
+                    name_ko="엉성한 붕대",
+                    aliases=[],
+                    description="Offline Task 정책 테스트용 아이템.",
+                ),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                OfflineTaskPolicyModel(
+                    policy_id="gathering-plant-stem",
+                    task_type="Gathering",
+                    item_id="PlantStem",
+                    seconds_per_item=5.0,
+                ),
+                OfflineTaskPolicyModel(
+                    policy_id="crafting-shoddy-bandage",
+                    task_type="Crafting",
+                    item_id="ShoddyBandage",
+                    seconds_per_item=10.0,
+                ),
+            ]
         )
         await session.commit()
     with TestClient(create_app(settings)) as client:
@@ -87,6 +129,9 @@ async def task_clients() -> Any:
             "other_game_token": other_game_token,
             "profile_id": game_identity.profile_id,
             "other_profile_id": other_identity.profile_id,
+            "admin_headers": {
+                "Authorization": "Bearer admin-secret-for-tests",
+            },
         }
 
 
@@ -185,6 +230,108 @@ def test_task_creation_is_idempotent_for_same_scope(task_clients: Any) -> None:
     assert first.status_code == 200
     assert second.status_code == 200
     assert second.json()["task"]["task_id"] == first.json()["task"]["task_id"]
+
+
+async def test_quantity_task_starts_immediately_and_reports_live_progress(
+    task_clients: Any,
+) -> None:
+    client = task_clients["client"]
+    web_headers = _headers(task_clients["web_token"])
+    created = client.post(
+        "/api/v1/tasks",
+        headers=web_headers,
+        json={
+            "request_id": "task-live-progress",
+            "save_slot_id": "slot-a",
+            "task_type": "Gathering",
+            "item_id": "PlantStem",
+            "quantity": 10,
+        },
+    )
+
+    assert created.status_code == 200
+    task = created.json()["task"]
+    assert task["status"] == "InProgress"
+    assert task["progress_quantity"] == 0
+    task_id = task["task_id"]
+
+    await _force_task_state(
+        task_clients["database"],
+        task_id,
+        status="InProgress",
+        quantity=10,
+        started_at=datetime.now(UTC) - timedelta(seconds=12),
+    )
+    listed = client.get(
+        "/api/v1/tasks",
+        headers=web_headers,
+        params={"save_slot_id": "slot-a"},
+    )
+
+    assert listed.status_code == 200
+    live_task = next(
+        value for value in listed.json()["tasks"] if value["task_id"] == task_id
+    )
+    assert live_task["status"] == "InProgress"
+    assert live_task["progress_quantity"] == 2
+    assert live_task["result_quantity"] is None
+
+
+def test_web_deletes_owned_pending_and_in_progress_tasks(task_clients: Any) -> None:
+    client = task_clients["client"]
+    web_headers = _headers(task_clients["web_token"])
+    game_headers = _headers(task_clients["game_token"])
+
+    pending_id = _create_gathering_task(client, web_headers, "task-delete-pending")
+    in_progress_id = _create_gathering_task(
+        client, web_headers, "task-delete-in-progress"
+    )
+    started = client.post(f"/api/v1/tasks/{in_progress_id}/start", headers=game_headers)
+    assert started.status_code == 200
+
+    pending_delete = client.delete(
+        f"/api/v1/tasks/{pending_id}",
+        headers={**web_headers, "X-Request-ID": "task-delete-pending-request"},
+    )
+    in_progress_delete = client.delete(
+        f"/api/v1/tasks/{in_progress_id}",
+        headers={**web_headers, "X-Request-ID": "task-delete-progress-request"},
+    )
+
+    assert pending_delete.status_code == 204
+    assert pending_delete.headers["X-Request-ID"] == "task-delete-pending-request"
+    assert in_progress_delete.status_code == 204
+    listed = client.get(
+        "/api/v1/tasks",
+        headers=web_headers,
+        params={"save_slot_id": "slot-a"},
+    )
+    assert listed.status_code == 200
+    assert listed.json()["tasks"] == []
+
+
+def test_task_delete_enforces_role_owner_and_terminal_state(task_clients: Any) -> None:
+    client = task_clients["client"]
+    web_headers = _headers(task_clients["web_token"])
+    game_headers = _headers(task_clients["game_token"])
+    other_headers = _headers(task_clients["other_game_token"])
+    task_id = _create_gathering_task(client, web_headers, "task-delete-guards")
+
+    assert client.delete(f"/api/v1/tasks/{task_id}", headers=game_headers).status_code == 403
+    assert client.delete(f"/api/v1/tasks/{task_id}", headers=other_headers).status_code == 404
+
+    assert client.post(f"/api/v1/tasks/{task_id}/start", headers=game_headers).status_code == 200
+    assert client.post(f"/api/v1/tasks/{task_id}/complete", headers=game_headers).status_code == 200
+    terminal_delete = client.delete(f"/api/v1/tasks/{task_id}", headers=web_headers)
+
+    assert terminal_delete.status_code == 409
+    listed = client.get(
+        "/api/v1/tasks",
+        headers=web_headers,
+        params={"save_slot_id": "slot-a"},
+    )
+    assert listed.status_code == 200
+    assert [task["task_id"] for task in listed.json()["tasks"]] == [task_id]
 
 
 def test_roles_and_transitions_are_enforced(task_clients: Any) -> None:
@@ -301,6 +448,76 @@ async def test_list_shows_live_progress_without_mutating_status(task_clients: An
         assert task["result_quantity"] is None
 
 
+async def test_policy_update_affects_only_new_tasks(task_clients: Any) -> None:
+    client = task_clients["client"]
+    web_headers = _headers(task_clients["web_token"])
+    game_headers = _headers(task_clients["game_token"])
+
+    first = client.post(
+        "/api/v1/tasks",
+        headers=web_headers,
+        json={
+            "request_id": "task-policy-snapshot-old",
+            "save_slot_id": "slot-a",
+            "task_type": "Gathering",
+            "item_id": "PlantStem",
+            "quantity": 10,
+        },
+    )
+    assert first.status_code == 200
+    first_task_id = first.json()["task"]["task_id"]
+
+    updated = client.patch(
+        "/api/v1/admin/offline-task-policies/gathering-plant-stem",
+        headers=task_clients["admin_headers"],
+        json={"seconds_per_item": 1.0},
+    )
+    assert updated.status_code == 200
+
+    second = client.post(
+        "/api/v1/tasks",
+        headers=web_headers,
+        json={
+            "request_id": "task-policy-snapshot-new",
+            "save_slot_id": "slot-a",
+            "task_type": "Gathering",
+            "item_id": "PlantStem",
+            "quantity": 10,
+        },
+    )
+    assert second.status_code == 200
+    second_task_id = second.json()["task"]["task_id"]
+
+    await _force_task_state(
+        task_clients["database"],
+        first_task_id,
+        status="InProgress",
+        quantity=10,
+        started_at=datetime.now(UTC) - timedelta(seconds=12),
+    )
+    await _force_task_state(
+        task_clients["database"],
+        second_task_id,
+        status="InProgress",
+        quantity=10,
+        started_at=datetime.now(UTC) - timedelta(seconds=3),
+    )
+
+    first_completed = client.post(
+        f"/api/v1/tasks/{first_task_id}/complete",
+        headers=game_headers,
+    )
+    second_completed = client.post(
+        f"/api/v1/tasks/{second_task_id}/complete",
+        headers=game_headers,
+    )
+
+    assert first_completed.status_code == 200
+    assert first_completed.json()["task"]["result_quantity"] == 2
+    assert second_completed.status_code == 200
+    assert second_completed.json()["task"]["result_quantity"] == 3
+
+
 async def test_mobile_collect_finalizes_partial_progress_immediately(task_clients: Any) -> None:
     client = task_clients["client"]
     web_headers = _headers(task_clients["web_token"])
@@ -320,6 +537,31 @@ async def test_mobile_collect_finalizes_partial_progress_immediately(task_client
     task = collected.json()["task"]
     assert task["status"] == "Completed"
     assert task["result_quantity"] == 4
+
+
+async def test_first_unit_not_ready_stays_in_progress(task_clients: Any) -> None:
+    client = task_clients["client"]
+    web_headers = _headers(task_clients["web_token"])
+    game_headers = _headers(task_clients["game_token"])
+    task_id = _create_gathering_task(client, web_headers, "task-before-first-unit")
+    await _force_task_state(
+        task_clients["database"],
+        task_id,
+        status="InProgress",
+        quantity=5,
+        started_at=datetime.now(UTC) - timedelta(minutes=5),
+    )
+
+    completed = client.post(
+        f"/api/v1/tasks/{task_id}/complete",
+        headers=game_headers,
+    )
+
+    assert completed.status_code == 200
+    task = completed.json()["task"]
+    assert task["status"] == "InProgress"
+    assert task["progress_quantity"] == 0
+    assert task["result_quantity"] is None
 
 
 async def test_game_complete_applies_same_elapsed_calc_for_quantity_tasks(

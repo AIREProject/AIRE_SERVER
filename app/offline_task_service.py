@@ -25,9 +25,8 @@ from app.offline_task_models import (
     OfflineTaskView,
 )
 
-# 채팅으로 자동 시작된(quantity가 채워진) 작업의 아이템 1개당 소요시간.
-# Gathering은 고정값(의도적으로 느리게), Crafting은 레시피 duration_seconds에 60을 곱해
-# 인게임보다 훨씬 느리게 만든다 — 둘 다 자동/오프라인 처리를 일부러 불리하게 두는 정책이다.
+# 정책 migration 이전 Task나 정책 행이 없는 콘텐츠에만 쓰는 legacy fallback.
+# 새 지원 Task는 offline_task_policies 값을 seconds_per_item에 snapshot해 계산한다.
 _GATHER_SECONDS_PER_ITEM = 600.0
 
 
@@ -89,9 +88,20 @@ class OfflineTaskService:
                 request_id=request.request_id,
                 task=await self._view(existing, request.save_slot_id),
             )
+        policy = await self._repository.find_policy(
+            task_type=request.task_type.value,
+            item_id=request.item_id,
+        )
+        seconds_per_item = (
+            policy.seconds_per_item
+            if policy is not None
+            else _seconds_per_item(request.task_type, request.item_id)
+        )
         now = datetime.now(UTC)
         initial_status = (
-            OfflineTaskStatus.IN_PROGRESS if auto_start else OfflineTaskStatus.PENDING
+            OfflineTaskStatus.IN_PROGRESS
+            if auto_start or request.quantity is not None
+            else OfflineTaskStatus.PENDING
         )
         task = await self._repository.create_task(
             task_id=f"task-{uuid4()}",
@@ -104,6 +114,7 @@ class OfflineTaskService:
             started_at=now,
             creation_request_id=request.request_id,
             quantity=request.quantity,
+            seconds_per_item=seconds_per_item,
         )
         try:
             await self._repository.commit()
@@ -206,6 +217,32 @@ class OfflineTaskService:
         self._require_web(identity)
         return await self._finalize_in_progress(request_id, task_id, identity)
 
+    async def delete(self, task_id: str, identity: AuthenticatedDevice) -> None:
+        """모바일 소유자가 아직 정산되지 않은 예약 작업을 취소한다."""
+
+        self._require_web(identity)
+        task = await self._repository.get_owned_task(
+            task_id=task_id, profile_id=identity.profile_id
+        )
+        if task is None:
+            raise OfflineTaskNotFoundError
+
+        cancellable_statuses = (
+            OfflineTaskStatus.PENDING.value,
+            OfflineTaskStatus.IN_PROGRESS.value,
+        )
+        if task.status not in cancellable_statuses:
+            raise OfflineTaskTransitionError
+
+        deleted = await self._repository.delete_owned_if_status(
+            task_id=task_id,
+            profile_id=identity.profile_id,
+            allowed_statuses=cancellable_statuses,
+        )
+        if not deleted:
+            raise OfflineTaskTransitionError
+        await self._repository.commit()
+
     async def _finalize_in_progress(
         self,
         request_id: str,
@@ -222,14 +259,22 @@ class OfflineTaskService:
             raise OfflineTaskNotFoundError
         if task.status != OfflineTaskStatus.IN_PROGRESS.value:
             raise OfflineTaskTransitionError
-        rate = _seconds_per_item(OfflineTaskType(task.task_type), task.item_id)
-        if rate is None:
+        rate = self._task_seconds_per_item(task)
+        if rate is None or rate <= 0:
             raise OfflineTaskInvalidRequestError(
                 "No duration model exists for this task type yet."
             )
         requested = task.quantity if task.quantity is not None else MAX_GATHER_QUANTITY
         elapsed_seconds = (datetime.now(UTC) - self._as_utc(task.started_at)).total_seconds()
         result_quantity = min(requested, int(elapsed_seconds // rate))
+        if result_quantity == 0:
+            slot = await self._repository.find_slot_by_row_id(task.save_slot_row_id)
+            if slot is None:
+                raise OfflineTaskNotFoundError
+            return OfflineTaskResponse(
+                request_id=request_id,
+                task=await self._view(task, slot.save_slot_id),
+            )
         changed = await self._repository.transition(
             task_id=task_id,
             profile_id=identity.profile_id,
@@ -292,8 +337,8 @@ class OfflineTaskService:
     async def _view(self, task: OfflineTaskModel, save_slot_id: str) -> OfflineTaskView:
         progress_quantity: int | None = None
         if task.status == OfflineTaskStatus.IN_PROGRESS.value and task.quantity is not None:
-            rate = _seconds_per_item(OfflineTaskType(task.task_type), task.item_id)
-            if rate is not None:
+            rate = self._task_seconds_per_item(task)
+            if rate is not None and rate > 0:
                 elapsed_seconds = (
                     datetime.now(UTC) - self._as_utc(task.started_at)
                 ).total_seconds()
@@ -309,6 +354,12 @@ class OfflineTaskService:
             result_quantity=task.result_quantity,
             progress_quantity=progress_quantity,
         )
+
+    @staticmethod
+    def _task_seconds_per_item(task: OfflineTaskModel) -> float | None:
+        if task.seconds_per_item is not None:
+            return task.seconds_per_item
+        return _seconds_per_item(OfflineTaskType(task.task_type), task.item_id)
 
     @staticmethod
     def _validate_item(task_type: OfflineTaskType, item_id: str | None) -> None:

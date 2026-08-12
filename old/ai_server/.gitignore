@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.py[cod]
+*.egg-info/
+.env
+*.db
+coverage.xml
+htmlcov/
+*.db-shm
+*.db-wal
+# 장기기억(LONG_TERM_MEMORY_DIR)과 대화 전사(TRANSCRIPT_DIR). 플레이어와 나눈 말에서
+# 나온 내용이라 커밋하지 않는다.
+data/

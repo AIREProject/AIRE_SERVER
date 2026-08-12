@@ -1,0 +1,109 @@
+﻿CREATE TABLE `단기 기억 및 대화 버퍼` (
+	`PK`	int	NOT NULL	DEFAULT AUTO_INCREASE,
+	`발화자`	ENUM	NOT NULL	DEFAULT user	COMMENT 'user, ai',
+	`메세지 내용`	TEXT	NULL,
+	`생성일`	DATETIME	NOT NULL	DEFAULT current_time	COMMENT '현재 시간'
+);
+
+CREATE TABLE `장기기억` (
+	`PK`	int	NOT NULL	DEFAULT AUTO_INCREASE,
+	`이벤트 요약`	TEXT	NOT NULL,
+	`중요도`	int	NULL	DEFAULT 1	COMMENT '1~10',
+	`발생 시간`	DATETIME	NOT NULL	DEFAULT current_time,
+	`백터 데이터`	JSON	NULL
+);
+
+CREATE TABLE `적군` (
+	`PK`	int	NOT NULL	DEFAULT AUTO_INCREASE,
+	`이름`	varchar(50)	NOT NULL,
+	`설명`	TEXT	NULL,
+	`약점`	JSON	NULL
+);
+
+CREATE TABLE `아이템` (
+	`PK`	int	NOT NULL	DEFAULT AUTO_INCREASE,
+	`이름`	varchar(50)	NOT NULL,
+	`설명`	TEXT	NULL
+);
+
+CREATE TABLE `위치` (
+	`PK`	int	NOT NULL	DEFAULT AUTO_INCREASE,
+	`FK`	int	NULL	DEFAULT AUTO_INCREASE,
+	`FK1`	int	NULL	DEFAULT AUTO_INCREASE,
+	`좌표`	JSON	NOT NULL
+);
+
+CREATE TABLE `오프라인 비동기 연동` (
+	`PK`	int	NOT NULL	DEFAULT AUTO_INCREASE,
+	`FK`	int	NOT NULL	DEFAULT AUTO_INCREASE,
+	`작업 종류`	ENUM	NOT NULL,
+	`상태`	ENUM	NOT NULL,
+	`작업 요청 시간`	DATETIME	NOT NULL
+);
+
+CREATE TABLE `레시피` (
+	`PK`	int	NOT NULL	DEFAULT AUTO_INCREASE,
+	`FK`	int	NOT NULL	DEFAULT AUTO_INCREASE,
+	`레시피`	JSON	NULL
+);
+
+ALTER TABLE `단기 기억 및 대화 버퍼` ADD CONSTRAINT `PK_단기 기억 및 대화 버퍼` PRIMARY KEY (
+	`PK`
+);
+
+ALTER TABLE `장기기억` ADD CONSTRAINT `PK_장기기억` PRIMARY KEY (
+	`PK`
+);
+
+ALTER TABLE `적군` ADD CONSTRAINT `PK_적군` PRIMARY KEY (
+	`PK`
+);
+
+ALTER TABLE `아이템` ADD CONSTRAINT `PK_아이템` PRIMARY KEY (
+	`PK`
+);
+
+ALTER TABLE `위치` ADD CONSTRAINT `PK_위치` PRIMARY KEY (
+	`PK`,
+	`FK`,
+	`FK1`
+);
+
+ALTER TABLE `오프라인 비동기 연동` ADD CONSTRAINT `PK_오프라인 비동기 연동` PRIMARY KEY (
+	`PK`,
+	`FK`
+);
+
+ALTER TABLE `레시피` ADD CONSTRAINT `PK_레시피` PRIMARY KEY (
+	`PK`,
+	`FK`
+);
+
+ALTER TABLE `위치` ADD CONSTRAINT `FK_적군_TO_위치_1` FOREIGN KEY (
+	`FK`
+)
+REFERENCES `적군` (
+	`PK`
+);
+
+ALTER TABLE `위치` ADD CONSTRAINT `FK_아이템_TO_위치_1` FOREIGN KEY (
+	`FK1`
+)
+REFERENCES `아이템` (
+	`PK`
+);
+
+ALTER TABLE `오프라인 비동기 연동` ADD CONSTRAINT `FK_아이템_TO_오프라인 비동기 연동_1` FOREIGN KEY (
+	`FK`
+)
+REFERENCES `아이템` (
+	`PK`
+);
+
+ALTER TABLE `레시피` ADD CONSTRAINT `FK_아이템_TO_레시피_1` FOREIGN KEY (
+	`FK`
+)
+REFERENCES `아이템` (
+	`PK`
+);
+

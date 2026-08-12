@@ -1,4 +1,4 @@
-"""관리자 CRUD 대상 11개 테이블을 한 곳에 배선한다.
+"""관리자 CRUD 대상 테이블을 한 곳에 배선한다.
 
 `admin_service.AdminCrudService` 는 여기 있는 스펙만 보고 동작하는 공용 엔진이다 — 새 테이블을
 추가하려면 스키마 3개(`app/admin_models.py`)를 쓰고 이 파일에 `AdminResourceSpec` 하나만
@@ -34,6 +34,9 @@ from app.admin_models import (
     LocationCreateRequest,
     LocationResponse,
     LocationUpdateRequest,
+    OfflineTaskPolicyCreateRequest,
+    OfflineTaskPolicyResponse,
+    OfflineTaskPolicyUpdateRequest,
     PairingCodeCreateRequest,
     PairingCodeUpdateRequest,
     ProfileCreateRequest,
@@ -56,6 +59,7 @@ from app.db.models import (
     ItemModel,
     LocationModel,
     OfflineTaskModel,
+    OfflineTaskPolicyModel,
     PairingCodeModel,
     ProfileModel,
     RecipeModel,
@@ -211,6 +215,14 @@ ADMIN_RESOURCES: tuple[AdminResourceSpec, ...] = (
         update_schema=EpisodicMemoryUpdateRequest,
         response_schema=EpisodicMemoryResponse,
         prepare_create=_stamp_created_at,
+    ),
+    AdminResourceSpec(
+        name="offline-task-policies",
+        model=OfflineTaskPolicyModel,
+        pk_field="policy_id",
+        create_schema=OfflineTaskPolicyCreateRequest,
+        update_schema=OfflineTaskPolicyUpdateRequest,
+        response_schema=OfflineTaskPolicyResponse,
     ),
     AdminResourceSpec(
         name="offline-tasks",
