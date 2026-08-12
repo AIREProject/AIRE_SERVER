@@ -22,6 +22,8 @@ from app.errors import (
     ErrorCode,
     ErrorEnvelope,
     ExpiredPairingCodeError,
+    GameStateNotFoundError,
+    GameStateVersionConflictError,
     IdentityScopeMismatchError,
     InvalidPairingCodeError,
     OfflineTaskInvalidRequestError,
@@ -140,6 +142,18 @@ APPLICATION_ERROR_MAP: dict[type[Exception], tuple[int, ErrorCode, str, bool]] =
         400,
         ErrorCode.UNKNOWN_COMPANION,
         "companion_id is not recognized.",
+        False,
+    ),
+    GameStateNotFoundError: (
+        404,
+        ErrorCode.GAME_STATE_NOT_FOUND,
+        "The requested Game State Snapshot was not found.",
+        False,
+    ),
+    GameStateVersionConflictError: (
+        409,
+        ErrorCode.GAME_STATE_VERSION_CONFLICT,
+        "The Game State version is not newer than the stored version.",
         False,
     ),
     UnauthorizedAdminError: (

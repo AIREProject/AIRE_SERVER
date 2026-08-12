@@ -39,6 +39,8 @@ Chat과 Situation의 같은 `request_id` 재전송은 멱등하지 않습니다.
 | POST | `/api/v1/tasks/{id}/claim` | GameClient 작업 수령 상태 전환 |
 | POST | `/api/v1/tasks/{id}/collect` | WebClient 시간 경과 작업 완료 |
 | DELETE | `/api/v1/tasks/{id}` | WebClient 미정산 예약 취소 |
+| PUT | `/api/v1/game-state` | GameClient가 마지막 승인 Game State Snapshot 저장 |
+| GET | `/api/v1/game-state` | GameClient/WebClient가 마지막 승인 Snapshot 조회 |
 | `/api/v1/devices/*` | 여러 Method | 기존 random token/pairing 호환 경로 |
 | `/api/v1/admin/*` | 여러 Method | 운영자 CRUD, `ADMIN_API_TOKEN` 필요 |
 
@@ -291,7 +293,122 @@ PATCH /api/v1/admin/offline-task-policies/{policy_id}
 `offline_tasks.seconds_per_item`에 snapshot하므로 정책 변경은 이후 생성 Task에만 적용되고
 이미 존재하는 Task의 계산은 바뀌지 않습니다.
 
-## 7. 기존 Device/Pairing 경로
+## 7. Game State Snapshot (AX-I09 local Review 계약)
+
+AX-I09의 다음 계약은 로컬 구현과 사전 배포 Review 기준입니다. 아직 공개 배포 서버의
+`/openapi.json`에는 이 경로가 없으며, 이 문서만으로 배포 런타임 지원을 주장하지 않습니다.
+서버 Snapshot은 UE가 검증하고 로컬 저장한 상태의 조회용 복사본이며 gameplay 실행 권위가
+아닙니다.
+
+### 7.1 역할과 Header
+
+| 동작 | Bearer | 요구 사항 |
+|---|---|---|
+| `PUT /api/v1/game-state` | `AIRE_GAME` | Snapshot 저장 |
+| `GET /api/v1/game-state?save_slot_id={id}&companion_id={id}` | `AIRE_GAME`, `AIRE_WEB` | 마지막 승인 Snapshot 읽기 |
+
+PUT은 `X-Request-ID`와 `X-Content-SHA256`을 모두 요구합니다. `X-Request-ID`는 body의
+`operation_id`와 정확히 같아야 합니다. `X-Content-SHA256`은 HTTP로 전송하는 **원문 JSON
+body의 정확한 UTF-8 bytes**를 SHA-256으로 계산한 64자리 소문자 hex입니다. JSON을 다시
+직렬화하거나 key 정렬·공백 정규화한 결과의 hash가 아닙니다. 누락, 형식 오류, body hash
+불일치와 request/operation ID 불일치는 `400 InvalidRequest`입니다.
+
+GET은 query의 `save_slot_id`와 `companion_id`로 scope를 지정합니다. 응답 상관관계용
+`X-Request-ID`를 보내지 않으면 서버가 생성합니다. 두 동작 모두 Bearer에서 해석한
+`profile_id`가 권위이며, 다른 role 또는 profile scope 접근은 기존 인증·scope 오류로
+거부합니다.
+
+### 7.2 PUT 요청
+
+```http
+PUT /api/v1/game-state
+Authorization: Bearer AIRE_GAME
+Content-Type: application/json
+X-Request-ID: state-sync-1
+X-Content-SHA256: <raw-body-utf8-sha256-lowercase-hex>
+```
+
+```json
+{
+  "schema_version": 1,
+  "content_version": 1,
+  "operation_id": "state-sync-1",
+  "state_version": 1,
+  "world_session_id": "world-session-1",
+  "captured_at": "2026-08-12T12:00:00Z",
+  "save_slot_id": "demo-slot-1",
+  "companion_id": "mako",
+  "inventory": {
+    "player": {
+      "capacity": 30,
+      "revision": 3,
+      "stacks": [
+        {"slot_index": 0, "item_id": "PlantStem", "count": 5},
+        {"slot_index": 100, "item_id": "ShoddyBandage", "count": 1}
+      ],
+      "equipment": {"equipped_item_id": null}
+    },
+    "containers": [
+      {
+        "container_id": "AIRE.Inventory.MAKO",
+        "capacity": 20,
+        "revision": 4,
+        "stacks": [],
+        "equipment": {"equipped_item_id": null}
+      },
+      {
+        "container_id": "AIRE.Inventory.SharedStorage",
+        "capacity": 50,
+        "revision": 2,
+        "stacks": [],
+        "equipment": {"equipped_item_id": null}
+      }
+    ]
+  }
+}
+```
+
+`schema_version`과 `content_version`은 현재 모두 `1`만 지원합니다. `state_version`은 1 이상의
+scope 내 단조 증가 정수이고, `captured_at`은 UTC offset이 포함된 datetime입니다. ID는 공통
+stable ID 규칙을 따르며 `snapshot_id`, 임의 World summary와 실행 가능한 Command는 body에
+포함하지 않습니다.
+
+Inventory의 정확한 상한과 검증은 다음과 같습니다.
+
+- Player는 `capacity=30`, `revision>=0`, Stack 최대 40개입니다. 일반 Slot은 0~29, Quick
+  Slot은 100~109만 허용합니다.
+- `containers`에는 중복 없이 정확히 `AIRE.Inventory.MAKO`와
+  `AIRE.Inventory.SharedStorage` 두 항목이 있어야 합니다. MAKO는 `capacity=20`, Shared
+  Storage는 `capacity=50`이며 각 Stack 수는 capacity 이하입니다. Slot은 각 container의
+  0부터 `capacity-1`까지입니다.
+- 모든 Stack은 `{slot_index, item_id, count}`이며 `count`는 1~99입니다. Slot index는 한
+  Inventory 안에서 중복될 수 없습니다.
+- `item_id`는 서버 Item master data에 있어야 합니다. Weapon Stack은 항상 count 1입니다.
+- Player와 MAKO의 `equipment`는 `{ "equipped_item_id": <Weapon ID 또는 null> }`입니다.
+  장착 ID는 서버 Item master의 Weapon이어야 합니다. Shared Storage도 같은 Equipment object를
+  보내되 `equipped_item_id`는 반드시 `null`입니다.
+
+### 7.3 응답, 멱등성과 충돌
+
+정상 PUT과 GET은 HTTP 200으로 요청 Snapshot 전체에 `request_id`와 서버
+`last_synced_at`을 더해 반환합니다. PUT 응답의 `request_id`는 `operation_id`이고, GET 응답의
+`request_id`는 GET의 `X-Request-ID`입니다. 응답의 `operation_id`는 저장된 PUT operation을
+가리킵니다. Snapshot이 없는 scope의 GET은 `404 GameStateNotFound`입니다.
+
+PUT은 `(profile, save_slot, companion, operation_id)`와 원문 body hash를 기준으로
+멱등합니다.
+
+1. 같은 `operation_id`와 같은 원문 body bytes를 다시 보내면 최초 HTTP 200 응답을 그대로
+   반환하며 version이나 `last_synced_at`을 바꾸지 않습니다.
+2. 같은 `operation_id`에 다른 원문 body bytes를 보내면 `409 DuplicateRequest`이며 현재
+   Snapshot은 바뀌지 않습니다. JSON 의미가 같아도 bytes가 다르면 다른 body입니다.
+3. 새 operation은 현재 값보다 큰 `state_version`만 허용합니다. 같거나 낮으면
+   `409 GameStateVersionConflict`이며 부분 저장이나 last-write-wins를 하지 않습니다.
+
+strict field, schema/content version, Inventory bounds, Item/Weapon 의미 검증 실패는
+`400 InvalidRequest`이며 저장 상태를 바꾸지 않습니다.
+
+## 8. 기존 Device/Pairing 경로
 
 `/api/v1/devices/register-game`, `/pairing-codes`, `/pair`와 Device 조회·해지는 호환성을 위해
 남아 있습니다. 현재 UE/Web 제품은 이 경로를 사용하지 않고 `AIRE_GAME`, `AIRE_WEB`을 바로
@@ -304,7 +421,7 @@ PATCH /api/v1/admin/offline-task-policies/{policy_id}
 DEV_GAME_DEVICE_TOKEN=replace-with-bootstrap-token
 ```
 
-## 8. Admin API
+## 9. Admin API
 
 `/api/v1/admin/*`는 Profile, Device, Pairing Code, Save Slot, Item, Recipe, Smelting Recipe,
 Enemy, Location, Episodic Memory와 Offline Task CRUD를 제공합니다.
@@ -325,7 +442,7 @@ Authorization: Bearer replace-with-admin-token
 Token이 비어 있으면 Admin API는 `503 AdminAuthenticationUnavailable`입니다. 자세한 개별
 Admin request/response는 실행 중인 `/docs`를 사용합니다.
 
-## 9. WebSocket 호환 경로
+## 10. WebSocket 호환 경로
 
 `WS /api/v1/chat`은 남아 있지만 AX client 기준은 HTTP입니다. WS는 frame마다 token을 넣습니다.
 
@@ -348,7 +465,7 @@ Admin request/response는 실행 중인 `/docs`를 사용합니다.
 
 새 UE/Web 구현은 HTTP를 사용하고 WS와 HTTP를 동시에 추측 지원하지 않습니다.
 
-## 10. 오류
+## 11. 오류
 
 모든 HTTP 실패는 같은 ErrorEnvelope를 사용합니다.
 
@@ -373,6 +490,9 @@ Admin request/response는 실행 중인 `/docs`를 사용합니다.
 | 401 | `UnauthorizedDevice` | Bearer 누락/불일치 |
 | 403 | `DeviceRoleNotAllowed` | Client role에 허용되지 않은 작업 |
 | 403 | `IdentityScopeMismatch` | body의 profile/device 주장이 인증과 다름 |
+| 404 | `GameStateNotFound` | 요청 scope에 승인된 Game State Snapshot이 없음 |
+| 409 | `DuplicateRequest` | 같은 operation ID가 다른 원문 body bytes로 재사용됨 |
+| 409 | `GameStateVersionConflict` | 새 operation의 state version이 최신 값보다 크지 않음 |
 | 413 | `RequestTooLarge` | Body 제한 초과 |
 | 500 | `InternalError` | 처리되지 않은 서버 오류 |
 | 503 | `AIServiceUnavailable` | AI 서비스 사용 불가 |

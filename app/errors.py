@@ -86,6 +86,14 @@ class UnknownCompanionError(RuntimeError):
     pass
 
 
+class GameStateNotFoundError(RuntimeError):
+    pass
+
+
+class GameStateVersionConflictError(RuntimeError):
+    pass
+
+
 # --- 관리자 CRUD (app/routes/admin.py) -----------------------------------------------
 
 
@@ -130,6 +138,8 @@ class ErrorCode(StrEnum):
     OFFLINE_TASK_TRANSITION = "OfflineTaskTransitionNotAllowed"
     OFFLINE_TASK_INVALID_REQUEST = "OfflineTaskInvalidRequest"
     UNKNOWN_COMPANION = "UnknownCompanion"
+    GAME_STATE_NOT_FOUND = "GameStateNotFound"
+    GAME_STATE_VERSION_CONFLICT = "GameStateVersionConflict"
     UNAUTHORIZED_ADMIN = "UnauthorizedAdmin"
     ADMIN_AUTHENTICATION_UNAVAILABLE = "AdminAuthenticationUnavailable"
     ADMIN_RESOURCE_NOT_FOUND = "AdminResourceNotFound"

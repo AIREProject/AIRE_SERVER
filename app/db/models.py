@@ -15,7 +15,16 @@ brain 의 레시피·적 사실은 이제 이 테이블들을 앱 시작 시점�
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -231,3 +240,69 @@ class OfflineTaskModel(Base):
     quantity: Mapped[int | None] = mapped_column(Integer)
     result_quantity: Mapped[int | None] = mapped_column(Integer)
     seconds_per_item: Mapped[float | None] = mapped_column()
+
+
+class GameStateSnapshotModel(Base):
+    __tablename__ = "game_state_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "save_slot_row_id",
+            "companion_id",
+            name="uq_game_state_snapshots_scope",
+        ),
+        CheckConstraint("schema_version = 1", name="ck_game_state_snapshots_schema"),
+        CheckConstraint("content_version = 1", name="ck_game_state_snapshots_content"),
+        CheckConstraint("state_version > 0", name="ck_game_state_snapshots_state_version"),
+        CheckConstraint(
+            "payload_size_bytes >= 0 AND payload_size_bytes <= 262144",
+            name="ck_game_state_snapshots_payload_size",
+        ),
+    )
+
+    row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("profiles.profile_id"), index=True
+    )
+    save_slot_row_id: Mapped[str] = mapped_column(
+        ForeignKey("save_slots.row_id"), index=True
+    )
+    companion_id: Mapped[str] = mapped_column(String(128), index=True)
+    schema_version: Mapped[int] = mapped_column(Integer)
+    content_version: Mapped[int] = mapped_column(Integer)
+    operation_id: Mapped[str] = mapped_column(String(128))
+    state_version: Mapped[int] = mapped_column(Integer)
+    world_session_id: Mapped[str] = mapped_column(String(128))
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    payload: Mapped[dict[str, object]] = mapped_column(JSON)
+    payload_size_bytes: Mapped[int] = mapped_column(Integer)
+
+
+class GameStateOperationModel(Base):
+    __tablename__ = "game_state_operations"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "save_slot_row_id",
+            "companion_id",
+            "operation_id",
+            name="uq_game_state_operations_scope_operation",
+        ),
+        CheckConstraint("length(body_hash) = 64", name="ck_game_state_operations_hash"),
+    )
+
+    row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("profiles.profile_id"), index=True
+    )
+    save_slot_row_id: Mapped[str] = mapped_column(
+        ForeignKey("save_slots.row_id"), index=True
+    )
+    companion_id: Mapped[str] = mapped_column(String(128), index=True)
+    operation_id: Mapped[str] = mapped_column(String(128))
+    body_hash: Mapped[str] = mapped_column(String(64))
+    response_status: Mapped[int] = mapped_column(Integer)
+    response_body: Mapped[dict[str, object]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
