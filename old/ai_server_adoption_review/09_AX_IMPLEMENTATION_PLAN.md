@@ -46,32 +46,35 @@ Provider, Runtime과 Prompt 동작을 교체하지 않는다. 이후 품질·지
 파트너가 직접 수행한다. 단, Provider 선택과 교체는 현재 마감 범위가 아니며 품질·지연·비용
 평가로 필요성이 확인될 때만 별도 Task로 연다.
 
-### 2026-08-11 마감 축소 결정 — 예약 작업 UE 실행 Prototype
+### 2026-08-12 방향 변경 — 서버 시간 기반 Offline Task Inventory 적용 Prototype
 
-2026-08-12 1차 마감에서는 서버가 게임 종료 중 경과시간을 계산해 보상을 정산하는 전체
-Offline Settlement를 구현하지 않는다. 대신 이미 배포된 Offline Task 상태 API와 기존 UE Local
-Work를 연결해 다음 사용자 경험만 먼저 검증한다.
+2026-08-12 1차 마감에서는 Settlement 원장과 apply/ack API를 포함한 전체 Offline
+Settlement를 구현하지 않는다. 대신 이미 배포된 Offline Task 상태 API가 서버 현실시간으로
+확정한 결과 수량을 UE Local Inventory에 적용하는 다음 사용자 경험을 먼저 검증한다.
 
 ```text
 Mobile Task 생성
-→ UE가 Pending 목록을 요청 시 한 번 조회
-→ GameClient start
-→ 기존 MAKO Gathering/Crafting WorkOrder 실제 실행
-→ Inventory 결과와 처리한 task_id를 같은 local persistence 경계로 확정
-→ GameClient complete/claim
+→ 서버 현실시간 경과
+→ UE가 목록을 단발 조회하고 Pending이면 start
+→ UE가 complete로 서버 확정 수량 조회
+→ 비용·보상과 task_id를 Inventory에 원자 적용
+→ SaveGame 성공
+→ GameClient claim
 ```
 
-이 Prototype은 게임이 실행된 뒤 MAKO가 실제 작업을 수행하는 **예약 작업**이다. 게임이 꺼진
-동안 서버가 작업을 완료하거나 보상을 생성하는 진정한 Offline Simulation이 아니다.
+이 Prototype은 MAKO WorkOrder, 실제 자원과 작업대를 사용하지 않는다. 서버 Task의
+`Claimed` 상태는 정식 Settlement receipt가 아니며, UE는 검증된 두 Task 조합에 한해 서버가
+확정한 수량의 비용·보상 규칙을 소유한다.
 
 마감 포함 범위:
 
-- Gathering 한 종류와 UE에서 이미 검증된 Crafting Recipe 한 종류
-- 명시적인 `item_id` → UE Resource/Recipe stable ID allowlist
+- `PlantStem` Gathering과 `ShoddyBandage` Crafting 두 조합
+- 수량 1~50과 canonical profile/save/companion scope의 strict validation
 - UE 시작 또는 UE 사용자 동기화에 의한 단발 조회; polling 없음
-- Local Work 성공 뒤에만 complete/claim
-- Inventory 결과와 처리한 `task_id`를 함께 저장하고 재조회·재시작 중복 지급 방지
-- 자원·재료·작업대 부족과 Backend 단절 시 Task를 지급 완료로 가장하지 않고 Local AI 유지
+- complete가 반환한 서버 확정 수량만 적용하고 첫 단위 미만 `InProgress`는 무변경
+- 비용·보상과 처리한 `task_id`를 같은 local persistence 경계에 원자 적용
+- SaveGame 성공 뒤에만 claim하고 재조회·재시작 중복 지급 방지
+- 재료·용량·저장·Backend 실패 시 Task를 지급 완료로 가장하지 않고 Local AI 유지
 
 마감 제외 범위:
 
@@ -79,7 +82,7 @@ Mobile Task 생성
 - Conversation/Memory/관계 상태와 LLM Provider 평가·교체
 - AX-I09/I10 Game State Snapshot, AX-W03 모바일 상태 조회
 - AX-I11/I12 Settlement 원장·apply/ack, AX-W04 전체 Offline E2E
-- 서버 RealWorld 경과 평가, 모바일 UE Inventory 표시와 전체 장애 매트릭스
+- 모바일 UE Inventory 표시와 전체 장애 매트릭스
 
 이 축소는 정식 AX-I08~I12의 계약과 완료 조건을 대체하지 않는다. Prototype 성공만으로 AX-G3,
 AX-G4 또는 Offline Task를 `Done` 처리하지 않고 `Review` 근거로만 사용한다.
@@ -87,7 +90,7 @@ AX-G4 또는 Offline Task를 `Done` 처리하지 않고 `Review` 근거로만 �
 ## 1. 작업 구성
 
 전체 구현을 Core 12개 Task와 Web 4개 Task, 5개 통합 Gate로 나눈다. 2026-08-12 마감에는
-정식 Gate 밖의 `AX-P01` 예약 작업 Prototype을 추가한다.
+정식 Gate 밖의 `AX-P01` 제한 Offline Task Inventory 적용 Prototype을 추가한다.
 
 ```text
 AX-I01 인증 계약
@@ -101,7 +104,7 @@ AX-I02
                                       AX-I06 행동 명령 수직 슬라이스
 
 AX-I07 Inventory SaveGame → AX-I08 Sync Outbox ──────────────┐
-               └→ AX-P01 예약 작업→UE Local Work Prototype
+               └→ AX-P01 서버시간 Task→UE Inventory Prototype
 AX-I09 Backend B2 Game State ┬→ AX-I10 UE Snapshot Sync ─────┤
                              └→ AX-W03 Mobile 상태 조회 ─────┤
 AX-I11 Backend B3 Offline Settlement ─────────────────────────┤
@@ -316,32 +319,33 @@ Follow/Hold/Return은 production direct-command state가 준비된 뒤 별도 �
 - process 종료·재시작 뒤 pending entry를 잃지 않는다.
 - queue가 무한 증가하지 않고 credential/대화 원문을 저장하지 않는다.
 
-### AX-P01. 예약 작업 → UE Local Work Prototype
+### AX-P01. 서버 시간 기반 Offline Task → UE Inventory Prototype
 
 - 종류: UE/Web/기존 Backend 통합 Prototype
-- 선행: AX-W02, AX-I07, 현재 Local Gathering/Crafting Gate
-- 목표: 모바일에서 만든 예약 작업을 게임 실행 뒤 기존 MAKO WorkOrder로 실제 수행한다.
+- 선행: AX-W02, AX-I07, 배포된 Offline Task API
+- 목표: 모바일에서 만든 Task의 서버 현실시간 확정 수량을 UE Inventory에 정확히 한 번 적용한다.
 
 구현 범위:
 
-- `AIRE_GAME`으로 Pending Task 목록 조회와 strict response validation
-- allowlist된 한 종류 Gathering과 한 종류 Crafting만 UE Resource/Recipe stable ID로 매핑
-- start 성공 뒤 기존 WorkOrder 요청, Local Work 성공 뒤 Inventory 결과 확정
+- `AIRE_GAME`으로 Task 목록 조회와 strict response validation
+- Pending은 start 후 complete, InProgress는 complete, Completed는 적용 대상으로 처리
+- 수량 1~50의 `PlantStem` Gathering과 `ShoddyBandage` Crafting만 허용
+- complete가 반환한 서버 확정 수량의 비용·보상을 Inventory에 원자 적용
 - 같은 저장 경계에 처리한 `task_id`를 bounded ledger로 기록
-- local commit 뒤 complete/claim; 통신 실패 시 재실행에서 상태 갱신만 재시도
-- 자동 polling, 자동 Task 재실행과 무한 queue 금지
+- SaveGame 성공 뒤 claim; 통신 실패 시 재실행에서 중복 지급 없이 claim 복구
+- 자동 polling, 자동 retry와 무한 queue 금지
 
 완료 조건:
 
-- 모바일에서 생성한 Gathering/Crafting 각 한 건이 실제 MAKO Work를 거쳐 Inventory에 반영된다.
+- 모바일에서 생성한 Gathering/Crafting 결과가 서버 확정 수량만큼 Inventory에 반영된다.
 - 같은 Task 재조회와 프로세스 재시작이 Inventory를 두 번 증가시키지 않는다.
-- 자원·재료·작업대 부족, Work 실패와 local save 실패에서는 claim하지 않는다.
+- 재료·용량 부족과 local save 실패에서는 부분 적용하거나 claim하지 않는다.
 - Backend 단절이 Local AI·기존 Work·Inventory를 중단시키지 않는다.
 - `Claimed`는 여전히 서버 Task 상태이며 정식 Settlement receipt로 표현하지 않는다.
 
 제외 범위:
 
-- 서버 경과시간 평가와 Offline 보상 생성
+- MAKO WorkOrder, 실제 자원·작업대와 StateTree 변경
 - Game State Snapshot, Settlement ledger와 apply/ack receipt
 - LLM 기반 작업 선택, World Context, Event/Command Result
 - AX-G3/AX-G4 완료 판정
@@ -545,13 +549,14 @@ Gate가 실패한 상태에서 후속 Task를 완료 처리하지 않는다.
 기능은 추가하지 않고 다음 순서만 진행한다.
 
 1. AX-I07 Inventory SaveGame export/import
-2. AX-P01 예약 작업 → UE Local Work Prototype
+2. AX-P01 서버 시간 기반 Offline Task → UE Inventory Prototype
 3. Gathering 한 종류와 Crafting 한 종류의 사용자 Build/PIE 확인
 4. 같은 Task 재조회·재시작 시 Inventory 중복 지급이 없는지 확인
 
 AX-I07에는 HTTP나 Offline Task 상태 전환을 넣지 않는다. AX-P01이 AX-I07의 bounded operation
-ledger를 사용해 `task_id`를 영속 처리 ID로 연결한다. 이 마감 결과는 AX-G3/AX-G4가 아니라 별도
-Prototype `Review`로 기록한다.
+ledger를 사용해 `task_id`를 영속 처리 ID로 연결하고, 서버가 확정한 수량만 Inventory에
+적용한 뒤 저장 성공 후 claim한다. 이 마감 결과는 AX-G3/AX-G4가 아니라 별도 Prototype
+`Review`로 기록한다.
 
 ### 마감 이후 Iteration 1 — UE/Mobile 대화와 행동
 
@@ -566,12 +571,13 @@ Prototype `Review`로 기록한다.
 ### Iteration 2 — 저장과 조회
 
 1. AX-I07
-2. AX-I08
-3. AX-I09
-4. AX-I10과 AX-W03 병렬
+2. AX-I08과 AX-I09 병렬
+3. AX-I10과 AX-W03 병렬
 
-AX-I07과 AX-I09는 Schema가 합의되면 UE/Backend에서 병렬 구현할 수 있다. 같은 파일을 동시에
-수정하지 않는다.
+AX-I08은 endpoint에 종속되지 않는 UE Outbox persistence·replay 경계를 소유하고, AX-I09는
+계약이 합의된 Game State Backend를 소유하므로 서로 다른 저장소와 파일에서 병렬 구현할 수
+있다. 실제 Game State serializer와 HTTP 연결은 AX-I09 배포 OpenAPI 확인 뒤 AX-I10에서
+수행한다. 같은 파일을 동시에 수정하지 않는다.
 
 ### Iteration 3 — Offline 작업
 
