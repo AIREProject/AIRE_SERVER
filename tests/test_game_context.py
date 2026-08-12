@@ -28,7 +28,7 @@ def context_payload() -> dict[str, Any]:
 
     return {
         "schema_version": 1,
-        "location_id": "region_abandoned_mining_village",
+        "location_id": "forest_camp",
         "threat": {
             "present": True,
             "count": 2,
@@ -68,6 +68,20 @@ def empty_context_payload() -> dict[str, Any]:
         "schema_version": 1,
         "location_id": None,
         "threat": {"present": False, "count": 0, "nearest_kind": None},
+        "nearby_resources": [],
+        "available_workstations": [],
+        "current_work": None,
+        "inventories": [],
+    }
+
+
+def producer_partial_context_payload() -> dict[str, Any]:
+    """현재 AX-I04가 권위 센서 없이 보낼 수 있는 완전한 7-field Context다."""
+
+    return {
+        "schema_version": 1,
+        "location_id": "forest_camp",
+        "threat": {"present": True, "count": 2, "nearest_kind": None},
         "nearby_resources": [],
         "available_workstations": [],
         "current_work": None,
@@ -143,8 +157,13 @@ def test_websocket_invalid_context_is_normalized_to_invalid_request(
     assert message["payload"]["error"]["code"] == "InvalidRequest"
 
 
-@pytest.mark.parametrize("payload", [context_payload(), empty_context_payload()])
-def test_context_v1_accepts_full_and_empty_payloads(payload: dict[str, Any]) -> None:
+@pytest.mark.parametrize(
+    "payload",
+    [context_payload(), empty_context_payload(), producer_partial_context_payload()],
+)
+def test_context_v1_accepts_full_empty_and_producer_partial_payloads(
+    payload: dict[str, Any],
+) -> None:
     context = GameContextV1.model_validate(payload)
 
     assert context.schema_version == 1
@@ -450,7 +469,7 @@ async def test_service_passes_all_structured_context_values_to_dialogue_facts(
 
     facts = "\n".join(spec.facts)
     for expected in (
-        "region_abandoned_mining_village",
+        "forest_camp",
         "Enemy.TrenchCrawler",
         "stone",
         "wood",
@@ -470,7 +489,7 @@ async def test_service_passes_all_structured_context_values_to_dialogue_facts(
     assert any("12" in fact for fact in spec.facts)
     assert any("48" in fact for fact in spec.facts)
     assert turn.world_context.is_available is True
-    assert turn.world_context.location_id == "region_abandoned_mining_village"
+    assert turn.world_context.location_id == "forest_camp"
     assert tuple(resource.kind for resource in turn.world_context.nearby_resources) == (
         "stone",
         "wood",
@@ -485,6 +504,36 @@ async def test_service_passes_all_structured_context_values_to_dialogue_facts(
     assert turn.world_context.inventories[0].item_totals[0].item_id == "Branch"
     with pytest.raises(FrozenInstanceError):
         turn.world_context.location_id = "mutated"  # type: ignore[misc]
+
+
+async def test_service_consumes_producer_partial_context_without_inventing_ids(
+    context_database: Database,
+    context_identity: AuthenticatedDevice,
+) -> None:
+    provider = RecordingProvider()
+
+    spec, turn = await record_context_facts(
+        provider,
+        context_database,
+        context_identity,
+        producer_partial_context_payload(),
+    )
+
+    assert turn.world_context.location_id == "forest_camp"
+    assert turn.world_context.is_available is True
+    assert turn.world_context.threat is not None
+    assert turn.world_context.threat.present is True
+    assert turn.world_context.threat.count == 2
+    assert turn.world_context.threat.nearest_kind is None
+    assert turn.world_context.nearby_resources == ()
+    assert turn.world_context.available_workstations == ()
+    assert turn.world_context.current_work is None
+    assert turn.world_context.inventories == ()
+    assert "현재 위치 ID는 forest_camp다" in spec.facts
+    assert "주변 위협은 2개다" in spec.facts
+    assert "주변에 확인된 자원이 없다" in spec.facts
+    assert "사용 가능한 작업대가 없다" in spec.facts
+    assert all("None" not in fact and "null" not in fact for fact in spec.facts)
 
 
 async def test_context_array_order_is_normalized_before_dialogue_facts(

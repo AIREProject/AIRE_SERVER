@@ -95,7 +95,23 @@ async def main() -> None:
                     "period": "Night",
                 },
                 "recent_event_ids": [],
-                "game_context": {"location_id": "region_abandoned_mining_village"},
+                "game_context": (
+                    {
+                        "schema_version": 1,
+                        "location_id": "forest_camp",
+                        "threat": {
+                            "present": False,
+                            "count": 0,
+                            "nearest_kind": None,
+                        },
+                        "nearby_resources": [],
+                        "available_workstations": [],
+                        "current_work": None,
+                        "inventories": [],
+                    }
+                    if surface == "game"
+                    else None
+                ),
                 "allowed_commands": ["Command.Follow", "Command.HoldPosition"],
             }
             payload.update(extra)

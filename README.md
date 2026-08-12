@@ -76,7 +76,19 @@ $body = @{
         period = "Afternoon"
     }
     recent_event_ids = @()
-    game_context = @{}
+    game_context = @{
+        schema_version = 1
+        location_id = "forest_camp"
+        threat = @{
+            present = $false
+            count = 0
+            nearest_kind = $null
+        }
+        nearby_resources = @()
+        available_workstations = @()
+        current_work = $null
+        inventories = @()
+    }
     allowed_commands = @()
 } | ConvertTo-Json -Depth 5
 

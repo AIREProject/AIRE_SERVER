@@ -7,7 +7,8 @@
 object로 노출하므로, 아래 World Context v1은 `AIRE_SERVER/`의 AX-I05 목표 계약이다. 배포
 OpenAPI 반영이나 배포 smoke 성공을 이 문서로 주장하지 않는다.
 
-AX-I05 로컬 구현은 2026-08-13 전체 Backend pytest 572건, Ruff와 mypy를 통과했다. 이후
+AX-I05 로컬 구현은 2026-08-13 전체 Backend pytest 574건, Ruff와 mypy를
+통과했다. 이후
 서버에 접근할 수 없어 배포 적용과 runtime smoke는 미확인이다. 기존 Game client의 `{}` 요청은
 새 계약에서 거부되므로 full Context v1을 생성하는 AX-I04 client와 서버 적용 시점을 조정한다.
 
@@ -98,7 +99,7 @@ X-Request-ID: chat-game-1
   "recent_event_ids": [],
   "game_context": {
     "schema_version": 1,
-    "location_id": "region_abandoned_mining_village",
+    "location_id": "forest_camp",
     "threat": {
       "present": true,
       "count": 2,
@@ -164,7 +165,7 @@ Mobile은 `game_context`를 생략하거나 `null`로 보낸다. `{}` 및 임의
 ```json
 {
   "schema_version": 1,
-  "location_id": "region_abandoned_mining_village",
+  "location_id": "forest_camp",
   "threat": {
     "present": true,
     "count": 2,
@@ -205,6 +206,10 @@ Mobile은 `game_context`를 생략하거나 `null`로 보낸다. `{}` 및 임의
 Context는 대사 생성용 facts-only 입력이다. 이를 근거로 Backend가 Command 후보를 추가·제거하거나
 `CraftItem`/gameplay를 실행하지 않는다. Command 후보는 기존 `allowed_commands` allowlist와
 후속 AX-I06 계약이 정한다.
+
+현재 일반 플레이맵의 location ID는 `forest_camp`다. AX-I04에 권위 센서가 없는 동안
+`threat.nearest_kind=null`, `nearby_resources=[]`, `available_workstations=[]`인 Context도
+정상이며 Backend가 임의 ID나 보스맵 ID를 보충하지 않는다.
 
 ### 4.4 성공 응답
 

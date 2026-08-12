@@ -404,13 +404,11 @@ async def test_lore_uses_location_from_game_context(
         service,
         identity,
         session,
-        "이 마을은 어떤 곳이야?",
-        game_context=empty_game_context(
-            location_id="region_abandoned_mining_village"
-        ),
+        "여기는 어떤 곳이야?",
+        game_context=empty_game_context(location_id="forest_camp"),
     )
 
-    assert "광산" in result.display_text
+    assert "숲 캠프" in result.display_text
     assert result.command_candidates == []
 
 
@@ -419,11 +417,11 @@ async def test_lore_falls_back_to_default_location_when_game_sends_none(
 ) -> None:
     """임시 발판: 게임이 위치를 안 보내는 동안 설정한 위치로 대신 답한다."""
 
-    service = make_service(default_location_id="region_abandoned_mining_village")
+    service = make_service(default_location_id="forest_camp")
 
-    result = await respond(service, identity, session, "이 마을은 어떤 곳이야?")
+    result = await respond(service, identity, session, "여기는 어떤 곳이야?")
 
-    assert "광산" in result.display_text
+    assert "숲 캠프" in result.display_text
 
 
 async def test_default_location_does_not_override_location_from_game(
@@ -431,17 +429,17 @@ async def test_default_location_does_not_override_location_from_game(
 ) -> None:
     """게임이 보낸 위치가 이긴다. 모르는 곳이라면 다른 곳 이야기를 지어내지 않는다."""
 
-    service = make_service(default_location_id="region_abandoned_mining_village")
+    service = make_service(default_location_id="forest_camp")
 
     result = await respond(
         service,
         identity,
         session,
-        "이 마을은 어떤 곳이야?",
+        "여기는 어떤 곳이야?",
         game_context=empty_game_context(location_id="region_unknown"),
     )
 
-    assert "광산" not in result.display_text
+    assert "숲 캠프" not in result.display_text
     assert result.display_text
 
 

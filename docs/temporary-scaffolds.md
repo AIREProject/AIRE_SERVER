@@ -11,7 +11,7 @@ AX-I05부터 lore 응답과 대사 facts는 strict `GameContextV1.location_id`�
 아닙니다.
 
 ```dotenv
-COMPANION_DEFAULT_LOCATION_ID=region_abandoned_mining_village
+COMPANION_DEFAULT_LOCATION_ID=forest_camp
 ```
 
 규칙:
@@ -118,6 +118,10 @@ smoke 성공을 의미하지 않는다.
 AX-I05 로컬 구현과 Backend test/lint/type Gate는 완료했다. 이후 서버에 접근할 수 없어 배포
 적용은 별도 운영 체크로 남겼다. strict 전환은 기존 `{}` Game 요청과 호환되지 않으므로 AX-I04
 producer 준비 없이 Backend만 선배포하지 않는다.
+
+현재 일반 플레이맵과 fallback 예시는 `forest_camp`다. 권위 센서가 없을 때 AX-I04가 보내는
+`nearest_kind=null`, resource/workstation 빈 배열은 정상이며, Backend가 향후 맵이나 센서 ID를
+추측해 채우지 않는다.
 
 ## 7. Health와 운영 readiness
 
