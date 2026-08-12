@@ -17,6 +17,7 @@ from app.middleware import RequestContextMiddleware
 from app.routes.admin import router as admin_router
 from app.routes.chat import router as chat_router
 from app.routes.devices import router as devices_router
+from app.routes.game_state import router as game_state_router
 from app.routes.offline_tasks import router as offline_tasks_router
 from app.routes.situations import router as situations_router
 from app.routes.system import router as system_router
@@ -141,6 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(chat_router)
     app.include_router(ws_chat_router)
     app.include_router(devices_router)
+    app.include_router(game_state_router)
     app.include_router(offline_tasks_router)
     app.include_router(situations_router)
     app.include_router(admin_router)

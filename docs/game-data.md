@@ -93,18 +93,46 @@ Admin 변경은 해당 DB에만 적용되며 새 서버의 빈 DB에는 자동 �
 - UE UObject 이름, Actor name, 배열 index를 서버 ID로 사용하지 않습니다.
 - ID를 변경하면 기존 Offline Task와 Recipe foreign key에 영향을 줄 수 있습니다.
 
-## 6. 현재 제한
+## 6. Game State Snapshot (AX-I09 local Review)
+
+AX-I09 로컬 구현은 UE가 검증·저장한 마지막 Game State Snapshot을 인증된
+`(profile_id, save_slot_id, companion_id)` scope에 보관합니다. `PUT /api/v1/game-state`는
+GameClient 전용이고, 같은 경로의 GET은 GameClient와 WebClient가 읽을 수 있습니다. 서버
+Snapshot은 gameplay mutation을 실행하거나 UE의 현재 상태를 대신하는 권위가 아닙니다.
+
+Snapshot은 `schema_version=1`, `content_version=1`, 단조 증가 `state_version`,
+`operation_id`, `world_session_id`, offset 포함 `captured_at`과 다음 bounded 값만 저장합니다.
+
+- Player: 일반 Inventory 30칸, Quick Slot 100~109, revision, Weapon Equipment 1칸
+- MAKO: `AIRE.Inventory.MAKO`, 20칸, revision, Weapon Equipment 1칸
+- Shared Storage: `AIRE.Inventory.SharedStorage`, 50칸, revision, Equipment object의 장착 ID는 null
+- Stack: 서버 Item master의 stable `item_id`, slot index, count 1~99. Weapon count는 1
+
+Player는 일반 30칸과 Quick Slot을 합쳐 Stack 최대 40개이고, MAKO와 Shared Storage는 각각
+capacity보다 많은 Stack을 가질 수 없습니다. 장착 ID는 서버 Item master의 Weapon이어야
+합니다. 전체 UObject/Actor 경로, 임의 JSON World summary, Command와 LLM payload는 저장하지
+않습니다.
+
+같은 operation과 HTTP 원문 JSON의 정확한 UTF-8 bytes SHA-256이 같으면 최초 결과를 그대로
+반환합니다. 같은 operation에 bytes가 다르면 `409 DuplicateRequest`, 새 operation의 version이
+최신 값보다 크지 않으면 `409 GameStateVersionConflict`로 상태를 보존합니다. 자세한 header,
+wire shape와 오류는 [API 사용법](api-endpoints.md)을 따릅니다.
+
+이 계약은 **로컬 사전 배포 Review**입니다. 공개 배포 `/openapi.json`에는 아직 Game State
+경로가 없으므로 배포 지원이나 runtime 성공을 주장하지 않습니다.
+
+## 7. 현재 제한
 
 - `locations`는 0행입니다.
 - `game_context.location_id`가 알려진 lore ID일 때만 현재 지역 사실을 직접 사용합니다.
 - World의 나무·적·작업대 instance를 식별하는 Entity registry는 없습니다.
-- UE Inventory snapshot을 저장하는 Game State API는 아직 없습니다.
+- Game State API는 로컬 Review 계약과 구현만 있으며 공개 배포 OpenAPI에는 아직 없습니다.
 - Admin으로 추가한 새 Item이 Mock regex 분류 어휘에 자동 추가되는 것은 아닙니다.
 
 게임 데이터와 UE World 상태는 다른 것입니다. Item/Recipe/Enemy master data가 DB에 있어도 현재
 주변에 무엇이 있는지는 UE가 별도 Context로 보내야 합니다.
 
-## 7. 검증
+## 8. 검증
 
 ```powershell
 uv run pytest tests/test_game_data_migration.py
