@@ -8,8 +8,8 @@
 - 서비스: user systemd `aire-server.service`
 - 내부 API: `127.0.0.1:8000`
 - 배포 명령: `/home/mtvs-1/.local/bin/deploy-aire-server`
-- 외부망 SSH: Tailscale 사설망
+- 원격 SSH: 같은 LAN의 `192.168.0.55`
 
-최초 구성, SSH key, 외부망 접속, 한 줄 배포와 장애 대응의 단일 기준은
+최초 구성, SSH key, LAN 접속, 한 줄 배포와 장애 대응의 단일 기준은
 [`REMOTE_SERVER_OPERATIONS.md`](REMOTE_SERVER_OPERATIONS.md)입니다. 이 파일의 과거 root
 systemd/8010 예시를 사용하지 않습니다.
