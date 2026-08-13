@@ -126,6 +126,7 @@ Copy-Item .env.example .env
 
 ## 문서
 
+- [다른 컴퓨터에서 원격 관리](REMOTE_SERVER_OPERATIONS.md) — SSH 키 등록, 코드 배포, 설정 변경, 재시작과 로그 확인
 - [Linux 원격 배포 구성](SERVER_REMOTE_DEPLOY_SETUP.md) — systemd 최초 구성과 SSH 한 줄 갱신
 - [인수인계·운영 가이드](docs/handoff.md) — 새 PC 설치, DB, 실행, 백업, 복구와 장애 대응
 - [공개 서버 배포 작업서](docs/하는방법.md) — 폴더를 통째로 전달해 기존 설정·DB를 보존하며 교체하고 검증
