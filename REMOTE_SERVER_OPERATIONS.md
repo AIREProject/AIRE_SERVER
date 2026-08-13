@@ -1,173 +1,242 @@
-# 다른 컴퓨터에서 AIRE 서버 원격 관리하기
+# AIRE 서버 원격 운영 가이드
 
-이 문서는 다른 Windows/Linux PC에서 SSH로 AIRE 서버에 접속해 코드를 배포하고, 운영 설정을
-수정하고, 서비스를 재시작하거나 로그를 확인하는 방법입니다. 현재 서버 구성에 맞춘 값은
-다음과 같습니다.
+이 문서는 `AIRE_SERVER`의 원격 접속, 코드 배포, 서비스 재시작과 로그 확인을 위한 단일 운영
+기준입니다. 외부망에서는 Tailscale 사설망을 기본 경로로 사용하고, 같은 LAN의 기존 주소는
+초기 구성과 장애 복구용으로만 사용합니다.
+
+공인 인터넷에 SSH 22번과 Uvicorn 8000번 포트를 직접 열지 않습니다. 기존 Cloudflare Tunnel은
+공개 HTTPS API용으로 유지하며 SSH transport로 사용하지 않습니다.
+
+## 1. 확정된 서버 구성
 
 | 항목 | 현재 값 |
 |---|---|
-| SSH 사용자 | `mtvs-1` |
-| 서버 LAN 주소 | `192.168.0.55` |
+| Linux 사용자 | `mtvs-1` |
+| 기존 LAN 주소 | `192.168.0.55` — 변경될 수 있는 복구용 주소 |
+| Tailscale machine name | `aire-server-node` — 이 문서에서 설정 |
 | 저장소 | `/home/mtvs-1/workspace/AIRE_SERVER` |
 | 서비스 | user systemd `aire-server.service` |
 | 배포 명령 | `/home/mtvs-1/.local/bin/deploy-aire-server` |
 | 내부 API | `127.0.0.1:8000` |
 | 공개 API | `https://traip.mtvs2026.work` |
 
-LAN 주소는 DHCP에 따라 바뀔 수 있습니다. 반복해서 사용할 PC라면 공유기에서 서버에 DHCP
-고정 할당을 설정하거나, 승인된 VPN의 고정 주소를 사용합니다. 현재 Cloudflare Tunnel은
-HTTPS API용이며 SSH 접속 주소가 아닙니다. SSH 포트와 Uvicorn 포트를 인터넷에 임의로
-노출하지 않습니다.
+이 서버는 root systemd 서비스가 아닙니다. 다음 명령을 사용하지 않습니다.
 
-## 1. 최초 SSH 키 등록
-
-관리 PC에 OpenSSH가 설치되어 있는지 확인합니다.
-
-```powershell
-ssh -V
+```text
+sudo systemctl restart aire-server
+uvicorn ... --port 8010
 ```
 
-개인 키가 없다면 관리 PC에서 한 번만 생성합니다. 기본 경로를 사용하고 개인 키 파일은
-서버나 Git에 복사하지 않습니다.
-
-```powershell
-ssh-keygen -t ed25519 -C "aire-server-admin"
-```
-
-서버와 같은 LAN 또는 승인된 VPN에 연결한 상태에서 공개 키를 등록합니다. 처음 한 번은 서버
-계정 비밀번호가 필요할 수 있습니다.
-
-Windows PowerShell:
-
-```powershell
-Get-Content "$env:USERPROFILE\.ssh\id_ed25519.pub" |
-    ssh mtvs-1@192.168.0.55 "umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys"
-```
-
-Linux/macOS:
+정확한 서비스와 포트는 다음과 같습니다.
 
 ```bash
-ssh-copy-id mtvs-1@192.168.0.55
+systemctl --user restart aire-server.service
+systemctl --user status aire-server.service --no-pager
 ```
 
-접속을 확인합니다.
+## 2. 최초 1회 변경 사항
+
+외부망 원격 접속을 위해 다음 항목만 최초 1회 구성합니다.
+
+1. 서버에 Tailscale을 설치하고 machine name을 `aire-server-node`로 고정합니다.
+2. 관리 PC에 Tailscale을 설치하고 서버와 같은 tailnet 계정으로 로그인합니다.
+3. 서버의 OpenSSH를 실행하고 관리 PC의 공개 키를 `authorized_keys`에 등록합니다.
+4. 관리 PC의 SSH 별칭 `aire-server`가 Tailscale MagicDNS 이름을 사용하도록 설정합니다.
+5. 외부망에서 접속, user systemd, 배포 스크립트와 공개 Health를 차례로 검증합니다.
+
+Tailscale은 서버와 관리 PC에 안정적인 사설 IP와 MagicDNS 이름을 부여합니다. 공유기 포트
+포워딩, 고정 공인 IP와 공개 SSH 포트는 필요하지 않습니다.
+
+이 문서는 Tailscale의 사설 network 위에서 기존 OpenSSH와 `authorized_keys`를 사용하는
+방식입니다. 별도 access policy가 필요한 Tailscale SSH 기능은 활성화하지 않으므로
+`tailscale up --ssh`를 실행하지 않습니다. tailnet에 여러 사용자가 참여한다면 Tailscale access
+policy에서 관리 사용자와 서버의 TCP 22번만 허용하도록 제한합니다.
+
+## 3. 서버: Tailscale 설치와 등록
+
+서버 콘솔 또는 현재 가능한 LAN SSH에서 실행합니다.
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --hostname=aire-server-node
+```
+
+두 번째 명령이 로그인 URL을 출력하면 브라우저에서 열어 관리 PC와 같은 Tailscale 계정으로
+승인합니다. 인증 key를 사용할 경우 key를 문서, shell history, Git 또는 채팅에 남기지 않습니다.
+
+등록 결과를 확인합니다.
+
+```bash
+tailscale status
+tailscale ip -4
+getent hosts aire-server-node
+```
+
+정상 기준은 다음과 같습니다.
+
+- `tailscale status`에 서버가 online으로 표시됩니다.
+- `tailscale ip -4`가 `100.x.y.z` 형식의 주소를 반환합니다.
+- Tailscale 관리 콘솔의 Machines 목록에서 이름이 `aire-server-node`입니다.
+
+이미 Tailscale에 등록된 서버의 이름만 변경한다면 다음을 사용합니다.
+
+```bash
+sudo tailscale set --hostname=aire-server-node
+```
+
+## 4. 서버: OpenSSH와 공개 키 등록
+
+OpenSSH를 실행하고 22번 포트가 listen 중인지 확인합니다.
+
+```bash
+sudo systemctl enable --now ssh
+sudo systemctl status ssh --no-pager
+ss -ltn | grep ':22 '
+```
+
+Ubuntu `ufw`가 활성 상태라면 인터넷 전체가 아니라 Tailscale interface에서 들어오는 SSH만
+허용합니다.
+
+```bash
+sudo ufw status
+sudo ufw allow in on tailscale0 to any port 22 proto tcp
+```
+
+관리 PC에 키가 없다면 관리 PC PowerShell에서 생성합니다.
 
 ```powershell
-ssh mtvs-1@192.168.0.55 "whoami; hostname"
+$sshDirectory = Join-Path $env:USERPROFILE ".ssh"
+$privateKey = Join-Path $sshDirectory "id_ed25519"
+
+New-Item -ItemType Directory -Force $sshDirectory | Out-Null
+if (-not (Test-Path $privateKey)) {
+    ssh-keygen -t ed25519 -C "aire-server-admin" -f $privateKey
+}
+
+Get-Content "$privateKey.pub"
 ```
 
-서버의 host key 지문이 예상과 다르다는 경고가 나오면 무시하거나 기존 키를 바로 삭제하지
-말고 서버가 재설치됐는지 먼저 확인합니다.
+출력된 `ssh-ed25519 ... aire-server-admin` 한 줄만 서버의 `<관리-PC-공개키>` 자리에 붙여서
+실행합니다. 개인 키 `id_ed25519`은 서버, Git, 메신저 또는 문서에 복사하지 않습니다.
 
-## 2. SSH 별칭 만들기
+```bash
+install -d -m 700 ~/.ssh
+touch ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
 
-관리 PC의 `~/.ssh/config`에 다음을 추가하면 이후 주소 대신 `aire-server`를 사용할 수 있습니다.
+public_key='<관리-PC-공개키>'
+grep -qxF "$public_key" ~/.ssh/authorized_keys || printf '%s\n' "$public_key" >> ~/.ssh/authorized_keys
+```
+
+## 5. 관리 PC: Tailscale과 SSH 별칭 설정
+
+Windows 관리 PC에는 공식 Tailscale client를 설치하고 서버와 같은 계정으로 로그인합니다.
+Tailscale tray에서 Connected 상태인지 확인한 뒤 PowerShell에서 실행합니다.
+
+```powershell
+tailscale status
+ping aire-server-node
+```
+
+`$env:USERPROFILE\.ssh\config`의 AIRE 항목을 다음으로 설정합니다. 기존 `Host aire-server`
+항목이 있다면 새 항목을 중복 추가하지 말고 아래 값으로 교체합니다.
 
 ```sshconfig
 Host aire-server
-    HostName 192.168.0.55
+    HostName aire-server-node
     User mtvs-1
     IdentityFile ~/.ssh/id_ed25519
     IdentitiesOnly yes
+    ConnectTimeout 10
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
 ```
+
+Tailscale MagicDNS가 아직 적용되지 않았다면 임시로 `HostName`에 서버의 `tailscale ip -4` 결과를
+사용할 수 있습니다. LAN 주소 `192.168.0.55`를 기본 `HostName`으로 유지하지 않습니다.
+
+접속을 검증합니다.
 
 ```powershell
-ssh aire-server "whoami"
+ssh aire-server "whoami; hostname; tailscale ip -4"
 ```
 
-## 3. GitHub 코드 변경 후 서버 배포
+정상 기준은 Linux 사용자가 `mtvs-1`이고 Tailscale IP가 출력되는 것입니다.
 
-서버의 추적 파일을 SSH로 직접 수정하지 않습니다. 관리 PC에서 코드를 수정하고 `main`에
-push한 다음, 서버의 검증된 배포 스크립트를 호출합니다.
+## 6. 원격 운영 사전 점검
 
-관리 PC의 저장소에서:
+서비스와 배포 경로를 변경하기 전에 읽기 전용으로 확인합니다.
 
 ```powershell
-git switch main
-git pull --ff-only origin main
-
-# 파일 수정 후 프로젝트 검증
-uv sync --frozen
-uv run pytest
-uv run ruff check .
-uv run mypy
-
-# 실제 수정한 파일만 명시적으로 추가
-git add <수정한-파일>
-git commit -m "변경 내용 요약"
-git push origin main
+ssh aire-server "systemctl --user is-active aire-server.service"
+ssh aire-server "cd /home/mtvs-1/workspace/AIRE_SERVER && git branch --show-current && git status --short && git rev-parse HEAD"
+ssh aire-server "test -x /home/mtvs-1/.local/bin/deploy-aire-server && echo deploy-script-ok"
+curl.exe -fsS https://traip.mtvs2026.work/health
 ```
 
-push가 완료된 뒤 원격 배포합니다.
+정상 기준:
+
+- 서비스가 `active`입니다.
+- 서버 Git branch가 `main`입니다.
+- `git status --short`에 추적 파일 변경이 없습니다.
+- 배포 스크립트가 실행 가능합니다.
+- 공개 Health가 HTTP 200과 `status=ok`를 반환합니다.
+
+## 7. GitHub 코드 변경 후 한 줄 배포
+
+서버의 Git 추적 파일을 SSH로 직접 수정하지 않습니다. 관리 PC에서 검증한 변경을 `main`에
+push한 다음 서버의 기존 배포 스크립트를 실행합니다.
 
 ```powershell
 ssh aire-server /home/mtvs-1/.local/bin/deploy-aire-server
 ```
 
-배포 스크립트는 다음 순서로 동작합니다.
+배포 스크립트는 다음 순서로 동작해야 합니다.
 
 1. 서버가 변경 없는 `main`인지 확인
 2. 공개 Health와 GitHub 접근 확인
-3. 서비스를 정상 종료
-4. `data/` 전체를 저장소 바깥에 타임스탬프 백업
+3. `systemctl --user stop aire-server.service`로 정상 종료
+4. `data/` 전체를 저장소 밖에 타임스탬프 백업
 5. `git pull --ff-only origin main`
 6. `uv sync --frozen`
-7. `uv run alembic upgrade head`
-8. 서비스 시작 후 공개 Health 확인
+7. `uv run alembic upgrade head`와 `uv run alembic current`
+8. `systemctl --user start aire-server.service`
+9. 서비스 상태, 로그와 공개 Health 확인
 
-`git pull`, 의존성 설치 또는 migration이 실패하면 원인을 확인하기 전에 같은 명령을 반복하지
-않습니다. 서버의 `.env`, `data/`, 백업 디렉터리를 삭제하거나 `git reset --hard`를 실행하지
-않습니다.
-
-## 4. 서버 재시작과 상태 확인
-
-코드 변경 없이 재시작만 할 때:
+배포 후 확인합니다.
 
 ```powershell
-ssh aire-server "systemctl --user restart aire-server.service"
+ssh aire-server "systemctl --user status aire-server.service --no-pager"
+ssh aire-server "journalctl --user -u aire-server.service -n 100 --no-pager"
+curl.exe -fsS https://traip.mtvs2026.work/health
+curl.exe -fsS -o NUL -w "%{http_code}`n" https://traip.mtvs2026.work/docs
 ```
 
-재시작과 상태 확인을 함께 할 때:
+## 8. 재시작, 로그와 운영 설정
+
+코드 변경 없이 재시작과 상태 확인만 할 때:
 
 ```powershell
 ssh aire-server "systemctl --user restart aire-server.service && systemctl --user status aire-server.service --no-pager"
 ```
 
-Health를 확인합니다.
-
-```powershell
-curl.exe -fsS https://traip.mtvs2026.work/health
-curl.exe -fsS -o NUL -w "%{http_code}`n" https://traip.mtvs2026.work/docs
-```
-
-정상 기준은 Health HTTP 200과 `status=ok`, Swagger HTTP 200입니다.
-
-## 5. 로그 확인
-
-최근 100줄:
+최근 로그 100줄:
 
 ```powershell
 ssh aire-server "journalctl --user -u aire-server.service -n 100 --no-pager"
 ```
 
-실시간 로그를 보고 종료할 때는 `Ctrl+C`를 누릅니다.
+실시간 로그:
 
 ```powershell
 ssh -t aire-server "journalctl --user -u aire-server.service -f"
 ```
 
-반복 재시작, traceback, `no such table`, LLM 연결 오류가 있는지 첫 오류부터 확인합니다. 로그를
-공유할 때 `.env`, 인증 header, 사용자 대화 원문은 포함하지 않습니다.
-
-## 6. 운영 `.env` 변경
-
-`.env`는 Git으로 배포하지 않습니다. 설정 변경이 필요한 경우 SSH로 접속해 기존 파일을 먼저
-백업하고 편집합니다. API key와 token 값을 화면 공유, 채팅 또는 명령 기록에 남기지 않습니다.
+`.env`는 Git으로 배포하지 않습니다. 변경이 필요하면 SSH로 접속해 기존 파일을 백업하고 직접
+편집한 뒤 user service를 재시작합니다.
 
 ```bash
-ssh aire-server
 cd /home/mtvs-1/workspace/AIRE_SERVER
-
 backup_stamp="$(date +%Y%m%d-%H%M%S)"
 cp -a .env ".env.backup-${backup_stamp}"
 nano .env
@@ -177,59 +246,53 @@ systemctl --user status aire-server.service --no-pager
 curl -fsS https://traip.mtvs2026.work/health
 ```
 
-설정은 hot reload되지 않으므로 `.env` 변경 후 서비스를 완전히 재시작해야 합니다. Health는
-실제 LLM 연결까지 검증하지 않으므로 provider를 바꿨다면 Chat 요청도 한 번 확인합니다.
+API key, token과 실제 사용자 대화 원문을 화면 공유, 채팅, 명령 기록 또는 Git에 남기지 않습니다.
 
-## 7. 서버에서 허용되는 변경 범위
+## 9. 외부망 장애 시 확인 순서
 
-- 가능: `.env` 변경, 운영 로그 확인, 서비스 재시작, 검증된 배포 스크립트 실행
-- 주의: `data/` 복원이나 DB 파일 교체는 서비스를 먼저 종료하고 백업을 확인한 뒤 진행
-- 금지: 서버에서 `app/`, `migrations/`, `tests/` 등 Git 추적 파일 직접 수정
-- 금지: `.env`, `data/`, SSH 개인 키, Cloudflare token을 Git에 추가
-- 금지: Uvicorn worker를 2개 이상 실행하거나 포트 8000을 외부 인터페이스에 직접 공개
+외부에서 접속되지 않으면 LAN IP부터 바꾸지 말고 다음 순서로 확인합니다.
 
-소스 긴급 수정이 필요해도 관리 PC에서 커밋과 검증을 마친 뒤 `main`에 push하고 배포 스크립트를
-사용합니다. 이렇게 해야 다음 pull에서 충돌하지 않고 배포 이력을 Git으로 추적할 수 있습니다.
+관리 PC:
 
-## 8. 문제 해결
+```powershell
+tailscale status
+ping aire-server-node
+ssh -vv aire-server "whoami"
+```
 
-### SSH 연결 실패
-
-관리 PC가 서버와 같은 LAN/VPN인지, 주소가 바뀌지 않았는지 확인합니다. 서버 콘솔에서 다음을
-확인합니다.
+서버 콘솔:
 
 ```bash
-hostname -I
-systemctl status ssh --no-pager
+sudo systemctl status tailscaled --no-pager
+tailscale status
+tailscale ip -4
+sudo systemctl status ssh --no-pager
 ss -ltn | grep ':22 '
 ```
 
-### 배포가 `tracked working tree changes exist`로 중단
+- Tailscale에서 서버가 offline이면 서버 전원, 인터넷 연결과 `tailscaled`부터 복구합니다.
+- 서버는 online인데 SSH가 실패하면 OpenSSH, `tailscale0` 방화벽과 공개 키를 확인합니다.
+- SSH는 되는데 배포가 실패하면 Git 상태, private 저장소 인증, migration과 user service 로그를
+  확인합니다.
+- Cloudflare 공개 Health만 정상인 것은 SSH가 정상이라는 뜻이 아닙니다. API Tunnel과 Tailscale
+  경유 OpenSSH 경로는 독립적으로 진단합니다.
 
-서버의 추적 파일이 직접 수정된 상태입니다. 덮어쓰거나 reset하지 말고 먼저 차이를 확인합니다.
+## 10. 금지 사항과 복구 원칙
 
-```bash
-ssh aire-server
-cd /home/mtvs-1/workspace/AIRE_SERVER
-git status --short
-git diff
-```
+- 공유기에서 SSH 22번 또는 Uvicorn 8000번을 인터넷에 포트 포워딩하지 않습니다.
+- Uvicorn을 `0.0.0.0:8000`으로 바꾸거나 worker를 2개 이상 실행하지 않습니다.
+- 서버에서 `app/`, `migrations/`, `tests/` 등 Git 추적 파일을 직접 수정하지 않습니다.
+- `.env`, `data/`, SSH 개인 키, Tailscale 인증 key와 Cloudflare token을 Git에 추가하지 않습니다.
+- 배포 실패 시 같은 명령을 반복하거나 `git reset --hard`, Alembic downgrade와 DB 교체를
+  임의로 실행하지 않습니다.
+- migration 실패 후에는 서비스를 성공으로 기록하지 않고 최신 백업과 첫 오류를 확인합니다.
 
-변경의 소유자와 필요성을 확인한 다음 Git에 반영할지 되돌릴지 결정합니다. `data/transcripts/`의
-미추적 운영 파일은 배포 스크립트를 막지 않습니다.
+기능별 배포 smoke와 DB 복구는 [`SERVER_UPDATE_GUIDE.md`](SERVER_UPDATE_GUIDE.md)와
+[`docs/하는방법.md`](docs/하는방법.md)를 따릅니다.
 
-### 서비스가 시작되지 않음
+## 공식 참고 자료
 
-```powershell
-ssh aire-server "systemctl --user status aire-server.service --no-pager"
-ssh aire-server "journalctl --user -u aire-server.service -n 100 --no-pager"
-```
-
-DB migration 상태가 의심되면 서비스를 반복 재시작하지 말고 다음 결과를 확인합니다.
-
-```powershell
-ssh aire-server "cd /home/mtvs-1/workspace/AIRE_SERVER && uv run alembic current"
-```
-
-운영 데이터 복구가 필요하면 자동으로 판단해 DB를 교체하지 말고 최신 백업 경로와 오류를 먼저
-기록합니다.
+- [Tailscale Windows 설치](https://tailscale.com/docs/install/windows)
+- [Tailscale 장치 연결과 MagicDNS](https://tailscale.com/kb/1452/connect-to-devices)
+- [Tailscale을 통한 일반 SSH](https://tailscale.com/docs/reference/ssh-over-tailscale)
+- [Tailscale IP와 DNS 주소](https://tailscale.com/docs/concepts/ip-and-dns-addresses)
