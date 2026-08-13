@@ -145,6 +145,12 @@ Gateway가 준비된 명령만 allowlist에 추가합니다.
 후보를 만들지 않는다. `game_context`의 위치·위협·작업·인벤토리 사실만으로도 후보를 만들지
 않으며, 후보를 받은 UE Command Gateway가 Recipe·재료·상태·작업대를 최종 검증한다.
 
+Recipe 질문 응답은 검증된 Recipe fact를 그대로 반환하며 LLM이 재작성하지 않는다. 명시적
+제작 요청의 `display_text`도 `알겠어. 철검 하나를 만들게.`로 고정하고, 같은 응답에 위
+`CraftItem` 후보를 반드시 포함한다. 두 대사 경로에는 Inventory·주변 자원 같은 World Context
+fact를 섞지 않아 다른 Item을 Recipe 재료처럼 말하거나 Command 후보가 대사와 분리되는 일을
+막는다.
+
 ### 4.2 Mobile 요청
 
 Header는 `Authorization: Bearer AIRE_WEB`을 사용하고 다음 field를 바꿉니다.

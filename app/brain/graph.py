@@ -336,12 +336,10 @@ def build_companion_graph(
             return await decline(state)
 
         return {
-            "display_text": await say(
-                state,
-                "recipe",
-                "알겠어. 철검 하나를 만들게.",
-                ("제작 레시피 ID는 recipe-11이다", "제작 수량은 1개다"),
-            ),
+            # 명령 수락 대사는 Recipe 설명 장면이 아니다. LLM 재작성이나 World Context를
+            # 거치면 Inventory 사실을 재료로 섞거나 실행 대신 제작법을 설명할 수 있으므로
+            # 검증된 고정 문구를 Candidate와 함께 반환한다.
+            "display_text": "알겠어. 철검 하나를 만들게.",
             "action": CompanionAction(
                 type=CommandType.CRAFT_ITEM,
                 parameters={"recipe_id": recipe_id, "quantity": 1},
@@ -467,7 +465,9 @@ def build_companion_graph(
         text = state["text"]
         fact = recipes.fact_for(text)
         if fact is not None:
-            return {"display_text": await say(state, "recipe", fact.text, (fact.text,))}
+            # RecipeRepository가 이미 검증된 재료·수량·작업대·시간 문장을 만든다. 다시
+            # LLM에 맡기면 필수 사실을 생략하거나 World Context Item을 섞을 수 있다.
+            return {"display_text": fact.text}
         return {
             "display_text": await say(
                 state,

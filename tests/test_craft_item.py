@@ -8,9 +8,10 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
 
 from app.brain import CompanionTurn
+from app.brain.dialogue import DialogueSpec
 from app.brain.enemies import EnemyRepository
 from app.brain.graph import build_companion_graph
-from app.brain.llm import MockLLMProvider
+from app.brain.llm import LLMProvider, MockLLMProvider
 from app.brain.lore import LoreRepository
 from app.brain.recipes import RecipeRepository
 from app.brain.resources import ResourceRepository
@@ -32,6 +33,25 @@ def _graph():
     )
 
 
+class PoisonedRecipeDialogueProvider(MockLLMProvider):
+    """Recipe 장면이 LLM에 도달하면 Context Item을 재료처럼 섞는 회귀 공급자."""
+
+    async def generate_dialogue(self, spec: DialogueSpec) -> str:
+        if spec.scene == "recipe":
+            return "철괴 3개와 PlantStem 2개와 나무 손잡이 1개로 만들 수 있어."
+        return await super().generate_dialogue(spec)
+
+
+def _graph_with(provider: LLMProvider):
+    return build_companion_graph(
+        provider,
+        RecipeRepository(),
+        LoreRepository(),
+        ResourceRepository(),
+        EnemyRepository(),
+    )
+
+
 @pytest.mark.parametrize("text", ["철검 만들어줘", "Sword_Iron craft", "IronSword 제작해줘"])
 async def test_explicit_allowlisted_iron_sword_request_emits_fixed_candidate(text: str) -> None:
     turn = CompanionTurn(
@@ -46,6 +66,44 @@ async def test_explicit_allowlisted_iron_sword_request_emits_fixed_candidate(tex
     assert action is not None
     assert action.type is CommandType.CRAFT_ITEM
     assert action.parameters == {"recipe_id": "recipe-11", "quantity": 1}
+    assert result["display_text"] == "알겠어. 철검 하나를 만들게."
+
+
+async def test_recipe_question_returns_complete_fact_without_context_contamination() -> None:
+    text = "철검 제작법 알려줘"
+    turn = CompanionTurn(
+        text=text,
+        conversation_key="craft-test",
+        allowed_actions=frozenset({CommandType.CRAFT_ITEM}),
+    )
+
+    result = await _graph_with(PoisonedRecipeDialogueProvider()).ainvoke(
+        {"turn": turn, "text": text}
+    )
+
+    assert result.get("action") is None
+    assert result["display_text"] == (
+        "철검은 철괴 3개와 나무 손잡이 1개로 대장간 화로에서 3초 만에 만들 수 있어."
+    )
+    assert "PlantStem" not in result["display_text"]
+
+
+async def test_craft_request_keeps_fixed_acceptance_and_candidate_when_llm_would_explain_recipe(
+) -> None:
+    text = "철검 만들어줘"
+    turn = CompanionTurn(
+        text=text,
+        conversation_key="craft-test",
+        allowed_actions=frozenset({CommandType.CRAFT_ITEM}),
+    )
+
+    result = await _graph_with(PoisonedRecipeDialogueProvider()).ainvoke(
+        {"turn": turn, "text": text}
+    )
+
+    assert result["display_text"] == "알겠어. 철검 하나를 만들게."
+    assert result["action"].type is CommandType.CRAFT_ITEM
+    assert result["action"].parameters == {"recipe_id": "recipe-11", "quantity": 1}
 
 
 @pytest.mark.parametrize(
@@ -155,6 +213,8 @@ async def test_http_and_websocket_emit_the_same_craft_contract(authed_app: Any) 
             websocket_response = websocket.receive_json()
 
     assert http_response.status_code == 200
+    assert http_response.json()["display_text"] == "알겠어. 철검 하나를 만들게."
+    assert websocket_response["payload"]["display_text"] == "알겠어. 철검 하나를 만들게."
     http_candidate = http_response.json()["command_candidates"][0]
     websocket_candidate = websocket_response["payload"]["command_candidates"][0]
     for candidate in (http_candidate, websocket_candidate):
