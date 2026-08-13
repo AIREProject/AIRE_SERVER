@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "memories": [
+    {
+      "kind": "episode",
+      "text": "나무를 캐오라는 명령을 내렸다.",
+      "importance": 1,
+      "source_key": null,
+      "created_at": "2026-07-31T10:30:51.696027Z",
+      "recalled_at": null,
+      "recall_count": 0
+    },
+    {
+      "kind": "session_summary",
+      "text": "플레이어가 인사를 건네자 마코가 바로 옆에 있다고 대답하며 반갑게 맞이했다.",
+      "importance": 1,
+      "source_key": "d2887cfb4c479c8c1c332ade1cc04f2973db7042fb1616eb2069bf6073b1604a",
+      "created_at": "2026-07-31T10:38:37.026831Z",
+      "recalled_at": null,
+      "recall_count": 0
+    },
+    {
+      "kind": "session_summary",
+      "text": "플레이어가 나무를 캐달라고 부탁하자 마코가 흔쾌히 수락했다.",
+      "importance": 1,
+      "source_key": "551f5f5e73abd5ee9a0b80d035bb8ab8ee52a15d730293f4c293bfbaa5af6740",
+      "created_at": "2026-07-31T10:39:22.313900Z",
+      "recalled_at": null,
+      "recall_count": 0
+    }
+  ]
+}

@@ -47,9 +47,9 @@ class TimeContext(StrictModel):
 class CommandType(StrEnum):
     """게임의 명령 프로토콜.
 
-    마코가 실제로 내는 것은 여섯 가지(`Follow` / `HoldPosition` / `CancelCurrent` /
-    `GatherResource` / `Attack` / `Switch`)뿐이고, 나머지는 게임이 `allowed_commands` 로
-    보낼 수 있는 값이다. 무엇을 낼 수 있는지는 `brain/graph.py` 의 라우팅 표가 정한다.
+    마코가 실제로 내는 것은 기존 명령과 `CraftItem`을 포함한 제한된 집합이고, 나머지는
+    게임이 `allowed_commands` 로 보낼 수 있는 값이다. 무엇을 낼 수 있는지는
+    `brain/graph.py` 의 라우팅 표가 정한다.
     """
 
     FOLLOW = "Command.Follow"
@@ -62,6 +62,7 @@ class CommandType(StrEnum):
     GATHER_RESOURCE = "Command.GatherResource"
     ATTACK = "Command.Attack"
     SWITCH = "Command.Switch"
+    CRAFT_ITEM = "Command.CraftItem"
 
 
 class CommandCandidate(StrictModel):
@@ -80,6 +81,20 @@ class CommandCandidate(StrictModel):
             raise ValueError("Command expiration must be later than issue time.")
         if len(self.parameters) > 16:
             raise ValueError("Command parameters must contain at most 16 properties.")
+        if self.type is CommandType.CRAFT_ITEM:
+            # AX-I06의 첫 수직 슬라이스는 철검 한 개만 허용한다. UE Gateway가 다시
+            # 검증하더라도 Backend 후보 경계에서 다른 Recipe·수량이 섞이지 않게 한다.
+            if self.target_id is not None:
+                raise ValueError("CraftItem must not contain a target_id.")
+            if (
+                set(self.parameters) != {"recipe_id", "quantity"}
+                or self.parameters.get("recipe_id") != "recipe-11"
+                or type(self.parameters.get("quantity")) is not int
+                or self.parameters.get("quantity") != 1
+            ):
+                raise ValueError(
+                    "CraftItem parameters must be recipe_id=recipe-11 and quantity=1."
+                )
         return self
 
 
