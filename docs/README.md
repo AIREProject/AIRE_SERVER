@@ -22,6 +22,7 @@
 | `api-endpoints.md` | 클라이언트가 호출하는 현행 `/api/v1/*` 계약과 예시 |
 | `game-data.md` | Item/Recipe/Enemy seed 데이터와 DB 반영 절차 |
 | `temporary-scaffolds.md` | 현재 의도적으로 남긴 제한, 미구현 기능과 확장 전 확인사항 |
+| `adoption_review/` | 채택 감사 기록, 백엔드-UE 데이터 권위 및 AX 기능 구현 로드맵 (`08_AX_FEATURE_ROADMAP.md`, `09_AX_IMPLEMENTATION_PLAN.md`) |
 
 ## 권위 순서
 

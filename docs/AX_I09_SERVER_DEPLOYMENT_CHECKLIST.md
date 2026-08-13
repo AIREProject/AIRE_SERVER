@@ -33,7 +33,7 @@
 - `docs/game-data.md`
 - `docs/AX_I09_SERVER_DEPLOYMENT_CHECKLIST.md`
 
-`old/ai_server_adoption_review/09_AX_IMPLEMENTATION_PLAN.md`의 작업 디렉터리 변경은 기존 사용자
+`docs/adoption_review/09_AX_IMPLEMENTATION_PLAN.md`의 작업 디렉터리 변경은 기존 사용자
 변경이며 이 Commit에 포함하지 않습니다.
 
 ## 서버 접근 가능 시 적용 순서
