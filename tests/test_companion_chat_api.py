@@ -100,6 +100,25 @@ async def test_attack_message_yields_dialogue_and_target(authed_client: Any) -> 
     assert candidate["parameters"] == {"target_id": "TrenchCrawler"}
 
 
+async def test_game_gather_message_yields_canonical_wood_candidate(
+    authed_client: Any,
+) -> None:
+    client, token, _profile_id = authed_client
+
+    response = client.post(
+        "/api/v1/chat",
+        headers=_headers(token),
+        json=_body("나무 캐줘", allowed_commands=["Command.GatherResource"]),
+    )
+
+    assert response.status_code == 200
+    candidates = response.json()["command_candidates"]
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate["type"] == "Command.GatherResource"
+    assert candidate["parameters"] == {"resource": "wood"}
+
+
 async def test_request_context_fields_round_trip(authed_client: Any) -> None:
     client, token, _profile_id = authed_client
 

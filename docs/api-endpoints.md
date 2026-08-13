@@ -126,6 +126,25 @@ X-Request-ID: chat-game-1
 AX-I02 대사 표시 단계에서는 `allowed_commands`를 빈 배열로 보냅니다. 이후 UE Command
 Gateway가 준비된 명령만 allowlist에 추가합니다.
 
+`Command.GatherResource`의 Game 첫 수직 슬라이스는 명시적인 wood 요청만 후보로 만든다.
+`나무를 모아 줘`처럼 자원만 지정한 요청의 후보 parameters는 정확히 다음과 같으며,
+`quantity` key를 포함하지 않는다.
+
+```json
+{
+  "type": "Command.GatherResource",
+  "target_id": null,
+  "parameters": {"resource": "wood"}
+}
+```
+
+`돌`, 나무·돌을 함께 말한 모호한 요청, 채집 방법·가능 여부 질문, 그리고 정수·소수·음수·
+한글 수사·`많이`처럼 어떤 형태로든 수량을 말한 요청은 Game 후보를 만들지 않는다. 주변
+`game_context.nearby_resources` facts만으로 후보를 추가하지 않으며, 후보를 받은 UE Gateway가
+fresh bounded query로 실제 wood 대상을 다시 검증한다. Mobile surface의 `GatherResource`는
+이 strict Game 범위와 별개로 기존 `OfflineTask/Gathering` 계약(wood·stone, 수량 1~50,
+미지정 시 50)을 유지한다.
+
 `Command.CraftItem`은 AX-I06의 첫 제작 수직 슬라이스다. UE가 이 명령을 allowlist에 넣은
 경우에만 명시적인 `철검`/`Sword_Iron`/`IronSword` 제작 요청이 후보가 된다. 후보 parameters는
 항상 다음과 같고, 다른 Recipe ID나 수량은 후보를 만들지 않는다.

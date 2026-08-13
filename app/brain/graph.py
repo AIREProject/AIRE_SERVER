@@ -14,8 +14,9 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import JsonValue
 
-from app.models import CommandType
+from app.models import CommandType, Surface
 
+from .command_intent import CommandIntentParser
 from .contract import CompanionAction, CompanionTurn, InventoryFacts, WorldContextFacts
 from .dialogue import SURFACE_PROFILES, DialogueScene, DialogueSpec, SurfaceProfile, render
 from .enemies import EnemyRepository
@@ -290,6 +291,13 @@ def build_companion_graph(
 
         pending = state["pending"]
         assert pending is not None  # route_by_entry 가 있을 때만 이 노드로 온다
+        # 질문은 되물은 자원의 답으로 해석하지 않는다. 그렇지 않으면
+        # "무엇을 캘까?" → "나무를 어떻게 캐?"가 Game 후보로 승격된다.
+        if (
+            state["turn"].surface is Surface.GAME
+            and CommandIntentParser.is_gather_question(state["text"])
+        ):
+            return {"pending_answered": False}
         slot = await llm.resolve_pending(state["text"], pending)
         if slot is None:
             return {"pending_answered": False}
@@ -310,6 +318,13 @@ def build_companion_graph(
             # Provider가 질문을 명령으로 잘못 분류해도 검증된 제작법 사실은 행동으로
             # 승격하지 않는다.
             intent = TopIntent.RECIPE
+        if (
+            state["turn"].surface is Surface.GAME
+            and CommandIntentParser.is_gather_question(state["text"])
+        ):
+            # Provider가 채집 방법·가능 여부 질문을 command로 잘못 분류해도
+            # Game GatherResource 후보 경계로 들어오지 못하게 한다.
+            intent = TopIntent.UNKNOWN
         return {"top_intent": intent}
 
     async def command_classify_node(state: CompanionState) -> CompanionUpdate:
@@ -438,6 +453,15 @@ def build_companion_graph(
                     (f"채집할 수 있는 자원은 {names}뿐이다",),
                 )
             }
+
+        if turn.surface is Surface.GAME and (
+            resource is not ResourceId.WOOD
+            or quantity is not None
+            or CommandIntentParser.has_gather_quantity(state["text"])
+        ):
+            # InGame 첫 수직 슬라이스는 명시적 wood 한 그루 WorkOrder 요청만 허용한다. 수량을
+            # 해석하지 못한 malformed/vague 표현도 `has_gather_quantity`가 잡는다.
+            return await decline(state)
 
         if not resources.allows_quantity(quantity):
             return {

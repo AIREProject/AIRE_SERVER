@@ -104,6 +104,23 @@ async def test_websocket_response_matches_http_response(authed_app: Any) -> None
     assert ws_payload["command_candidates"][0]["type"] == "Command.HoldPosition"
 
 
+async def test_websocket_game_gather_yields_canonical_wood_candidate(
+    authed_app: Any,
+) -> None:
+    app, token = authed_app
+    payload = body("나무 캐줘", allowed_commands=["Command.GatherResource"])
+
+    with TestClient(app) as client, client.websocket_connect(WS_PATH) as websocket:
+        websocket.send_json(chat_frame(payload, token=token))
+        message = websocket.receive_json()
+
+    candidates = message["payload"]["command_candidates"]
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate["type"] == "Command.GatherResource"
+    assert candidate["parameters"] == {"resource": "wood"}
+
+
 # --- 정상 흐름 ----------------------------------------------------------------
 
 

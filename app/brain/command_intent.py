@@ -58,6 +58,24 @@ class CommandIntentParser:
     # 수량은 더 이상 미지원 신호가 아니라 추출 대상이다. 앞뒤 경계를 확인해
     # "1.5개"의 5, "-1개"의 1처럼 온전하지 않은 숫자를 주워 담지 않는다.
     _QUANTITY = re.compile(r"(?<![\d.,\-])(\d+)\s*개")
+    # Game GatherResource의 첫 수직 슬라이스에서는 수량을 해석할 수 있어도 후보를
+    # 만들지 않는다. 이 패턴은 정수 추출에 실패하는 표현(소수·음수·한글 수사·막연한
+    # 양)까지 포함해, `resolve_quantity()`의 None과 "수량을 말하지 않음"을 구분한다.
+    _GATHER_QUANTITY = re.compile(
+        r"(?:[-+]?\d[\d.,]*\s*개|"
+        r"(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|스무|몇)\s*개|"
+        r"많이|잔뜩|조금|전부|모두|다\s*(?:캐|모아|모으|채집|가져)|"
+        r"가방\s*찰\s*때까지|가능한\s*만큼|최대한|수량)"
+    )
+    _GATHER_QUESTION_WORDS = re.compile(
+        r"(?:어떻게|방법|(?:캐|모으|채집|가져)(?:는|하는)?\s*법|"
+        r"가능|할\s*수|뭘|무엇|뭐|왜|어디)"
+    )
+    _GATHER_QUESTION_ENDING = re.compile(
+        r"(?:할까|될까|가능할까|할까요|될까요|인가요|나요|니)$"
+    )
+    _GATHER_REQUEST_SUFFIX = re.compile(r"(?:줘|주세요|줄래)$")
+    _GATHER_REFERENCE = re.compile(r"(?:캐|채집|모으|모아|가져|자원)")
     _AMBIGUOUS_REFERENCE = re.compile(r"(?:저것|이것|그것|무언가|뭔가|자원)")
     _BARE_GATHER = re.compile(
         r"(?:좀 )?(?:모아|캐|채집해|가져와)(?:\s*(?:줘|주세요|줄래))?"
@@ -111,6 +129,40 @@ class CommandIntentParser:
         quantities = {int(value) for value in cls._QUANTITY.findall(text)}
         # 수량이 여럿이면 어느 쪽인지 확신할 수 없으므로 지정되지 않은 것으로 둔다.
         return quantities.pop() if len(quantities) == 1 else None
+
+    @classmethod
+    def has_gather_quantity(cls, text: str) -> bool:
+        """채집 발화에 수량 또는 양을 나타내는 표현이 있는지 판정한다.
+
+        ``resolve_quantity()``는 실행 가능한 정수만 반환하므로, Game 표면의 strict
+        후보 경계에서는 ``1.5개``나 ``많이`` 같은 malformed/모호한 양도 별도로
+        거부해야 한다. 호출자는 이미 채집 경로에 들어온 텍스트만 전달한다.
+        """
+
+        return cls._GATHER_QUANTITY.search(text.casefold()) is not None
+
+    @classmethod
+    def is_gather_question(cls, text: str) -> bool:
+        """채집 방법·가능 여부를 묻는 질문인지 보수적으로 판정한다.
+
+        일반적인 ``방법`` 질문(예: 철검 만드는 방법)은 채집 참조가 없으면 제외한다.
+        원문 물음표와 한국어 의문형 어미를 함께 보아 정규화 과정에서 사라지는
+        문장부호도 놓치지 않는다.
+        """
+
+        normalized = cls.normalize(text)
+        if not normalized or cls._GATHER_REFERENCE.search(normalized) is None:
+            return False
+        # 한국어의 공손한 요청형은 물음표를 붙여도 명령이다("캐줄래?"). 반면
+        # 동사만 남은 "캐?"는 방법/가능 질문으로 취급해 Game 후보를 막는다.
+        punctuation_question = "?" in text or "\uFF1F" in text
+        if punctuation_question and cls._GATHER_REQUEST_SUFFIX.search(normalized):
+            punctuation_question = False
+        return bool(
+            punctuation_question
+            or cls._GATHER_QUESTION_WORDS.search(normalized)
+            or cls._GATHER_QUESTION_ENDING.search(normalized)
+        )
 
     @classmethod
     def is_gather_command(cls, text: str) -> bool:

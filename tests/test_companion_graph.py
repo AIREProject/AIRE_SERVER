@@ -175,12 +175,69 @@ async def test_every_terminal_node_fills_display_text(text: str) -> None:
 async def test_gather_emits_action_with_resolved_parameters(
     text: str, expected_parameters: dict[str, object]
 ) -> None:
-    final = await make_graph().ainvoke({"turn": make_turn(text), "text": text})
+    # 수량·stone은 Mobile OfflineTask 경로의 기존 계약이다. Game은 아래 strict
+    # 테스트에서 wood/no-quantity 첫 수직 슬라이스만 허용한다.
+    final = await make_graph().ainvoke(
+        {"turn": make_turn(text, surface=Surface.MOBILE), "text": text}
+    )
 
     action = final["action"]
     assert action is not None
     assert action.type is CommandType.GATHER_RESOURCE
     assert action.parameters == expected_parameters
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["나무를 모아 줘", "나무 좀 캐 줘", "장작 모아줘", "나무 캐줄래?", "나무 캐 줘?"],
+)
+async def test_game_gather_emits_canonical_wood_parameters(text: str) -> None:
+    final = await make_graph().ainvoke(
+        {"turn": make_turn(text, surface=Surface.GAME), "text": text}
+    )
+
+    action = final["action"]
+    assert action is not None
+    assert action.type is CommandType.GATHER_RESOURCE
+    assert action.parameters == {"resource": "wood"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "나무 1개 캐 줘",
+        "나무 20개 캐 줘",
+        "나무 1.5개 캐 줘",
+        "나무 -1개 캐 줘",
+        "나무 많이 캐 줘",
+    ],
+)
+async def test_game_gather_rejects_any_quantity(text: str) -> None:
+    final = await make_graph().ainvoke(
+        {"turn": make_turn(text, surface=Surface.GAME), "text": text}
+    )
+
+    assert final["display_text"]
+    assert final.get("action") is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "돌 캐 줘",
+        "나무를 어떻게 캐?",
+        "나무 캐는 방법 알려 줘",
+        "나무 채집하는 법 알려 줘",
+        "돌 캐는 방법 알려 줘",
+    ],
+)
+async def test_game_gather_rejects_stone_and_questions(text: str) -> None:
+    final = await make_graph().ainvoke(
+        {"turn": make_turn(text, surface=Surface.GAME), "text": text}
+    )
+
+    assert final["display_text"]
+    assert final.get("action") is None
 
 
 @pytest.mark.parametrize(
@@ -273,12 +330,19 @@ async def test_provider_failure_propagates_out_of_the_brain() -> None:
         await brain.respond(make_turn("따라와"))
 
 
-async def say(brain: CompanionBrain, text: str, *, key: str = "conv-1") -> CompanionReply:
+async def say(
+    brain: CompanionBrain,
+    text: str,
+    *,
+    key: str = "conv-1",
+    surface: Surface = Surface.GAME,
+) -> CompanionReply:
     return await brain.respond(
         CompanionTurn(
             text=text,
             allowed_actions=frozenset(CommandType),
             conversation_key=key,
+            surface=surface,
         )
     )
 
@@ -303,8 +367,8 @@ async def test_quantity_survives_the_ask_back() -> None:
     brain = CompanionBrain(MockLLMProvider())
 
     # 수량은 말했지만 자원은 지목하지 않아 되묻는 발화여야 한다.
-    asked = await say(brain, "저것 20개 캐 줘")
-    answered = await say(brain, "나무")
+    asked = await say(brain, "저것 20개 캐 줘", surface=Surface.MOBILE)
+    answered = await say(brain, "나무", surface=Surface.MOBILE)
 
     assert asked.action is None
     assert answered.action is not None
@@ -329,9 +393,9 @@ async def test_a_new_request_does_not_inherit_the_old_slots_quantity() -> None:
 
     brain = CompanionBrain(MockLLMProvider())
 
-    await say(brain, "저것 20개 캐 줘")  # 되묻고 답하지 않은 채로 둔다
-    await say(brain, "저것 좀 캐 줘")  # 수량 없이 새로 요청한다
-    answered = await say(brain, "나무")
+    await say(brain, "저것 20개 캐 줘", surface=Surface.MOBILE)  # 되묻고 답하지 않은 채로 둔다
+    await say(brain, "저것 좀 캐 줘", surface=Surface.MOBILE)  # 수량 없이 새로 요청한다
+    answered = await say(brain, "나무", surface=Surface.MOBILE)
 
     assert answered.action is not None
     assert answered.action.parameters == {"resource": "wood"}

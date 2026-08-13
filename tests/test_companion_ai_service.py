@@ -21,7 +21,15 @@ from app.db.connection import Database
 from app.db.models import ItemModel, OfflineTaskModel
 from app.errors import AIServiceUnavailableError
 from app.identity import AuthenticatedDevice, DeviceRole
-from app.models import AIMetadata, ChatRequest, ChatResponse, CommandType, TimeContext, TimeSource
+from app.models import (
+    AIMetadata,
+    ChatRequest,
+    ChatResponse,
+    CommandType,
+    Surface,
+    TimeContext,
+    TimeSource,
+)
 from app.service import CompanionService, _player_key
 from tests.conftest import make_authenticated_device, make_database, make_settings
 
@@ -71,7 +79,11 @@ def make_request(
     companion_id: str = "mako",
     message_id: str | None = None,
     time_context: TimeContext | None = None,
+    surface: Surface = Surface.GAME,
 ) -> ChatRequest:
+    request_game_context = (
+        None if surface is Surface.MOBILE else game_context or empty_game_context()
+    )
     return ChatRequest(
         request_id="req-1",
         session_id=session_id,
@@ -79,8 +91,9 @@ def make_request(
         companion_id=companion_id,
         message_id=message_id,
         user_message=user_message,
+        surface=surface,
         time_context=time_context,
-        game_context=game_context or empty_game_context(),
+        game_context=request_game_context,
         allowed_commands=allowed_commands or [],
     )
 
@@ -210,7 +223,12 @@ async def test_gather_emits_candidate_with_resolved_parameters(
     service = make_service()
 
     result = await respond(
-        service, identity, session, text, allowed_commands=[CommandType.GATHER_RESOURCE]
+        service,
+        identity,
+        session,
+        text,
+        allowed_commands=[CommandType.GATHER_RESOURCE],
+        surface=Surface.MOBILE,
     )
 
     assert result.display_text
@@ -255,7 +273,12 @@ async def test_mobile_gather_creates_offline_task(
     service = make_service()
 
     result = await respond(
-        service, identity, session, "나무를 모아 줘", allowed_commands=[CommandType.GATHER_RESOURCE]
+        service,
+        identity,
+        session,
+        "나무를 모아 줘",
+        allowed_commands=[CommandType.GATHER_RESOURCE],
+        surface=Surface.MOBILE,
     )
 
     assert result.command_candidates == []
@@ -292,6 +315,7 @@ async def test_mobile_gather_with_quantity_stores_requested_amount(
         session,
         "나무 20개 캐 줘",
         allowed_commands=[CommandType.GATHER_RESOURCE],
+        surface=Surface.MOBILE,
     )
 
     async with database.session_factory() as check_session:
@@ -314,10 +338,20 @@ async def test_mobile_gather_task_creation_is_idempotent(
     service = make_service()
 
     first = await respond(
-        service, identity, session, "나무를 모아 줘", allowed_commands=[CommandType.GATHER_RESOURCE]
+        service,
+        identity,
+        session,
+        "나무를 모아 줘",
+        allowed_commands=[CommandType.GATHER_RESOURCE],
+        surface=Surface.MOBILE,
     )
     second = await respond(
-        service, identity, session, "나무를 모아 줘", allowed_commands=[CommandType.GATHER_RESOURCE]
+        service,
+        identity,
+        session,
+        "나무를 모아 줘",
+        allowed_commands=[CommandType.GATHER_RESOURCE],
+        surface=Surface.MOBILE,
     )
 
     assert first.offline_task_id is not None
@@ -338,11 +372,47 @@ async def test_game_client_gather_does_not_create_offline_task(
     service = make_service()
 
     result = await respond(
-        service, identity, session, "나무를 모아 줘", allowed_commands=[CommandType.GATHER_RESOURCE]
+        service,
+        identity,
+        session,
+        "나무를 모아 줘",
+        allowed_commands=[CommandType.GATHER_RESOURCE],
     )
 
     assert result.offline_task_id is None
     assert len(result.command_candidates) == 1
+    assert result.command_candidates[0].parameters == {"resource": "wood"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "나무 1개 캐 줘",
+        "나무 20개 캐 줘",
+        "나무 1.5개 캐 줘",
+        "나무 -1개 캐 줘",
+        "나무 많이 캐 줘",
+        "돌 캐 줘",
+        "나무를 어떻게 캐?",
+        "나무 캐는 방법 알려 줘",
+    ],
+)
+async def test_game_gather_strict_slice_returns_no_candidate_for_rejected_inputs(
+    text: str, identity: AuthenticatedDevice, session: AsyncSession
+) -> None:
+    service = make_service()
+
+    result = await respond(
+        service,
+        identity,
+        session,
+        text,
+        allowed_commands=[CommandType.GATHER_RESOURCE],
+        surface=Surface.GAME,
+    )
+
+    assert result.display_text
+    assert result.command_candidates == []
 
 
 async def test_mobile_gather_without_allowlist_creates_no_task(
