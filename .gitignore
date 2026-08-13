@@ -11,6 +11,10 @@ coverage.xml
 htmlcov/
 *.db-shm
 *.db-wal
-# 장기기억(LONG_TERM_MEMORY_DIR)과 대화 전사(TRANSCRIPT_DIR). 플레이어와 나눈 말에서
-# 나온 내용이라 커밋하지 않는다.
-data/
+
+# 운영 시 재생성되는 DB와 요청 로그만 제외한다.
+# 대화 전사와 장기기억은 LLM 학습·평가 자료로 Git에 포함한다.
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.log

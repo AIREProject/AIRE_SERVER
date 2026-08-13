@@ -30,7 +30,7 @@ from .store import ConversationTurn, PendingSlot
 # 명령 라벨 → (행동, 대사 장면, 폴백 대사)
 # 한 테이블에 묶어 "대사는 있는데 명령이 없는" 비대칭을 원천 차단한다.
 #
-# **마코가 낼 수 있는 명령의 범위는 이 표와 아래 attack·gather 노드가 정한다.** `CommandType`
+# **마코가 낼 수 있는 명령의 범위는 이 표와 아래 craft·attack·gather 노드가 정한다.** `CommandType`
 # 은 게임의 프로토콜 전체(게임 전용 `EngageTarget`·`MoveToLocation` 등 포함)라 타입만으로는
 # 걸러지지 않는다. 다만 여기
 # 항목을 늘리려면 `dialogue.py` 의 `DialogueScene` Literal 과 `SCENE_GUIDE` 도 같이 넓혀야
@@ -94,6 +94,8 @@ class CompanionState(TypedDict):
     command_label: NotRequired[CommandLabel]
     resource: NotRequired[ResourceSlot]
     quantity: NotRequired[int | None]
+    craft_requested: NotRequired[bool]
+    craft_recipe_id: NotRequired[str | None]
     # 출력 누산기 (터미널 노드가 채움)
     display_text: NotRequired[str]
     action: NotRequired[CompanionAction | None]
@@ -109,6 +111,8 @@ class CompanionUpdate(TypedDict, total=False):
     command_label: CommandLabel
     resource: ResourceSlot
     quantity: int | None
+    craft_requested: bool
+    craft_recipe_id: str | None
     display_text: str
     action: CompanionAction | None
     next_pending: PendingSlot | None
@@ -116,7 +120,7 @@ class CompanionUpdate(TypedDict, total=False):
 
 
 TopRoute = Literal["command_classify", "recipe", "enemy", "lore", "conversation", "unsupported"]
-CommandRoute = Literal["movement_command", "gather", "attack", "unsupported"]
+CommandRoute = Literal["movement_command", "craft", "gather", "attack", "unsupported"]
 EntryRoute = Literal["resolve_pending", "classify_top"]
 PendingRoute = Literal["gather", "classify_top"]
 
@@ -216,6 +220,8 @@ def route_by_top(state: CompanionState) -> TopRoute:
 def route_by_command(state: CompanionState) -> CommandRoute:
     """명령 라벨에 따라 다음 노드를 고른다."""
 
+    if state.get("craft_requested") or state.get("craft_recipe_id") is not None:
+        return "craft"
     label = state["command_label"]
     if label in _COMMANDS:
         return "movement_command"
@@ -295,14 +301,51 @@ def build_companion_graph(
 
     async def classify_top_node(state: CompanionState) -> CompanionUpdate:
         intent = await llm.classify_top(state["text"], clarification_pending=False)
+        # 제작법 질문은 기존 recipe facts-only 경로에 남긴다. 명시적인 allowlist 제작
+        # 요청만 provider의 분류 결과와 무관하게 command 경로로 올린다.
+        craft_requested = recipes.is_craft_request(state["text"])
+        if craft_requested:
+            intent = TopIntent.COMMAND
+        elif recipes.fact_for(state["text"]) is not None:
+            # Provider가 질문을 명령으로 잘못 분류해도 검증된 제작법 사실은 행동으로
+            # 승격하지 않는다.
+            intent = TopIntent.RECIPE
         return {"top_intent": intent}
 
     async def command_classify_node(state: CompanionState) -> CompanionUpdate:
         classification = await llm.classify_command(state["text"])
+        craft_requested = recipes.is_craft_request(state["text"])
         return {
             "command_label": classification.command,
             "resource": classification.resource,
             "quantity": classification.quantity,
+            "craft_requested": craft_requested,
+            "craft_recipe_id": recipes.craft_recipe_id_for(state["text"]),
+        }
+
+    async def craft_node(state: CompanionState) -> CompanionUpdate:
+        """allowlist된 철검 제작 요청을 고정 Recipe 계약으로 변환한다."""
+
+        turn = state["turn"]
+        recipe_id = state.get("craft_recipe_id")
+        if (
+            not state.get("craft_requested")
+            or recipe_id != "recipe-11"
+            or CommandType.CRAFT_ITEM not in turn.allowed_actions
+        ):
+            return await decline(state)
+
+        return {
+            "display_text": await say(
+                state,
+                "recipe",
+                "알겠어. 철검 하나를 만들게.",
+                ("제작 레시피 ID는 recipe-11이다", "제작 수량은 1개다"),
+            ),
+            "action": CompanionAction(
+                type=CommandType.CRAFT_ITEM,
+                parameters={"recipe_id": recipe_id, "quantity": 1},
+            ),
         }
 
     async def movement_command_node(state: CompanionState) -> CompanionUpdate:
@@ -470,6 +513,7 @@ def build_companion_graph(
     graph.add_node("resolve_pending", resolve_pending_node)
     graph.add_node("classify_top", classify_top_node)
     graph.add_node("command_classify", command_classify_node)
+    graph.add_node("craft", craft_node)
     graph.add_node("movement_command", movement_command_node)
     graph.add_node("attack", attack_node)
     graph.add_node("gather", gather_node)
@@ -485,6 +529,7 @@ def build_companion_graph(
     graph.add_conditional_edges("command_classify", route_by_command)
     for terminal in (
         "movement_command",
+        "craft",
         "attack",
         "gather",
         "recipe",
