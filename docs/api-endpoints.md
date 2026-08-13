@@ -126,6 +126,25 @@ X-Request-ID: chat-game-1
 AX-I02 대사 표시 단계에서는 `allowed_commands`를 빈 배열로 보냅니다. 이후 UE Command
 Gateway가 준비된 명령만 allowlist에 추가합니다.
 
+`Command.CraftItem`은 AX-I06의 첫 제작 수직 슬라이스다. UE가 이 명령을 allowlist에 넣은
+경우에만 명시적인 `철검`/`Sword_Iron`/`IronSword` 제작 요청이 후보가 된다. 후보 parameters는
+항상 다음과 같고, 다른 Recipe ID나 수량은 후보를 만들지 않는다.
+
+```json
+{
+  "type": "Command.CraftItem",
+  "target_id": null,
+  "parameters": {
+    "recipe_id": "recipe-11",
+    "quantity": 1
+  }
+}
+```
+
+`철검 만드는 법`, 재료·레시피 질문은 검증된 제작법 facts-only 대사로 남으며 `CraftItem`
+후보를 만들지 않는다. `game_context`의 위치·위협·작업·인벤토리 사실만으로도 후보를 만들지
+않으며, 후보를 받은 UE Command Gateway가 Recipe·재료·상태·작업대를 최종 검증한다.
+
 ### 4.2 Mobile 요청
 
 Header는 `Authorization: Bearer AIRE_WEB`을 사용하고 다음 field를 바꿉니다.
@@ -205,7 +224,7 @@ Mobile은 `game_context`를 생략하거나 `null`로 보낸다. `{}` 및 임의
 
 Context는 대사 생성용 facts-only 입력이다. 이를 근거로 Backend가 Command 후보를 추가·제거하거나
 `CraftItem`/gameplay를 실행하지 않는다. Command 후보는 기존 `allowed_commands` allowlist와
-후속 AX-I06 계약이 정한다.
+위 AX-I06 `CraftItem` 계약이 정한다.
 
 현재 일반 플레이맵의 location ID는 `forest_camp`다. AX-I04에 권위 센서가 없는 동안
 `threat.nearest_kind=null`, `nearby_resources=[]`, `available_workstations=[]`인 Context도
