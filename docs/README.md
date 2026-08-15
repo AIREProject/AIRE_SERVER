@@ -11,7 +11,7 @@
 4. [API 사용법](api-endpoints.md)
 5. [게임 데이터](game-data.md)
 6. [현재 제한과 임시 경계](temporary-scaffolds.md)
-7. [Companion AI 품질·기억·멀티플랫폼 개선 로드맵](companion_ai_roadmap/README.md)
+7. [워크스페이스 Companion AI 실행 계획](../../.agents/docs/planning/CAI_README.md) — 저장소 밖 개인 계획
 
 ## 문서별 역할
 
@@ -23,8 +23,8 @@
 | `api-endpoints.md` | 클라이언트가 호출하는 현행 `/api/v1/*` 계약과 예시 |
 | `game-data.md` | Item/Recipe/Enemy seed 데이터와 DB 반영 절차 |
 | `temporary-scaffolds.md` | 현재 의도적으로 남긴 제한, 미구현 기능과 확장 전 확인사항 |
-| `adoption_review/` | 채택 감사 기록, 백엔드-UE 데이터 권위 및 AX 기능 구현 로드맵 (`08_AX_FEATURE_ROADMAP.md`, `09_AX_IMPLEMENTATION_PLAN.md`) |
-| `companion_ai_roadmap/` | 대화 품질, Provider 판정, 출처 기반 장기기억, 관계 상태와 Cross-device 구현 계획 |
+| `adoption_review/` | 채택 감사 기록과 역사적 AX 제안 (`08_AX_FEATURE_ROADMAP.md`, `09_AX_IMPLEMENTATION_PLAN.md`). 활성 계획 권위가 아님 |
+| `../../.agents/docs/planning/` | 대화 품질, Provider 판정, 출처 기반 장기기억, 관계 상태와 Cross-device 실행 계획. `AIRE_SERVER/docs/`에는 활성 계획을 두지 않음 |
 
 ## 권위 순서
 
