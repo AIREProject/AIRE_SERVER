@@ -21,6 +21,7 @@ import asyncio
 import json
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -38,6 +39,7 @@ from app.brain import (
     WorkFacts,
     WorldContextFacts,
 )
+from app.brain.contract import BrainProvenance, ResponseProvenance
 from app.brain.enemies import EnemyRepository
 from app.brain.llm import build_llm_provider
 from app.brain.memory import LongTermStore
@@ -59,6 +61,7 @@ from app.errors import (
 from app.game_context_models import GameContextV1
 from app.gamedata.dataset import DATASET, GameDataSet
 from app.identity import DeviceRole
+from app.logging import log_response_provenance
 from app.models import (
     AIMetadata,
     ChatRequest,
@@ -98,11 +101,13 @@ class CompanionService:
         ai_timeout_seconds: float,
         command_ttl_seconds: float = 30.0,
         default_location_id: str | None = None,
+        configured_provider: str | None = None,
     ) -> None:
         self._brain = brain
         self._metadata = metadata
         self._ai_timeout_seconds = ai_timeout_seconds
         self._command_ttl_seconds = command_ttl_seconds
+        self._configured_provider = configured_provider or metadata.provider
         # 임시 발판(→ `_location_id`, docs/temporary-scaffolds.md §1). 게임이 위치를
         # 보내기 시작하면 이 필드째 지운다.
         self._default_location_id = default_location_id
@@ -166,6 +171,7 @@ class CompanionService:
             ai_timeout_seconds=settings.ai_request_timeout_seconds,
             command_ttl_seconds=settings.companion_command_ttl_seconds,
             default_location_id=settings.companion_default_location_id,
+            configured_provider=selected.configured_name,
         )
 
     async def create_response(
@@ -175,6 +181,7 @@ class CompanionService:
         session: AsyncSession,
         protector: CredentialProtector,
     ) -> ChatResponse:
+        started_at = perf_counter()
         identity.validate_claims(request.profile_id, request.device_id)
         if request.companion_id not in COMPANION_PROFILES:
             raise UnknownCompanionError(request.companion_id)
@@ -223,7 +230,7 @@ class CompanionService:
         else:
             candidates = self._candidates(request, reply)
         self._assert_within_allowlist(request, candidates)
-        return ChatResponse(
+        response = ChatResponse(
             request_id=request.request_id,
             message_id=request.message_id,
             session_id=request.session_id,
@@ -235,6 +242,13 @@ class CompanionService:
             offline_task_id=offline_task_id,
             ai_metadata=self._metadata,
         )
+        self._log_provenance(
+            request_id=request.request_id,
+            surface=request.surface.value,
+            brain=reply.provenance,
+            started_at=started_at,
+        )
+        return response
 
     async def create_situation_response(
         self,
@@ -250,6 +264,7 @@ class CompanionService:
         — 낼 수 있는 행동이 없다.
         """
 
+        started_at = perf_counter()
         identity.validate_claims(request.profile_id, request.device_id)
         if request.companion_id not in COMPANION_PROFILES:
             raise UnknownCompanionError(request.companion_id)
@@ -275,20 +290,61 @@ class CompanionService:
         )
         try:
             async with asyncio.timeout(self._ai_timeout_seconds):
-                display_text = await self._brain.react(turn)
+                reply = await self._brain.react_with_provenance(turn)
         except TimeoutError as error:
             raise AIServiceTimeoutError from error
         except Exception as error:  # 두뇌 장애는 표준 오류로 변환한다.
             raise AIServiceUnavailableError from error
 
-        return SituationResponse(
+        response = SituationResponse(
             request_id=request.request_id,
             session_id=request.session_id,
             save_slot_id=request.save_slot_id,
             companion_id=request.companion_id,
             response_id=f"response-{uuid4()}",
-            display_text=display_text,
+            display_text=reply.text,
             ai_metadata=self._metadata,
+        )
+        self._log_provenance(
+            request_id=request.request_id,
+            surface=request.surface.value,
+            brain=reply.provenance,
+            started_at=started_at,
+        )
+        return response
+
+    def _log_provenance(
+        self,
+        *,
+        request_id: str,
+        surface: str,
+        brain: BrainProvenance | None,
+        started_at: float,
+    ) -> None:
+        if brain is None:
+            return
+        calls = brain.provider_calls
+        log_response_provenance(
+            ResponseProvenance(
+                request_id=request_id,
+                surface=surface,
+                top_intent=brain.top_intent,
+                query_mode=brain.query_mode,
+                selected_route=brain.selected_route,
+                repository_match=brain.repository_match,
+                fact_ids=brain.fact_ids,
+                configured_provider=self._configured_provider,
+                effective_provider=brain.effective_provider,
+                provider_call_succeeded=(all(call.succeeded for call in calls) if calls else None),
+                provider_fallback_used=any(call.fallback_used for call in calls),
+                final_fallback_reason=brain.final_fallback_reason,
+                final_response_source=brain.final_response_source,
+                model_version=self._metadata.model_version,
+                prompt_version=self._metadata.prompt_version,
+                sanitizer_succeeded=brain.sanitizer_succeeded,
+                duration_ms=round((perf_counter() - started_at) * 1000, 3),
+                provider_calls=calls,
+            )
         )
 
     async def _create_gather_task(

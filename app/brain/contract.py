@@ -7,10 +7,74 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from pydantic import JsonValue
 
 from app.models import CommandType, Surface, TimeContext
+
+FallbackReason = Literal[
+    "provider_timeout",
+    "provider_unavailable",
+    "invalid_structured_output",
+    "empty_output",
+    "sanitizer_rejection",
+]
+FinalResponseSource = Literal[
+    "game_repository",
+    "local_llm",
+    "openai",
+    "mock_fallback",
+    "fixed_fallback",
+    "validation_rejection",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCallProvenance:
+    step: str
+    configured_provider: str
+    effective_provider: str
+    succeeded: bool
+    fallback_used: bool
+    fallback_reason: FallbackReason | None
+    duration_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class BrainProvenance:
+    top_intent: str | None
+    query_mode: str | None
+    selected_route: str
+    repository_match: bool
+    fact_ids: tuple[str, ...]
+    provider_calls: tuple[ProviderCallProvenance, ...]
+    effective_provider: str | None
+    final_response_source: FinalResponseSource
+    sanitizer_succeeded: bool | None
+    final_fallback_reason: FallbackReason | None
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseProvenance:
+    request_id: str
+    surface: str
+    top_intent: str | None
+    query_mode: str | None
+    selected_route: str
+    repository_match: bool
+    fact_ids: tuple[str, ...]
+    configured_provider: str
+    effective_provider: str | None
+    provider_call_succeeded: bool | None
+    provider_fallback_used: bool
+    final_fallback_reason: FallbackReason | None
+    final_response_source: FinalResponseSource
+    model_version: str
+    prompt_version: str
+    sanitizer_succeeded: bool | None
+    duration_ms: float
+    provider_calls: tuple[ProviderCallProvenance, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,3 +196,4 @@ class CompanionReply:
 
     text: str
     action: CompanionAction | None = None
+    provenance: BrainProvenance | None = None

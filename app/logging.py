@@ -1,9 +1,12 @@
 import json
 import logging
+from dataclasses import asdict
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
+
+from app.brain.contract import ResponseProvenance
 
 
 class JsonFormatter(logging.Formatter):
@@ -19,6 +22,32 @@ class JsonFormatter(logging.Formatter):
         "duration_ms",
         "error_type",
         "step",
+        "surface",
+        "top_intent",
+        "query_mode",
+        "selected_route",
+        "repository_match",
+        "fact_ids",
+        "configured_provider",
+        "effective_provider",
+        "provider_call_succeeded",
+        "provider_fallback_used",
+        "final_fallback_reason",
+        "final_response_source",
+        "model_version",
+        "prompt_version",
+        "sanitizer_succeeded",
+        "provider_calls",
+    )
+    _nullable_provenance_fields = frozenset(
+        {
+            "top_intent",
+            "query_mode",
+            "effective_provider",
+            "provider_call_succeeded",
+            "final_fallback_reason",
+            "sanitizer_succeeded",
+        }
     )
 
     def format(self, record: logging.LogRecord) -> str:
@@ -29,7 +58,10 @@ class JsonFormatter(logging.Formatter):
         }
         for field in self._fields:
             value = getattr(record, field, None)
-            if value is not None:
+            if value is not None or (
+                payload.get("event") == "response_provenance"
+                and field in self._nullable_provenance_fields
+            ):
                 payload[field] = value
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
@@ -41,7 +73,7 @@ class _RequestEventFilter(logging.Filter):
     구조화 로그까지 섞으면 stdout 을 그대로 복제하는 것과 다를 게 없다.
     """
 
-    _EVENTS = frozenset({"request_complete", "ws_message_complete"})
+    _EVENTS = frozenset({"request_complete", "ws_message_complete", "response_provenance"})
 
     def filter(self, record: logging.LogRecord) -> bool:
         return getattr(record, "event", None) in self._EVENTS
@@ -76,3 +108,15 @@ def configure_logging(
         file_handler.setFormatter(JsonFormatter())
         file_handler.addFilter(_RequestEventFilter())
         logger.addHandler(file_handler)
+
+
+def log_response_provenance(provenance: ResponseProvenance) -> None:
+    """허용된 bounded metadata만 기록하며 logging 장애를 응답 경로로 전파하지 않는다."""
+
+    try:
+        logging.getLogger("aire.backend").info(
+            "response_provenance",
+            extra={"event": "response_provenance", **asdict(provenance)},
+        )
+    except Exception:
+        return

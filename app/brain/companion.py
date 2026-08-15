@@ -21,13 +21,22 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
-from .contract import CompanionReply, CompanionTurn, SituationTurn
-from .dialogue import render
+from .contract import (
+    BrainProvenance,
+    CompanionReply,
+    CompanionTurn,
+    FallbackReason,
+    FinalResponseSource,
+    ProviderCallProvenance,
+    SituationTurn,
+)
+from .dialogue import begin_sanitizer_trace, finish_sanitizer_trace, render
 from .embedding import EmbeddingProvider
 from .enemies import EnemyRepository
-from .graph import build_companion_graph
-from .llm import LLMProvider
+from .graph import CompanionState, build_companion_graph, selected_route
+from .llm import LLMProvider, begin_provider_trace, finish_provider_trace
 from .lore import LoreRepository
 from .memory import (
     MAX_MEMORIES_PER_PLAYER,
@@ -79,6 +88,58 @@ _EMBEDDING_QUERY_CACHE_SIZE = 64
 
 # 전사 정리 주기. 보존 기간이 날 단위라 이보다 자주 돌 이유가 없다.
 _SWEEP_INTERVAL_SECONDS = 3600.0
+
+
+def _build_provenance(
+    final: CompanionState | None,
+    *,
+    provider_calls: tuple[ProviderCallProvenance, ...],
+    sanitizer_results: tuple[bool, ...],
+    route: str,
+) -> BrainProvenance:
+    dialogue_call = next(
+        (call for call in reversed(provider_calls) if call.step == "generate_dialogue"), None
+    )
+    sanitizer_succeeded = sanitizer_results[-1] if sanitizer_results else None
+    repository_match = bool(final and final.get("repository_match"))
+    if sanitizer_succeeded is False:
+        source: FinalResponseSource = "validation_rejection"
+    elif dialogue_call is not None and dialogue_call.effective_provider == "local":
+        source = "local_llm"
+    elif dialogue_call is not None and dialogue_call.effective_provider == "openai":
+        source = "openai"
+    elif dialogue_call is not None and dialogue_call.effective_provider == "mock":
+        source = "mock_fallback"
+    elif repository_match:
+        source = "game_repository"
+    else:
+        source = "fixed_fallback"
+
+    if sanitizer_succeeded is False:
+        final_reason: FallbackReason | None = "sanitizer_rejection"
+    elif dialogue_call is not None and dialogue_call.fallback_reason is not None:
+        final_reason = dialogue_call.fallback_reason
+    else:
+        final_reason = next(
+            (call.fallback_reason for call in provider_calls if call.fallback_reason is not None),
+            None,
+        )
+
+    intent = final.get("top_intent") if final is not None else None
+    return BrainProvenance(
+        top_intent=intent.value if intent is not None else None,
+        query_mode=None,
+        selected_route=route,
+        repository_match=repository_match,
+        fact_ids=tuple(final.get("fact_ids", ()))[:8] if final is not None else (),
+        provider_calls=provider_calls[:8],
+        effective_provider=(
+            dialogue_call.effective_provider if dialogue_call is not None else None
+        ),
+        final_response_source=source,
+        sanitizer_succeeded=sanitizer_succeeded,
+        final_fallback_reason=final_reason,
+    )
 
 
 @dataclass(slots=True)
@@ -193,15 +254,21 @@ class CompanionBrain:
         recalled = await self._recall(turn.player_key, turn.text)
         async with self._conversation_lock(turn.conversation_key):
             memory = self._store.load(turn.conversation_key)
-            final = await self._graph.ainvoke(
-                {
-                    "turn": turn,
-                    "text": turn.text,
-                    "pending": memory.pending,
-                    "history": memory.recent_turns,
-                    "long_term": recalled,
-                }
-            )
+            provider_token = begin_provider_trace()
+            sanitizer_token = begin_sanitizer_trace()
+            try:
+                final = cast(CompanionState, await self._graph.ainvoke(
+                    {
+                        "turn": turn,
+                        "text": turn.text,
+                        "pending": memory.pending,
+                        "history": memory.recent_turns,
+                        "long_term": recalled,
+                    }
+                ))
+            finally:
+                provider_calls = finish_provider_trace(provider_token)
+                sanitizer_results = finish_sanitizer_trace(sanitizer_token)
             display_text: str = final["display_text"]
             # 되물은 노드만 next_pending 을 채운다. 비어 있으면 슬롯은 여기서 사라진다.
             # 기록은 실제로 오간 말을 남긴다 — 폴백으로 말한 턴도 플레이어가 들은 것은
@@ -222,9 +289,23 @@ class CompanionBrain:
             ),
         )
         self._ensure_loop()
-        return CompanionReply(text=display_text, action=final.get("action"))
+        return CompanionReply(
+            text=display_text,
+            action=final.get("action"),
+            provenance=_build_provenance(
+                final,
+                provider_calls=provider_calls,
+                sanitizer_results=sanitizer_results,
+                route=selected_route(final),
+            ),
+        )
 
     async def react(self, turn: SituationTurn) -> str:
+        """기존 내부 호출자를 위해 대사 문자열만 반환한다."""
+
+        return (await self.react_with_provenance(turn)).text
+
+    async def react_with_provenance(self, turn: SituationTurn) -> CompanionReply:
         """플레이어 발화 없이, 클라이언트가 알려 온 상황에 먼저 한마디 건넨다.
 
         라우팅(Stage 1/2)을 거치지 않는다 — 무슨 상황인지는 클라이언트가 코드로 이미
@@ -237,7 +318,13 @@ class CompanionBrain:
         async with self._conversation_lock(turn.conversation_key):
             memory = self._store.load(turn.conversation_key)
             spec = build_situation_spec(turn, history=memory.recent_turns, memories=recalled)
-            display_text = await render(self._llm, spec)
+            provider_token = begin_provider_trace()
+            sanitizer_token = begin_sanitizer_trace()
+            try:
+                display_text = await render(self._llm, spec)
+            finally:
+                provider_calls = finish_provider_trace(provider_token)
+                sanitizer_results = finish_sanitizer_trace(sanitizer_token)
             self._store.save(turn.conversation_key, memory.reacted(turn.situation, display_text))
 
         await self._record(
@@ -249,7 +336,15 @@ class CompanionBrain:
             ),
         )
         self._ensure_loop()
-        return display_text
+        return CompanionReply(
+            text=display_text,
+            provenance=_build_provenance(
+                None,
+                provider_calls=provider_calls,
+                sanitizer_results=sanitizer_results,
+                route="situation",
+            ),
+        )
 
     async def aclose(self) -> None:
         """종료 시 남은 증류를 끝내고 공급자가 보유한 HTTP 클라이언트 등을 정리한다.

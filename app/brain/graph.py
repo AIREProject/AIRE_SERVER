@@ -103,6 +103,8 @@ class CompanionState(TypedDict):
     # 이번 턴이 새로 되물었을 때만 채워진다. 비면 슬롯은 사라진다 — 되묻지 않았으면
     # 잊는 것이 기본값이라, 노드가 정리를 잊어 슬롯이 눌어붙는 일이 생기지 않는다.
     next_pending: NotRequired[PendingSlot | None]
+    repository_match: NotRequired[bool]
+    fact_ids: NotRequired[tuple[str, ...]]
 
 
 class CompanionUpdate(TypedDict, total=False):
@@ -118,6 +120,8 @@ class CompanionUpdate(TypedDict, total=False):
     action: CompanionAction | None
     next_pending: PendingSlot | None
     pending_answered: bool
+    repository_match: bool
+    fact_ids: tuple[str, ...]
 
 
 TopRoute = Literal["command_classify", "recipe", "enemy", "lore", "conversation", "unsupported"]
@@ -231,6 +235,15 @@ def route_by_command(state: CompanionState) -> CommandRoute:
     if label is CommandLabel.ATTACK:
         return "attack"
     return "unsupported"
+
+
+def selected_route(state: CompanionState) -> str:
+    """완료 상태에서 실제 terminal route를 재구성한다."""
+
+    if state.get("pending_answered"):
+        return "gather"
+    top_route = route_by_top(state)
+    return route_by_command(state) if top_route == "command_classify" else top_route
 
 
 def build_companion_graph(
@@ -491,7 +504,7 @@ def build_companion_graph(
         if fact is not None:
             # RecipeRepository가 이미 검증된 재료·수량·작업대·시간 문장을 만든다. 다시
             # LLM에 맡기면 필수 사실을 생략하거나 World Context Item을 섞을 수 있다.
-            return {"display_text": fact.text}
+            return {"display_text": fact.text, "repository_match": True}
         return {
             "display_text": await say(
                 state,
@@ -505,7 +518,12 @@ def build_companion_graph(
         text = state["text"]
         fact = enemies.fact_for(text)
         if fact is not None:
-            return {"display_text": await say(state, "enemy", fact.text, (fact.text,))}
+            fact_id = enemies.resolve_target(text)
+            return {
+                "display_text": await say(state, "enemy", fact.text, (fact.text,)),
+                "repository_match": True,
+                "fact_ids": (fact_id,) if fact_id is not None else (),
+            }
         return {
             "display_text": await say(
                 state,
@@ -516,9 +534,14 @@ def build_companion_graph(
         }
 
     async def lore_node(state: CompanionState) -> CompanionUpdate:
-        fact = lore.fact_for(state["turn"].world_context.location_id)
+        location_id = state["turn"].world_context.location_id
+        fact = lore.fact_for(location_id)
         if fact is not None:
-            return {"display_text": await say(state, "lore", fact.text, (fact.text,))}
+            return {
+                "display_text": await say(state, "lore", fact.text, (fact.text,)),
+                "repository_match": True,
+                "fact_ids": (location_id,) if location_id is not None else (),
+            }
         # 게임은 "지금 위치" 를 말할 수 있지만 폰은 그럴 위치가 없다.
         line = profile(state).lore_missing
         return {"display_text": await say(state, "unsupported", line.text, (line.fact,))}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
@@ -167,6 +168,19 @@ SURFACE_PROFILES: dict[Surface, SurfaceProfile] = {
 
 _NUMBER_PATTERN = re.compile(r"\d+")
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+_sanitizer_context: ContextVar[list[bool] | None] = ContextVar(
+    "sanitizer_results", default=None
+)
+
+
+def begin_sanitizer_trace() -> Token[list[bool] | None]:
+    return _sanitizer_context.set([])
+
+
+def finish_sanitizer_trace(token: Token[list[bool] | None]) -> tuple[bool, ...]:
+    results = tuple(_sanitizer_context.get() or ())
+    _sanitizer_context.reset(token)
+    return results
 
 
 def sanitize(text: str, spec: DialogueSpec) -> str | None:
@@ -185,11 +199,37 @@ def sanitize(text: str, spec: DialogueSpec) -> str | None:
     return normalized
 
 
-async def render(llm: LLMProvider, spec: DialogueSpec) -> str:
-    """공급자 출력을 검증하고 어떤 실패에도 코드의 기존 대사로 복구한다."""
+@dataclass(frozen=True, slots=True)
+class RenderedDialogue:
+    text: str
+    sanitizer_succeeded: bool
+
+
+async def render_observed(llm: LLMProvider, spec: DialogueSpec) -> RenderedDialogue:
+    """대사와 sanitizer 판정을 함께 반환하되 외부 응답에는 판정을 노출하지 않는다."""
 
     try:
         generated = await llm.generate_dialogue(spec)
     except Exception:
-        return spec.fallback
-    return sanitize(generated, spec) or spec.fallback
+        result = RenderedDialogue(text=spec.fallback, sanitizer_succeeded=False)
+        _record_sanitizer_result(result.sanitizer_succeeded)
+        return result
+    sanitized = sanitize(generated, spec)
+    result = RenderedDialogue(
+        text=sanitized or spec.fallback,
+        sanitizer_succeeded=sanitized is not None,
+    )
+    _record_sanitizer_result(result.sanitizer_succeeded)
+    return result
+
+
+def _record_sanitizer_result(succeeded: bool) -> None:
+    results = _sanitizer_context.get()
+    if results is not None and len(results) < 8:
+        results.append(succeeded)
+
+
+async def render(llm: LLMProvider, spec: DialogueSpec) -> str:
+    """공급자 출력을 검증하고 어떤 실패에도 코드의 기존 대사로 복구한다."""
+
+    return (await render_observed(llm, spec)).text

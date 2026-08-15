@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from time import perf_counter
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.models import Surface
 from app.settings import Settings
@@ -17,6 +19,7 @@ from .command_intent import (
     RECIPE_PATTERN,
     CommandIntentParser,
 )
+from .contract import FallbackReason, ProviderCallProvenance
 from .dialogue import SCENE_GUIDE, SURFACE_PROFILES, DialogueSpec
 from .intent import (
     CommandClassification,
@@ -40,6 +43,74 @@ from .memory import (
 )
 from .resources import ResourceRepository
 from .store import PendingSlot
+
+_MAX_PROVIDER_CALLS = 8
+_provider_calls_context: ContextVar[list[ProviderCallProvenance] | None] = ContextVar(
+    "provider_calls", default=None
+)
+_provider_observation_suppressed: ContextVar[bool] = ContextVar(
+    "provider_observation_suppressed", default=False
+)
+
+
+class _EmptyOutputError(ValueError):
+    pass
+
+
+def begin_provider_trace() -> Token[list[ProviderCallProvenance] | None]:
+    return _provider_calls_context.set([])
+
+
+def finish_provider_trace(
+    token: Token[list[ProviderCallProvenance] | None],
+) -> tuple[ProviderCallProvenance, ...]:
+    calls = tuple(_provider_calls_context.get() or ())
+    _provider_calls_context.reset(token)
+    return calls
+
+
+def _fallback_reason(error: Exception) -> FallbackReason:
+    if isinstance(error, TimeoutError) or "timeout" in type(error).__name__.casefold():
+        return "provider_timeout"
+    if isinstance(error, _EmptyOutputError):
+        return "empty_output"
+    if isinstance(error, ValidationError):
+        return "invalid_structured_output"
+    return "provider_unavailable"
+
+
+def _record_provider_call(
+    *,
+    step: str,
+    configured_provider: str,
+    effective_provider: str,
+    succeeded: bool,
+    fallback_used: bool,
+    fallback_reason: FallbackReason | None,
+    started_at: float,
+) -> None:
+    calls = _provider_calls_context.get()
+    if calls is None or _provider_observation_suppressed.get() or len(calls) >= _MAX_PROVIDER_CALLS:
+        return
+    calls.append(
+        ProviderCallProvenance(
+            step=step,
+            configured_provider=configured_provider,
+            effective_provider=effective_provider,
+            succeeded=succeeded,
+            fallback_used=fallback_used,
+            fallback_reason=fallback_reason,
+            duration_ms=round((perf_counter() - started_at) * 1000, 3),
+        )
+    )
+
+
+async def _without_provider_observation[T](awaitable: Awaitable[T]) -> T:
+    token = _provider_observation_suppressed.set(True)
+    try:
+        return await awaitable
+    finally:
+        _provider_observation_suppressed.reset(token)
 
 _TOP_ROUTER_PROMPT = """사용자의 한국어 발화를 다음 의도 중 정확히 하나로 분류한다.
 - command: 따라오기, 대기, 작업 중지·취소, 자원 채집 요청, 적 공격, 플레이어 곁으로 복귀
@@ -273,46 +344,63 @@ class MockLLMProvider(LLMProvider):
 
     _resources = ResourceRepository()
 
+    def __init__(
+        self,
+        *,
+        configured_provider: str = "mock",
+        fallback_reason: FallbackReason | None = None,
+    ) -> None:
+        self._configured_provider = configured_provider
+        self._selection_fallback_reason = fallback_reason
+
     async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
         """기존 정규식 우선순위를 재현하는 결정론적 분류를 수행한다."""
 
+        started_at = perf_counter()
         del clarification_pending
         if (
             CommandIntentParser.classify_simple_command(text) is not None
             or CommandIntentParser.is_gather_command(text)
             or CommandIntentParser.is_attack_command(text)
         ):
-            return TopIntent.COMMAND
-        if ENEMY_PATTERN.search(text):
-            return TopIntent.ENEMY
-        if RECIPE_PATTERN.search(text):
-            return TopIntent.RECIPE
-        if LORE_PATTERN.search(text):
-            return TopIntent.LORE
-        if CONVERSATION_PATTERN.search(text):
-            return TopIntent.CONVERSATION
-        return TopIntent.UNKNOWN
+            result = TopIntent.COMMAND
+        elif ENEMY_PATTERN.search(text):
+            result = TopIntent.ENEMY
+        elif RECIPE_PATTERN.search(text):
+            result = TopIntent.RECIPE
+        elif LORE_PATTERN.search(text):
+            result = TopIntent.LORE
+        elif CONVERSATION_PATTERN.search(text):
+            result = TopIntent.CONVERSATION
+        else:
+            result = TopIntent.UNKNOWN
+        self._record_mock_call("classify_top", started_at)
+        return result
 
     async def classify_command(self, text: str) -> CommandClassification:
         """기존 정규식 파서의 우선순위를 재현하는 결정론적 분류를 수행한다."""
 
+        started_at = perf_counter()
         label = CommandIntentParser.classify_simple_command(text)
         if label is not None:
-            return CommandClassification(
+            result = CommandClassification(
                 command=label, resource=ResourceSlot.UNSPECIFIED, quantity=None
             )
-        if CommandIntentParser.is_gather_command(text):
+        elif CommandIntentParser.is_gather_command(text):
             resource, quantity = CommandIntentParser.resolve_gather(text)
-            return CommandClassification(
+            result = CommandClassification(
                 command=CommandLabel.GATHER_RESOURCE, resource=resource, quantity=quantity
             )
-        if CommandIntentParser.is_attack_command(text):
-            return CommandClassification(
+        elif CommandIntentParser.is_attack_command(text):
+            result = CommandClassification(
                 command=CommandLabel.ATTACK, resource=ResourceSlot.UNSPECIFIED, quantity=None
             )
-        return CommandClassification(
-            command=CommandLabel.UNKNOWN, resource=ResourceSlot.UNSPECIFIED, quantity=None
-        )
+        else:
+            result = CommandClassification(
+                command=CommandLabel.UNKNOWN, resource=ResourceSlot.UNSPECIFIED, quantity=None
+            )
+        self._record_mock_call("classify_command", started_at)
+        return result
 
     async def resolve_pending(self, text: str, pending: PendingSlot) -> ResourceSlot | None:
         """발화에서 지원 자원을 찾아 답 여부를 판정한다.
@@ -322,14 +410,18 @@ class MockLLMProvider(LLMProvider):
         Mock 은 결정론적 대체물이지 복제본이 아니므로 이 정도로 둔다.
         """
 
+        started_at = perf_counter()
         del pending
         resources = self._resources.find_all(CommandIntentParser.normalize(text))
         if len(resources) == 1:
-            return ResourceSlot(resources[0].value)
-        if len(resources) > 1:
+            result = ResourceSlot(resources[0].value)
+        elif len(resources) > 1:
             # 여럿을 말했으면 답이긴 한데 여전히 고르지 못한 것이다.
-            return ResourceSlot.UNSPECIFIED
-        return None
+            result = ResourceSlot.UNSPECIFIED
+        else:
+            result = None
+        self._record_mock_call("resolve_pending", started_at)
+        return result
 
     async def generate_dialogue(self, spec: DialogueSpec) -> str:
         """장면 폴백을 그대로 낸다.
@@ -339,7 +431,22 @@ class MockLLMProvider(LLMProvider):
         창구별 대사는 `SURFACE_PROFILES` 한 곳에서만 정해진다.
         """
 
+        started_at = perf_counter()
+        self._record_mock_call("generate_dialogue", started_at)
         return spec.fallback
+
+    def _record_mock_call(self, step: str, started_at: float) -> None:
+        configured_provider = getattr(self, "_configured_provider", "mock")
+        fallback_used = configured_provider != "mock"
+        _record_provider_call(
+            step=step,
+            configured_provider=configured_provider,
+            effective_provider="mock",
+            succeeded=not fallback_used,
+            fallback_used=fallback_used,
+            fallback_reason=getattr(self, "_selection_fallback_reason", None),
+            started_at=started_at,
+        )
 
     async def extract_memories(self, spec: MemoryExtractionSpec) -> MemoryExtraction:
         """아무것도 기억하지 않는다.
@@ -387,6 +494,7 @@ class OpenAIProvider(LLMProvider):
     async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
         """Responses API 구조화 출력으로 최상위 의도를 분류한다."""
 
+        started_at = perf_counter()
         pending = "있음" if clarification_pending else "없음"
         prompt = f"{_TOP_ROUTER_PROMPT}\n미완성 선택: {pending}\n사용자: {text}"
         try:
@@ -405,15 +513,29 @@ class OpenAIProvider(LLMProvider):
                 max_output_tokens=self._classify_max_tokens,
                 reasoning={"effort": "minimal"},
             )
-            return TopClassification.model_validate_json(response.output_text).intent
-        except Exception:
-            return await self._fallback.classify_top(
-                text, clarification_pending=clarification_pending
+            if not isinstance(response.output_text, str) or not response.output_text.strip():
+                raise _EmptyOutputError
+            result = TopClassification.model_validate_json(response.output_text).intent
+            _record_provider_call(
+                step="classify_top", configured_provider="openai", effective_provider="openai",
+                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
             )
+            return result
+        except Exception as error:
+            result = await _without_provider_observation(
+                self._fallback.classify_top(text, clarification_pending=clarification_pending)
+            )
+            _record_provider_call(
+                step="classify_top", configured_provider="openai", effective_provider="mock",
+                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                started_at=started_at,
+            )
+            return result
 
     async def classify_command(self, text: str) -> CommandClassification:
         """Responses API 구조화 출력으로 명령 계열과 채집 슬롯을 분류한다."""
 
+        started_at = perf_counter()
         prompt = f"{_COMMAND_ROUTER_PROMPT}\n사용자: {text}"
         try:
             response = await self._client.responses.create(
@@ -431,13 +553,27 @@ class OpenAIProvider(LLMProvider):
                 max_output_tokens=self._classify_max_tokens,
                 reasoning={"effort": "minimal"},
             )
-            return CommandClassification.model_validate_json(response.output_text)
-        except Exception:
-            return await self._fallback.classify_command(text)
+            if not isinstance(response.output_text, str) or not response.output_text.strip():
+                raise _EmptyOutputError
+            result = CommandClassification.model_validate_json(response.output_text)
+            _record_provider_call(
+                step="classify_command", configured_provider="openai", effective_provider="openai",
+                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+            )
+            return result
+        except Exception as error:
+            result = await _without_provider_observation(self._fallback.classify_command(text))
+            _record_provider_call(
+                step="classify_command", configured_provider="openai", effective_provider="mock",
+                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                started_at=started_at,
+            )
+            return result
 
     async def resolve_pending(self, text: str, pending: PendingSlot) -> ResourceSlot | None:
         """Responses API 구조화 출력으로 되묻기 답 여부와 자원을 판정한다."""
 
+        started_at = perf_counter()
         prompt = f"{_PENDING_RESOLVER_PROMPT}\n사용자: {text}"
         try:
             response = await self._client.responses.create(
@@ -455,14 +591,30 @@ class OpenAIProvider(LLMProvider):
                 max_output_tokens=self._classify_max_tokens,
                 reasoning={"effort": "minimal"},
             )
+            if not isinstance(response.output_text, str) or not response.output_text.strip():
+                raise _EmptyOutputError
             resolution = PendingResolution.model_validate_json(response.output_text)
-            return resolution.resource if resolution.is_answer else None
-        except Exception:
-            return await self._fallback.resolve_pending(text, pending)
+            result = resolution.resource if resolution.is_answer else None
+            _record_provider_call(
+                step="resolve_pending", configured_provider="openai", effective_provider="openai",
+                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+            )
+            return result
+        except Exception as error:
+            result = await _without_provider_observation(
+                self._fallback.resolve_pending(text, pending)
+            )
+            _record_provider_call(
+                step="resolve_pending", configured_provider="openai", effective_provider="mock",
+                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                started_at=started_at,
+            )
+            return result
 
     async def generate_dialogue(self, spec: DialogueSpec) -> str:
         """구조화된 사실 기반 대사를 생성하고 실패하면 장면 폴백으로 복구한다."""
 
+        started_at = perf_counter()
         try:
             response = await self._client.responses.create(
                 model=self._model,
@@ -482,10 +634,23 @@ class OpenAIProvider(LLMProvider):
                 max_output_tokens=self._dialogue_max_tokens,
                 reasoning={"effort": "minimal"},
             )
-            return DialogueOutput.model_validate_json(response.output_text).text
-        except Exception:
+            if not isinstance(response.output_text, str) or not response.output_text.strip():
+                raise _EmptyOutputError
+            result = DialogueOutput.model_validate_json(response.output_text).text
+            _record_provider_call(
+                step="generate_dialogue", configured_provider="openai", effective_provider="openai",
+                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+            )
+            return result
+        except Exception as error:
             # 네트워크, 인증, 응답 검증 오류가 사용자 요청 전체를 실패시키지 않게 한다.
-            return await self._fallback.generate_dialogue(spec)
+            result = await _without_provider_observation(self._fallback.generate_dialogue(spec))
+            _record_provider_call(
+                step="generate_dialogue", configured_provider="openai", effective_provider="mock",
+                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                started_at=started_at,
+            )
+            return result
 
     async def extract_memories(self, spec: MemoryExtractionSpec) -> MemoryExtraction:
         """Responses API 구조화 출력으로 기억 후보를 뽑는다."""
@@ -595,6 +760,7 @@ class LocalLLMProvider(LLMProvider):
     async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
         """로컬 모델의 JSON Schema 출력으로 최상위 의도를 분류한다."""
 
+        started_at = perf_counter()
         pending = "있음" if clarification_pending else "없음"
         try:
             response = await self._client.chat.completions.create(
@@ -616,17 +782,29 @@ class LocalLLMProvider(LLMProvider):
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
             content = response.choices[0].message.content
-            if content is None:
-                raise ValueError("Local LLM returned no classification content")
-            return TopClassification.model_validate_json(content).intent
-        except Exception:
-            return await self._fallback.classify_top(
-                text, clarification_pending=clarification_pending
+            if content is None or not content.strip():
+                raise _EmptyOutputError
+            result = TopClassification.model_validate_json(content).intent
+            _record_provider_call(
+                step="classify_top", configured_provider="local", effective_provider="local",
+                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
             )
+            return result
+        except Exception as error:
+            result = await _without_provider_observation(
+                self._fallback.classify_top(text, clarification_pending=clarification_pending)
+            )
+            _record_provider_call(
+                step="classify_top", configured_provider="local", effective_provider="mock",
+                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                started_at=started_at,
+            )
+            return result
 
     async def classify_command(self, text: str) -> CommandClassification:
         """로컬 모델의 JSON Schema 출력으로 명령 계열과 채집 슬롯을 분류한다."""
 
+        started_at = perf_counter()
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
@@ -647,15 +825,27 @@ class LocalLLMProvider(LLMProvider):
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
             content = response.choices[0].message.content
-            if content is None:
-                raise ValueError("Local LLM returned no command classification content")
-            return CommandClassification.model_validate_json(content)
-        except Exception:
-            return await self._fallback.classify_command(text)
+            if content is None or not content.strip():
+                raise _EmptyOutputError
+            result = CommandClassification.model_validate_json(content)
+            _record_provider_call(
+                step="classify_command", configured_provider="local", effective_provider="local",
+                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+            )
+            return result
+        except Exception as error:
+            result = await _without_provider_observation(self._fallback.classify_command(text))
+            _record_provider_call(
+                step="classify_command", configured_provider="local", effective_provider="mock",
+                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                started_at=started_at,
+            )
+            return result
 
     async def resolve_pending(self, text: str, pending: PendingSlot) -> ResourceSlot | None:
         """로컬 모델의 JSON Schema 출력으로 되묻기 답 여부와 자원을 판정한다."""
 
+        started_at = perf_counter()
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
@@ -676,16 +866,30 @@ class LocalLLMProvider(LLMProvider):
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
             content = response.choices[0].message.content
-            if content is None:
-                raise ValueError("Local LLM returned no pending resolution content")
+            if content is None or not content.strip():
+                raise _EmptyOutputError
             resolution = PendingResolution.model_validate_json(content)
-            return resolution.resource if resolution.is_answer else None
-        except Exception:
-            return await self._fallback.resolve_pending(text, pending)
+            result = resolution.resource if resolution.is_answer else None
+            _record_provider_call(
+                step="resolve_pending", configured_provider="local", effective_provider="local",
+                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+            )
+            return result
+        except Exception as error:
+            result = await _without_provider_observation(
+                self._fallback.resolve_pending(text, pending)
+            )
+            _record_provider_call(
+                step="resolve_pending", configured_provider="local", effective_provider="mock",
+                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                started_at=started_at,
+            )
+            return result
 
     async def generate_dialogue(self, spec: DialogueSpec) -> str:
         """로컬 모델의 사실 기반 대사를 반환하고 실패하면 장면 폴백으로 복구한다."""
 
+        started_at = perf_counter()
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
@@ -698,12 +902,23 @@ class LocalLLMProvider(LLMProvider):
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
             content = response.choices[0].message.content
-            if content is None:
-                raise ValueError("Local LLM returned no message content")
-            return DialogueOutput(text=content.strip()).text
-        except Exception:
+            if content is None or not content.strip():
+                raise _EmptyOutputError
+            result = DialogueOutput(text=content.strip()).text
+            _record_provider_call(
+                step="generate_dialogue", configured_provider="local", effective_provider="local",
+                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+            )
+            return result
+        except Exception as error:
             # 로컬 서버 중단이나 호환되지 않는 응답이 API 요청 전체를 실패시키지 않게 한다.
-            return await self._fallback.generate_dialogue(spec)
+            result = await _without_provider_observation(self._fallback.generate_dialogue(spec))
+            _record_provider_call(
+                step="generate_dialogue", configured_provider="local", effective_provider="mock",
+                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                started_at=started_at,
+            )
+            return result
 
     async def extract_memories(self, spec: MemoryExtractionSpec) -> MemoryExtraction:
         """로컬 모델의 JSON Schema 출력으로 기억 후보를 뽑는다."""
@@ -891,6 +1106,7 @@ class SelectedProvider:
     """
 
     provider: LLMProvider
+    configured_name: str
     name: str
     model_version: str
 
@@ -906,10 +1122,17 @@ def build_llm_provider(config: Settings) -> SelectedProvider:
         inner = OpenAIProvider(config)
         name, model_version = "openai", config.openai_model
     else:
-        inner = MockLLMProvider()
+        selection_reason: FallbackReason | None = (
+            "provider_unavailable" if provider != "mock" else None
+        )
+        inner = MockLLMProvider(
+            configured_provider=provider,
+            fallback_reason=selection_reason,
+        )
         name, model_version = "mock", "mock-v1"
     return SelectedProvider(
         provider=TimingLLMProvider(inner) if config.llm_step_timing else inner,
+        configured_name=provider,
         name=name,
         model_version=model_version,
     )
