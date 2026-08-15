@@ -1,0 +1,30 @@
+{
+  "fixture_id": "p0.recipe.followup.001",
+  "request": {
+    "text": "그거 어떻게 만들어?",
+    "surface": "game",
+    "conversation_id": "fixture-conversation-recipe-followup",
+    "allowed_commands": [],
+    "prior_turns": ["돌도끼 레시피 알려줘"]
+  },
+  "script": {
+    "provider": "scripted-v1",
+    "responses": [
+      {"method": "classify_top", "semantic_key": "top", "result": "recipe"},
+      {"method": "classify_top", "semantic_key": "top", "result": "recipe"},
+      {"method": "generate_dialogue", "semantic_key": "dialogue:unsupported", "result": "직전 제작법 대상을 이어가는 경로는 아직 연결되지 않았어."}
+    ]
+  },
+  "expect": {
+    "top_intent": "recipe",
+    "query_mode": "follow_up",
+    "allowed_fact_ids": ["recipe:recipe-3"],
+    "forbidden_fact_ids": ["recipe:recipe-4"],
+    "allowed_command_types": [],
+    "fallback": false,
+    "fallback_reason": null,
+    "memory_persisted": false,
+    "db_side_effect": "none",
+    "known_gaps": {"query_mode": "CAI-P1-T01", "fact_ids": "CAI-P0-T03"}
+  }
+}

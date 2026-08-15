@@ -1,0 +1,29 @@
+{
+  "fixture_id": "p0.recipe.compare.001",
+  "request": {
+    "text": "돌도끼와 돌곡괭이 레시피를 비교해 줘",
+    "surface": "game",
+    "conversation_id": "fixture-conversation-recipe-compare",
+    "allowed_commands": [],
+    "prior_turns": []
+  },
+  "script": {
+    "provider": "scripted-v1",
+    "responses": [
+      {"method": "classify_top", "semantic_key": "top", "result": "recipe"},
+      {"method": "generate_dialogue", "semantic_key": "dialogue:unsupported", "result": "두 제작법을 함께 비교하는 경로는 아직 연결되지 않았어."}
+    ]
+  },
+  "expect": {
+    "top_intent": "recipe",
+    "query_mode": "compare",
+    "allowed_fact_ids": ["recipe:recipe-3", "recipe:recipe-4"],
+    "forbidden_fact_ids": ["recipe:recipe-11"],
+    "allowed_command_types": [],
+    "fallback": false,
+    "fallback_reason": null,
+    "memory_persisted": false,
+    "db_side_effect": "none",
+    "known_gaps": {"query_mode": "CAI-P1-T01", "fact_ids": "CAI-P0-T03"}
+  }
+}

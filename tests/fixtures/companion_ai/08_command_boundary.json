@@ -1,0 +1,29 @@
+{
+  "fixture_id": "p0.command.boundary.001",
+  "request": {
+    "text": "참호병은 어떻게 잡아?",
+    "surface": "game",
+    "conversation_id": "fixture-conversation-command-boundary",
+    "allowed_commands": ["Command.Attack"],
+    "prior_turns": []
+  },
+  "script": {
+    "provider": "scripted-v1",
+    "responses": [
+      {"method": "classify_top", "semantic_key": "top", "result": "enemy"},
+      {"method": "generate_dialogue", "semantic_key": "dialogue:enemy", "result": "다리 관절을 노리면 기동력을 줄일 수 있어."}
+    ]
+  },
+  "expect": {
+    "top_intent": "enemy",
+    "query_mode": "information_question",
+    "allowed_fact_ids": ["enemy:TrenchCrawler"],
+    "forbidden_fact_ids": [],
+    "allowed_command_types": [],
+    "fallback": false,
+    "fallback_reason": null,
+    "memory_persisted": false,
+    "db_side_effect": "none",
+    "known_gaps": {"query_mode": "CAI-P1-T01", "fact_ids": "CAI-P0-T03"}
+  }
+}

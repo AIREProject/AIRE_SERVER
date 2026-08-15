@@ -1,0 +1,29 @@
+{
+  "fixture_id": "p0.unsupported.fact.001",
+  "request": {
+    "text": "미확인 보스의 체력이 몇이야?",
+    "surface": "game",
+    "conversation_id": "fixture-conversation-unsupported-fact",
+    "allowed_commands": [],
+    "prior_turns": []
+  },
+  "script": {
+    "provider": "scripted-v1",
+    "responses": [
+      {"method": "classify_top", "semantic_key": "top", "result": "unknown"},
+      {"method": "generate_dialogue", "semantic_key": "dialogue:unsupported", "result": "확인된 정보가 없어서 그 수치는 말할 수 없어."}
+    ]
+  },
+  "expect": {
+    "top_intent": "unknown",
+    "query_mode": "unsupported_fact",
+    "allowed_fact_ids": [],
+    "forbidden_fact_ids": ["enemy:unknown-test-boss"],
+    "allowed_command_types": [],
+    "fallback": false,
+    "fallback_reason": null,
+    "memory_persisted": false,
+    "db_side_effect": "none",
+    "known_gaps": {"query_mode": "CAI-P1-T01", "fact_ids": "CAI-P0-T03"}
+  }
+}

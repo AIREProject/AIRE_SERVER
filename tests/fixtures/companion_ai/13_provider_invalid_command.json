@@ -1,0 +1,31 @@
+{
+  "fixture_id": "p0.provider.invalid_command.001",
+  "request": {
+    "text": "저 적을 공격해",
+    "surface": "game",
+    "conversation_id": "fixture-conversation-invalid-command",
+    "allowed_commands": [],
+    "prior_turns": []
+  },
+  "script": {
+    "provider": "invalid-v1",
+    "invalid_mode": "invalid_candidate",
+    "responses": [
+      {"method": "classify_top", "semantic_key": "top", "result": "command"},
+      {"method": "classify_command", "semantic_key": "command", "result": {"command": "attack", "resource": "unspecified", "quantity": null}},
+      {"method": "generate_dialogue", "semantic_key": "dialogue:unsupported", "result": "지금은 그 명령을 실행할 수 없어."}
+    ]
+  },
+  "expect": {
+    "top_intent": "command",
+    "query_mode": "not_observed",
+    "allowed_fact_ids": [],
+    "forbidden_fact_ids": [],
+    "allowed_command_types": [],
+    "fallback": false,
+    "fallback_reason": "invalid_command_candidate",
+    "memory_persisted": false,
+    "db_side_effect": "none",
+    "known_gaps": {"fallback_reason": "CAI-P0-T03"}
+  }
+}

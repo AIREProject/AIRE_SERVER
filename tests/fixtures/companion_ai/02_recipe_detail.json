@@ -1,0 +1,28 @@
+{
+  "fixture_id": "p0.recipe.detail.001",
+  "request": {
+    "text": "돌도끼 레시피 알려줘",
+    "surface": "game",
+    "conversation_id": "fixture-conversation-recipe-detail",
+    "allowed_commands": [],
+    "prior_turns": []
+  },
+  "script": {
+    "provider": "scripted-v1",
+    "responses": [
+      {"method": "classify_top", "semantic_key": "top", "result": "recipe"}
+    ]
+  },
+  "expect": {
+    "top_intent": "recipe",
+    "query_mode": "detail",
+    "allowed_fact_ids": ["recipe:recipe-3"],
+    "forbidden_fact_ids": ["recipe:recipe-4"],
+    "allowed_command_types": [],
+    "fallback": false,
+    "fallback_reason": null,
+    "memory_persisted": false,
+    "db_side_effect": "none",
+    "known_gaps": {"query_mode": "CAI-P1-T01", "fact_ids": "CAI-P0-T03"}
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "fixture_id": "p0.preference.share.001",
+  "request": {
+    "text": "나는 비 오는 날의 조용한 소리를 좋아해",
+    "surface": "mobile",
+    "conversation_id": "fixture-conversation-preference",
+    "allowed_commands": [],
+    "prior_turns": []
+  },
+  "script": {
+    "provider": "scripted-v1",
+    "responses": [
+      {"method": "classify_top", "semantic_key": "top", "result": "conversation"},
+      {"method": "generate_dialogue", "semantic_key": "dialogue:conversation", "result": "그런 조용한 분위기를 좋아하는구나."}
+    ]
+  },
+  "expect": {
+    "top_intent": "conversation",
+    "query_mode": "preference_share",
+    "allowed_fact_ids": [],
+    "forbidden_fact_ids": [],
+    "allowed_command_types": [],
+    "fallback": false,
+    "fallback_reason": null,
+    "memory_persisted": false,
+    "db_side_effect": "none",
+    "known_gaps": {"query_mode": "CAI-P1-T01"}
+  }
+}

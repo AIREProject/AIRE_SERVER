@@ -1,0 +1,30 @@
+{
+  "fixture_id": "p0.provider.unavailable.001",
+  "request": {
+    "text": "안녕, 마코",
+    "surface": "mobile",
+    "conversation_id": "fixture-conversation-unavailable",
+    "allowed_commands": [],
+    "prior_turns": []
+  },
+  "script": {
+    "provider": "invalid-v1",
+    "invalid_mode": "unavailable",
+    "responses": [
+      {"method": "classify_top", "semantic_key": "top", "result": "conversation"},
+      {"method": "generate_dialogue", "semantic_key": "dialogue:conversation", "result": "사용되지 않는 합성 대사"}
+    ]
+  },
+  "expect": {
+    "top_intent": "conversation",
+    "query_mode": "not_observed",
+    "allowed_fact_ids": [],
+    "forbidden_fact_ids": [],
+    "allowed_command_types": [],
+    "fallback": true,
+    "fallback_reason": "provider_unavailable",
+    "memory_persisted": false,
+    "db_side_effect": "none",
+    "known_gaps": {"fallback_reason": "CAI-P0-T03"}
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "fixture_id": "p0.conversation.greeting.001",
+  "request": {
+    "text": "안녕, 마코",
+    "surface": "mobile",
+    "conversation_id": "fixture-conversation-greeting",
+    "allowed_commands": [],
+    "prior_turns": []
+  },
+  "script": {
+    "provider": "scripted-v1",
+    "responses": [
+      {"method": "classify_top", "semantic_key": "top", "result": "conversation"},
+      {"method": "generate_dialogue", "semantic_key": "dialogue:conversation", "result": "안녕. 오늘도 이야기하러 왔구나."}
+    ]
+  },
+  "expect": {
+    "top_intent": "conversation",
+    "query_mode": "conversation",
+    "allowed_fact_ids": [],
+    "forbidden_fact_ids": [],
+    "allowed_command_types": [],
+    "fallback": false,
+    "fallback_reason": null,
+    "memory_persisted": false,
+    "db_side_effect": "none",
+    "known_gaps": {"query_mode": "CAI-P1-T01"}
+  }
+}
