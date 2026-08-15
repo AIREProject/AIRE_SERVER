@@ -31,7 +31,19 @@ ENEMY_PATTERN = re.compile(
 LORE_PATTERN = re.compile(
     r"(?:마을|지역|여기).*(?:역사|유래|어떤 곳|무슨 곳)|(?:역사|유래|세계관)"
 )
-CONVERSATION_PATTERN = re.compile(r"(?:안녕|반가워|고마워|감사|잘 지냈|어때)")
+CONVERSATION_PATTERN = re.compile(
+    r"(?:안녕|반가워|고마워|감사|잘 지냈|어때|"
+    r"좋아해|좋아하|싫어해|싫어하|선호해|선호하|"
+    r"기뻐|슬퍼|힘들어|힘들었|무서워|외로워|속상해|"
+    r"날씨|비가\s*올까|눈이\s*올까)"
+)
+GENERAL_QUESTION_PATTERN = re.compile(
+    r"(?:[?\uFF1F]|(?:뭐|무엇|왜|어떻게|어디|언제|누구|몇)(?:\s|$)|"
+    r"(?:이야|야|니|까|나요|인가요)\s*$)"
+)
+UNSUPPORTED_FACT_PATTERN = re.compile(
+    r"(?:미확인|보스|체력|공격력|방어력|피해량|데미지|스탯|수치|확률)"
+)
 
 
 class CommandIntentParser:

@@ -230,6 +230,6 @@ async def test_concurrent_brain_requests_keep_provider_calls_isolated() -> None:
     assert first.provenance is not None
     assert second.provenance is not None
     assert first.provenance.top_intent == "conversation"
-    assert second.provenance.top_intent == "unknown"
+    assert second.provenance.top_intent == "conversation"
     assert len(first.provenance.provider_calls) == 2
     assert len(second.provenance.provider_calls) == 2

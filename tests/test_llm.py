@@ -193,7 +193,11 @@ async def test_timing_provider_logs_step_duration() -> None:
         ("참호병 어떻게 잡아?", TopIntent.ENEMY),
         ("이 마을은 어떤 곳이야?", TopIntent.LORE),
         ("안녕, 마코", TopIntent.CONVERSATION),
-        ("오늘 비가 올까?", TopIntent.UNKNOWN),
+        ("오늘 비가 올까?", TopIntent.CONVERSATION),
+        ("너는 오늘 뭐 하고 싶어?", TopIntent.CONVERSATION),
+        ("오늘은 조금 힘들었어", TopIntent.CONVERSATION),
+        ("나는 비 오는 날의 조용한 소리를 좋아해", TopIntent.CONVERSATION),
+        ("미확인 보스의 체력이 몇이야?", TopIntent.UNKNOWN),
     ],
 )
 async def test_mock_provider_classifies_top_intent(text: str, expected: TopIntent) -> None:

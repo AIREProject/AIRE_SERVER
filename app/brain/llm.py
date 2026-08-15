@@ -15,8 +15,10 @@ from app.settings import Settings
 from .command_intent import (
     CONVERSATION_PATTERN,
     ENEMY_PATTERN,
+    GENERAL_QUESTION_PATTERN,
     LORE_PATTERN,
     RECIPE_PATTERN,
+    UNSUPPORTED_FACT_PATTERN,
     CommandIntentParser,
 )
 from .contract import FallbackReason, ProviderCallProvenance
@@ -117,8 +119,8 @@ _TOP_ROUTER_PROMPT = """사용자의 한국어 발화를 다음 의도 중 정�
 - recipe: 아이템 제작법이나 재료 질문. 적을 상대하는 방법은 enemy다.
 - enemy: 적의 약점, 공략법, 상대하는 방법을 **묻는 질문**. 공격하라는 명령 자체는 command다.
 - lore: 장소의 역사, 유래, 세계관 질문
-- conversation: 인사, 감사 등 가벼운 대화
-- unknown: 위 범주에 속하지 않거나 판단할 수 없음
+- conversation: 인사, 감사, 일반 질문, 일상 이야기, 감정이나 선호 공유
+- unknown: 위 범주에 속하지 않거나 확인되지 않은 게임 사실을 요구해 판단할 수 없음
 게임 사실이나 답변을 생성하지 말고 의도만 반환한다."""
 
 _COMMAND_ROUTER_PROMPT = """사용자의 한국어 명령형 발화를 다음 명령 중 정확히 하나로 분류한다.
@@ -370,7 +372,10 @@ class MockLLMProvider(LLMProvider):
             result = TopIntent.RECIPE
         elif LORE_PATTERN.search(text):
             result = TopIntent.LORE
-        elif CONVERSATION_PATTERN.search(text):
+        elif CONVERSATION_PATTERN.search(text) or (
+            GENERAL_QUESTION_PATTERN.search(text)
+            and UNSUPPORTED_FACT_PATTERN.search(text) is None
+        ):
             result = TopIntent.CONVERSATION
         else:
             result = TopIntent.UNKNOWN

@@ -461,9 +461,9 @@ def test_report_summary_is_deterministic(baseline_report: BaselineReport) -> Non
         for summary in baseline_report.summaries
     ) == (
         ("classification_accuracy", "success", 13, 0, 0, 0, 13, 13, 1.0),
-        ("core_response_rate", "success", 0, 6, 2, 0, 0, 6, 0.0),
+        ("core_response_rate", "success", 0, 5, 3, 0, 0, 5, 0.0),
         ("irrelevant_response_rate", "failure", 1, 0, 5, 2, 0, 1, 0.0),
-        ("unnecessary_refusal_rate", "failure", 2, 6, 0, 0, 6, 8, 0.75),
+        ("unnecessary_refusal_rate", "failure", 3, 5, 0, 0, 5, 8, 0.625),
         ("hallucination_rate", "failure", 1, 0, 4, 3, 0, 1, 0.0),
         ("unnecessary_clarification_rate", "failure", 0, 0, 0, 8, 0, 0, None),
         ("structured_output_failure_rate", "failure", 0, 2, 3, 0, 2, 2, 1.0),
@@ -479,8 +479,6 @@ def test_report_summary_is_deterministic(baseline_report: BaselineReport) -> Non
         ("p0.recipe.list.001", "unnecessary_refusal_rate", "unexpected_refusal"),
         ("p0.recipe.compare.001", "core_response_rate", "unexpected_refusal"),
         ("p0.recipe.compare.001", "unnecessary_refusal_rate", "unexpected_refusal"),
-        ("p0.recipe.followup.001", "core_response_rate", "unexpected_refusal"),
-        ("p0.recipe.followup.001", "unnecessary_refusal_rate", "unexpected_refusal"),
         ("p0.conversation.greeting.001", "core_response_rate", "unexpected_refusal"),
         ("p0.conversation.greeting.001", "unnecessary_refusal_rate", "unexpected_refusal"),
         ("p0.preference.share.001", "core_response_rate", "unexpected_refusal"),
@@ -501,9 +499,9 @@ def test_report_summary_is_deterministic(baseline_report: BaselineReport) -> Non
     query_mode_statuses = tuple(
         fixture.query_mode_status for fixture in baseline_report.fixtures
     )
-    assert query_mode_statuses.count("known_gap") == 8
+    assert query_mode_statuses.count("known_gap") == 0
     assert query_mode_statuses.count("not_observed") == 5
-    assert query_mode_statuses.count("pass") == 0
+    assert query_mode_statuses.count("pass") == 8
     assert query_mode_statuses.count("fail") == 0
 
 

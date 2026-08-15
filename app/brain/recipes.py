@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from app.gamedata.dataset import DATASET, GameDataSet, Item, Recipe, SmeltingRecipe
 
 from .facts import DialogueFact
+from .intent import RecipeQueryMode
 from .korean import alias_pattern, has_batchim, topic
 
 # ERD가 준 작업대 이름을 대사에서 읽기 쉬운 이름으로 옮긴다.
@@ -47,6 +49,41 @@ _CRAFT_QUANTITY_ASSIGNMENT_PATTERN = re.compile(
 )
 _CRAFT_RECIPE_TOKEN_PATTERN = re.compile(r"(?<![\w-])recipe-\d+(?![\w-])", re.IGNORECASE)
 _CRAFT_BARE_NUMBER_PATTERN = re.compile(r"(?<![\w=:+-])\d+(?![\w-])")
+_STABLE_RECIPE_ID_PATTERN = re.compile(
+    r"(?<![\w-])(?:recipe|smelt)-[A-Za-z0-9_-]+(?![\w-])", re.IGNORECASE
+)
+_RECIPE_REFERENCE_PATTERN = re.compile(r"(?:그거|그것|그\s*레시피|그\s*제작법)")
+_RECIPE_LIST_PATTERN = re.compile(
+    r"(?:알고\s*있는|아는|확인된|가능한|보유한).*(?:레시피|제작법)|"
+    r"(?:레시피|제작법).*(?:목록|리스트|뭐|무엇|어떤|있어)",
+    re.IGNORECASE,
+)
+_RECIPE_COMPARE_PATTERN = re.compile(r"(?:비교|차이|어느\s*게|어떤\s*게|더\s*(?:좋|나))")
+_RECIPE_QUERY_PATTERN = re.compile(
+    r"(?:레시피|제작법|만드는?\s*(?:법|방법)|어떻게\s*(?:만들|제작)|재료)",
+    re.IGNORECASE,
+)
+_EXPLICIT_UNKNOWN_PATTERN = re.compile(
+    r"(?:[A-Za-z0-9가-힣_.:-]+)\s*(?:레시피|제작법|만드는?\s*(?:법|방법))|"
+    r"(?:[A-Za-z0-9가-힣_.:-]+)(?:을|를|은|는)?\s*어떻게\s*(?:만들|제작)",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RecipeTarget:
+    """표시 이름이 아니라 게임 데이터의 stable ID로 검증된 제작 결과 대상."""
+
+    result_item_id: str
+    recipe_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RecipeQuery:
+    """한 Recipe 질문의 mode와 검증된 대상 집합."""
+
+    mode: RecipeQueryMode
+    targets: tuple[RecipeTarget, ...] = ()
 
 
 def _join_ingredients(ingredients: Iterable[str]) -> str:
@@ -104,6 +141,21 @@ class RecipeRepository:
             )
             for item_id in result_items
         }
+        self._targets_by_result: dict[str, RecipeTarget] = {
+            item_id: RecipeTarget(
+                result_item_id=item_id,
+                recipe_ids=(
+                    *(recipe.recipe_id for recipe in self._recipes_by_result[item_id]),
+                    *(recipe.smelt_id for recipe in self._smelting_by_result[item_id]),
+                ),
+            )
+            for item_id in result_items
+        }
+        self._targets_by_recipe_id: dict[str, RecipeTarget] = {
+            recipe_id.casefold(): target
+            for target in self._targets_by_result.values()
+            for recipe_id in target.recipe_ids
+        }
         aliases_by_result: dict[str, tuple[str, ...]] = {
             item_id: tuple(dict.fromkeys((*item.aliases, item.name_ko, item.item_id)))
             for item_id, item in result_items.items()
@@ -120,15 +172,19 @@ class RecipeRepository:
     def fact_for(self, query: str) -> DialogueFact | None:
         """현재 발화가 가리키는 결과물의 제작·제련법을 반환한다."""
 
-        result_ids = {
-            item_id
-            for item_id, pattern in self._recipe_patterns
-            if pattern.search(query) is not None
-        }
-        if len(result_ids) != 1:
+        targets = self.targets_in(query)
+        if len(targets) != 1:
             return None
 
-        result_id = next(iter(result_ids))
+        return self.fact_for_target(targets[0])
+
+    def fact_for_target(self, target: RecipeTarget) -> DialogueFact | None:
+        """검증된 target의 기존 상세 사실을 반환한다."""
+
+        canonical = self._targets_by_result.get(target.result_item_id)
+        if canonical != target:
+            return None
+        result_id = target.result_item_id
         descriptions = [
             self._describe_recipe(recipe)
             for recipe in self._recipes_by_result.get(result_id, ())
@@ -140,6 +196,69 @@ class RecipeRepository:
         if not descriptions:
             return None
         return DialogueFact(kind="recipe", text=" ".join(descriptions))
+
+    def targets_in(self, query: str) -> tuple[RecipeTarget, ...]:
+        """별칭 또는 stable Recipe ID가 가리키는 검증된 결과 대상을 반환한다."""
+
+        result_ids = {
+            item_id
+            for item_id, pattern in self._recipe_patterns
+            if pattern.search(query) is not None
+        }
+        for recipe_id in _STABLE_RECIPE_ID_PATTERN.findall(query):
+            target = self._targets_by_recipe_id.get(recipe_id.casefold())
+            if target is not None:
+                result_ids.add(target.result_item_id)
+        return tuple(self._targets_by_result[item_id] for item_id in sorted(result_ids))
+
+    def query_for(
+        self,
+        query: str,
+        *,
+        recent_target: RecipeTarget | None = None,
+    ) -> RecipeQuery | None:
+        """현재 문장과 직전의 검증된 단일 대상을 Recipe query로 판정한다."""
+
+        if self.is_craft_request(query):
+            return None
+        targets = self.targets_in(query)
+        stable_ids = {
+            recipe_id.casefold() for recipe_id in _STABLE_RECIPE_ID_PATTERN.findall(query)
+        }
+        has_recipe_signal = bool(
+            targets
+            or stable_ids
+            or _RECIPE_QUERY_PATTERN.search(query)
+            or _RECIPE_LIST_PATTERN.search(query)
+            or _RECIPE_REFERENCE_PATTERN.search(query)
+        )
+        if not has_recipe_signal:
+            return None
+
+        unknown_stable_ids = stable_ids - self._targets_by_recipe_id.keys()
+        if unknown_stable_ids:
+            return RecipeQuery(RecipeQueryMode.UNKNOWN_RECIPE)
+
+        if _RECIPE_LIST_PATTERN.search(query) is not None and not targets:
+            return RecipeQuery(RecipeQueryMode.LIST_KNOWN)
+
+        if _RECIPE_REFERENCE_PATTERN.search(query) is not None and not targets:
+            if recent_target is not None and self.fact_for_target(recent_target) is not None:
+                return RecipeQuery(RecipeQueryMode.DETAIL, (recent_target,))
+            return RecipeQuery(RecipeQueryMode.AMBIGUOUS)
+
+        if _RECIPE_COMPARE_PATTERN.search(query) is not None:
+            if len(targets) == 2:
+                return RecipeQuery(RecipeQueryMode.COMPARE, targets)
+            return RecipeQuery(RecipeQueryMode.AMBIGUOUS, targets)
+
+        if len(targets) == 1:
+            return RecipeQuery(RecipeQueryMode.DETAIL, targets)
+        if len(targets) > 1:
+            return RecipeQuery(RecipeQueryMode.AMBIGUOUS, targets)
+        if _EXPLICIT_UNKNOWN_PATTERN.search(query) is not None:
+            return RecipeQuery(RecipeQueryMode.UNKNOWN_RECIPE)
+        return RecipeQuery(RecipeQueryMode.AMBIGUOUS)
 
     def result_aliases(self) -> tuple[str, ...]:
         """Mock 라우터가 제작법 의도를 찾을 때 사용할 결과물 별칭을 반환한다."""

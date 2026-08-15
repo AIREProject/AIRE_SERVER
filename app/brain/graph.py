@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Literal, NotRequired, TypedDict
 
@@ -16,15 +17,24 @@ from pydantic import JsonValue
 
 from app.models import CommandType, Surface
 
-from .command_intent import CommandIntentParser
+from .command_intent import (
+    GENERAL_QUESTION_PATTERN,
+    CommandIntentParser,
+)
 from .contract import CompanionAction, CompanionTurn, InventoryFacts, WorldContextFacts
 from .dialogue import SURFACE_PROFILES, DialogueScene, DialogueSpec, SurfaceProfile, render
 from .enemies import EnemyRepository
 from .gametime import describe
-from .intent import CommandLabel, ResourceSlot, TopIntent
+from .intent import (
+    CommandLabel,
+    RecipeQueryMode,
+    RequestQueryMode,
+    ResourceSlot,
+    TopIntent,
+)
 from .llm import LLMProvider
 from .lore import LoreRepository
-from .recipes import RecipeRepository
+from .recipes import RecipeQuery, RecipeRepository, RecipeTarget
 from .resources import GatherParameters, ResourceId, ResourceRepository
 from .store import ConversationTurn, PendingSlot
 
@@ -82,6 +92,8 @@ class CompanionState(TypedDict):
     text: str
     # 직전 턴이 되물어 둔 슬롯. 저장소에서 읽어 브레인이 넣는다.
     pending: NotRequired[PendingSlot | None]
+    # PendingSlot과 의미가 다른, 직전 Recipe 질의의 검증된 단일 대상.
+    recipe_reference: NotRequired[RecipeTarget | None]
     # 최근에 오간 말. **대사 생성에만** 쓴다 — 분류 노드는 읽지 않는다. 기록이 분류에 끼면
     # 세 턴 전 "따라와" 가 지금 명령을 다시 쏘는 길이 열린다.
     history: NotRequired[tuple[ConversationTurn, ...]]
@@ -92,6 +104,8 @@ class CompanionState(TypedDict):
     # 라우팅 중간값
     pending_answered: NotRequired[bool]
     top_intent: NotRequired[TopIntent]
+    query_mode: NotRequired[RecipeQueryMode | RequestQueryMode | None]
+    recipe_query: NotRequired[RecipeQuery | None]
     command_label: NotRequired[CommandLabel]
     resource: NotRequired[ResourceSlot]
     quantity: NotRequired[int | None]
@@ -103,6 +117,7 @@ class CompanionState(TypedDict):
     # 이번 턴이 새로 되물었을 때만 채워진다. 비면 슬롯은 사라진다 — 되묻지 않았으면
     # 잊는 것이 기본값이라, 노드가 정리를 잊어 슬롯이 눌어붙는 일이 생기지 않는다.
     next_pending: NotRequired[PendingSlot | None]
+    next_recipe_reference: NotRequired[RecipeTarget | None]
     repository_match: NotRequired[bool]
     fact_ids: NotRequired[tuple[str, ...]]
 
@@ -111,6 +126,8 @@ class CompanionUpdate(TypedDict, total=False):
     """노드가 반환하는 부분 상태. LangGraph 가 `CompanionState` 에 병합한다."""
 
     top_intent: TopIntent
+    query_mode: RecipeQueryMode | RequestQueryMode | None
+    recipe_query: RecipeQuery | None
     command_label: CommandLabel
     resource: ResourceSlot
     quantity: int | None
@@ -119,6 +136,7 @@ class CompanionUpdate(TypedDict, total=False):
     display_text: str
     action: CompanionAction | None
     next_pending: PendingSlot | None
+    next_recipe_reference: RecipeTarget | None
     pending_answered: bool
     repository_match: bool
     fact_ids: tuple[str, ...]
@@ -137,6 +155,26 @@ _TOP_ROUTES: dict[TopIntent, TopRoute] = {
     TopIntent.CONVERSATION: "conversation",
     TopIntent.UNKNOWN: "unsupported",
 }
+
+_PREFERENCE_SHARE_PATTERN = re.compile(r"(?:좋아해|좋아하|싫어해|싫어하|선호해|선호하)")
+
+
+def _request_query_mode(
+    intent: TopIntent,
+    text: str,
+) -> RequestQueryMode | None:
+    if intent is TopIntent.CONVERSATION:
+        if _PREFERENCE_SHARE_PATTERN.search(text) is not None:
+            return RequestQueryMode.PREFERENCE_SHARE
+        return RequestQueryMode.CONVERSATION
+    if intent in (TopIntent.ENEMY, TopIntent.LORE):
+        return RequestQueryMode.INFORMATION_QUESTION
+    if (
+        intent is TopIntent.UNKNOWN
+        and GENERAL_QUESTION_PATTERN.search(text.strip()) is not None
+    ):
+        return RequestQueryMode.UNSUPPORTED_FACT
+    return None
 
 
 def _inventory_fact(inventory: InventoryFacts) -> str:
@@ -325,9 +363,13 @@ def build_companion_graph(
         # 제작법 질문은 기존 recipe facts-only 경로에 남긴다. 명시적인 allowlist 제작
         # 요청만 provider의 분류 결과와 무관하게 command 경로로 올린다.
         craft_requested = recipes.is_craft_request(state["text"])
+        recipe_query = recipes.query_for(
+            state["text"], recent_target=state.get("recipe_reference")
+        )
         if craft_requested:
             intent = TopIntent.COMMAND
-        elif recipes.fact_for(state["text"]) is not None:
+            recipe_query = None
+        elif recipe_query is not None:
             # Provider가 질문을 명령으로 잘못 분류해도 검증된 제작법 사실은 행동으로
             # 승격하지 않는다.
             intent = TopIntent.RECIPE
@@ -338,7 +380,19 @@ def build_companion_graph(
             # Provider가 채집 방법·가능 여부 질문을 command로 잘못 분류해도
             # Game GatherResource 후보 경계로 들어오지 못하게 한다.
             intent = TopIntent.UNKNOWN
-        return {"top_intent": intent}
+            recipe_query = None
+        if intent is TopIntent.RECIPE and recipe_query is None:
+            recipe_query = RecipeQuery(RecipeQueryMode.AMBIGUOUS)
+        query_mode: RecipeQueryMode | RequestQueryMode | None = (
+            recipe_query.mode
+            if intent is TopIntent.RECIPE and recipe_query is not None
+            else _request_query_mode(intent, state["text"])
+        )
+        return {
+            "top_intent": intent,
+            "query_mode": query_mode,
+            "recipe_query": recipe_query,
+        }
 
     async def command_classify_node(state: CompanionState) -> CompanionUpdate:
         classification = await llm.classify_command(state["text"])
@@ -499,12 +553,23 @@ def build_companion_graph(
         }
 
     async def recipe_node(state: CompanionState) -> CompanionUpdate:
-        text = state["text"]
-        fact = recipes.fact_for(text)
+        query = state.get("recipe_query")
+        target = (
+            query.targets[0]
+            if query is not None
+            and query.mode is RecipeQueryMode.DETAIL
+            and len(query.targets) == 1
+            else None
+        )
+        fact = recipes.fact_for_target(target) if target is not None else None
         if fact is not None:
             # RecipeRepository가 이미 검증된 재료·수량·작업대·시간 문장을 만든다. 다시
             # LLM에 맡기면 필수 사실을 생략하거나 World Context Item을 섞을 수 있다.
-            return {"display_text": fact.text, "repository_match": True}
+            return {
+                "display_text": fact.text,
+                "repository_match": True,
+                "next_recipe_reference": target,
+            }
         return {
             "display_text": await say(
                 state,

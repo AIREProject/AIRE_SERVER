@@ -14,6 +14,25 @@ class TopIntent(StrEnum):
     UNKNOWN = "unknown"
 
 
+class RecipeQueryMode(StrEnum):
+    """검증된 Recipe 질의를 처리하는 안정적인 내부 mode."""
+
+    LIST_KNOWN = "list_known"
+    DETAIL = "detail"
+    COMPARE = "compare"
+    AMBIGUOUS = "ambiguous"
+    UNKNOWN_RECIPE = "unknown_recipe"
+
+
+class RequestQueryMode(StrEnum):
+    """Recipe 이외의 P0 평가에서 관측하는 최소 요청 목적."""
+
+    CONVERSATION = "conversation"
+    PREFERENCE_SHARE = "preference_share"
+    INFORMATION_QUESTION = "information_question"
+    UNSUPPORTED_FACT = "unsupported_fact"
+
+
 class TopClassification(BaseModel):
     """LLM 최상위 라우터가 반환해야 하는 구조화된 출력."""
 

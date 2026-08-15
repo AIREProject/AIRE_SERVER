@@ -8,8 +8,9 @@ These files are synthetic-only inputs for CAI-P0-T01/T02. A fixture ID uses
   calls fail the test.
 - `expect` describes the target semantic contract. A mismatch is allowed only when the field appears
   in `known_gaps` with its owning follow-up Task.
-- `query_mode`, fact provenance, and production fallback reasons remain `not_observed` until their
-  production seams are implemented. The target labels stay in the fixture for later reruns.
+- Normal-interaction `query_mode` values are observed from request-scoped response provenance.
+  Fact provenance gaps and provider-fault modes remain explicitly registered until their owning
+  production seams are implemented.
 - Text, IDs, and conversations must remain synthetic. Do not add transcripts, credentials, prompts,
   tokens, actor paths, or production identifiers.
 

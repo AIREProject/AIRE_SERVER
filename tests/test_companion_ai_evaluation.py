@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,7 +48,8 @@ QueryMode = Literal[
     "list_known",
     "detail",
     "compare",
-    "follow_up",
+    "ambiguous",
+    "unknown_recipe",
     "conversation",
     "preference_share",
     "unsupported_fact",
@@ -137,6 +139,16 @@ class ObservedEvaluation:
     fallback_reason: str | None
     memory_persisted: bool
     db_side_effect: str
+
+
+class _ProvenanceHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.msg == "response_provenance":
+            self.records.append(record)
 
 
 def load_fixtures(directory: Path = FIXTURE_DIRECTORY) -> tuple[CompanionAIFixture, ...]:
@@ -245,6 +257,7 @@ def _observe(
     before: BusinessTableCounts,
     after: BusinessTableCounts,
     bundle: ProviderBundle,
+    provenance: logging.LogRecord,
 ) -> ObservedEvaluation:
     failures = (
         bundle.provider.failures if isinstance(bundle.provider, InvalidLLMProvider) else ()
@@ -259,7 +272,11 @@ def _observe(
     side_effect = "none" if before == after else "changed"
     return ObservedEvaluation(
         top_intent=_scripted_top_intent(fixture),
-        query_mode="not_observed",
+        query_mode=(
+            "not_observed"
+            if fixture.expect.query_mode == "not_observed"
+            else provenance.query_mode
+        ),
         fact_ids=fact_ids,
         command_types=tuple(candidate.type for candidate in response.command_candidates),
         fallback=fallback,
@@ -360,6 +377,11 @@ async def test_companion_ai_semantic_baseline(
         metadata=METADATA,
         ai_timeout_seconds=5.0,
     )
+    logger = logging.getLogger("aire.backend")
+    previous_level = logger.level
+    handler = _ProvenanceHandler()
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
 
     try:
         async with database.session_factory() as session:
@@ -390,6 +412,8 @@ async def test_companion_ai_semantic_baseline(
             after = await _business_counts(session)
     finally:
         await service.aclose()
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
 
     assert response.display_text.strip(), f"{fixture.fixture_id}: empty display text escaped"
     bundle.recorder.assert_consumed()
@@ -400,5 +424,17 @@ async def test_companion_ai_semantic_baseline(
         assert bundle.provider.failures
         assert bundle.provider.failures[-1].reason == fixture.expect.fallback_reason
 
-    observed = _observe(fixture, response, before, after, bundle)
+    request_id = f"fixture-request-{fixture.fixture_id}-{len(fixture.request.prior_turns)}"
+    provenance_records = [
+        record for record in handler.records if record.request_id == request_id
+    ]
+    assert len(provenance_records) == 1
+    observed = _observe(
+        fixture,
+        response,
+        before,
+        after,
+        bundle,
+        provenance_records[0],
+    )
     _assert_semantic_contract(fixture, observed)

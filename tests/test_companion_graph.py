@@ -347,6 +347,58 @@ async def say(
     )
 
 
+async def test_recipe_follow_up_uses_only_the_immediately_previous_detail() -> None:
+    brain = CompanionBrain(MockLLMProvider())
+
+    detail = await say(brain, "돌도끼 레시피 알려줘")
+    follow_up = await say(brain, "그거 어떻게 만들어?")
+    await say(brain, "안녕, 마코")
+    expired = await say(brain, "그거 어떻게 만들어?")
+
+    assert detail.provenance is not None
+    assert detail.provenance.query_mode == "detail"
+    assert follow_up.provenance is not None
+    assert follow_up.provenance.query_mode == "detail"
+    assert follow_up.text == detail.text
+    assert expired.provenance is not None
+    assert expired.provenance.query_mode == "ambiguous"
+    assert expired.action is None
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        "레시피 알고 있는 거 있어?",
+        "돌도끼와 돌곡괭이 레시피를 비교해 줘",
+        "전설검 레시피 알려줘",
+    ],
+)
+async def test_non_detail_recipe_query_does_not_create_a_follow_up_reference(
+    first: str,
+) -> None:
+    brain = CompanionBrain(MockLLMProvider())
+
+    await say(brain, first)
+    follow_up = await say(brain, "그거 어떻게 만들어?")
+
+    assert follow_up.provenance is not None
+    assert follow_up.provenance.query_mode == "ambiguous"
+    assert follow_up.action is None
+
+
+async def test_recipe_reference_is_separate_from_command_pending_slot() -> None:
+    brain = CompanionBrain(MockLLMProvider())
+
+    await say(brain, "돌도끼 레시피 알려줘")
+    gather_question = await say(brain, "저것 좀 캐 줘")
+    recipe_question = await say(brain, "그거 어떻게 만들어?")
+
+    assert gather_question.action is None
+    assert recipe_question.provenance is not None
+    assert recipe_question.provenance.query_mode == "ambiguous"
+    assert recipe_question.action is None
+
+
 async def test_ambiguous_gather_answer_is_understood_on_the_next_turn() -> None:
     """되묻고 나서 그 답을 못 알아듣던 것이 이 기능의 출발점이다."""
 

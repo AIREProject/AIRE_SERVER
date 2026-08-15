@@ -14,6 +14,8 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
 
+from .recipes import RecipeTarget
+
 # 되묻기를 몇 번까지 반복할지. 상한이 없으면 플레이어가 계속 모호하게 답할 때
 # 마코가 같은 질문만 되풀이한다.
 MAX_ASK_COUNT = 2
@@ -71,10 +73,13 @@ class ConversationMemory:
 
     pending: PendingSlot | None = None
     recent_turns: tuple[ConversationTurn, ...] = ()
+    # Command clarification과 별개인 Recipe 후속 참조다. CompanionBrain이 매 사용자 턴마다
+    # 이번 Recipe 결과로 교체하므로 바로 다음 턴에서만 사용할 수 있다.
+    recipe_reference: RecipeTarget | None = None
 
     @property
     def is_empty(self) -> bool:
-        return self.pending is None and not self.recent_turns
+        return self.pending is None and not self.recent_turns and self.recipe_reference is None
 
     def appended(self, player_text: str, companion_text: str) -> ConversationMemory:
         """이번 턴의 두 마디를 덧붙이고 상한을 넘긴 앞쪽을 버린다.

@@ -126,9 +126,10 @@ def _build_provenance(
         )
 
     intent = final.get("top_intent") if final is not None else None
+    query_mode = final.get("query_mode") if final is not None else None
     return BrainProvenance(
         top_intent=intent.value if intent is not None else None,
-        query_mode=None,
+        query_mode=query_mode.value if query_mode is not None else None,
         selected_route=route,
         repository_match=repository_match,
         fact_ids=tuple(final.get("fact_ids", ()))[:8] if final is not None else (),
@@ -262,6 +263,7 @@ class CompanionBrain:
                         "turn": turn,
                         "text": turn.text,
                         "pending": memory.pending,
+                        "recipe_reference": memory.recipe_reference,
                         "history": memory.recent_turns,
                         "long_term": recalled,
                     }
@@ -276,6 +278,7 @@ class CompanionBrain:
             saved = replace(
                 memory.appended(turn.text, display_text),
                 pending=final.get("next_pending"),
+                recipe_reference=final.get("next_recipe_reference"),
             )
             self._store.save(turn.conversation_key, saved)
 

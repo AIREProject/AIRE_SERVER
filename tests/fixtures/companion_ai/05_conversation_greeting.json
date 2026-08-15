@@ -24,6 +24,6 @@
     "fallback_reason": null,
     "memory_persisted": false,
     "db_side_effect": "none",
-    "known_gaps": {"query_mode": "CAI-P1-T01"}
+    "known_gaps": {}
   }
 }
