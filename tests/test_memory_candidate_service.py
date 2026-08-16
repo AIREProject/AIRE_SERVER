@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import func, select
 
 from app.db.models import (
@@ -250,6 +251,90 @@ async def test_mismatched_claim_cannot_persist_or_acknowledge_a_memory() -> None
         count = await session.scalar(select(func.count()).select_from(MemoryModel))
         outbox = await session.get(SourceOutboxModel, claim.source_seq)
     assert count == 0
+    assert outbox is not None and outbox.state == OUTBOX_CLAIMED
+
+
+async def test_invalid_type_or_text_candidates_are_rejected_and_acknowledged() -> None:
+    database = await make_database(make_settings())
+    scope = await _scope(database)
+    invalid_type_id = await _message(database, scope, text="나는 밤이 무서워")
+    invalid_type_claim = await _claim(database)
+    service = MemoryCandidateService(database)  # type: ignore[arg-type]
+    assert await service.accept_and_acknowledge(
+        invalid_type_claim,
+        MemoryCandidate(
+            "UntrustedInference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, invalid_type_id
+        ),
+    ) is None
+
+    invalid_text_id = await _message(database, scope, text="나는 밤이 무서워")
+    invalid_text_claim = await _claim(database)
+    assert await service.accept_and_acknowledge(
+        invalid_text_claim,
+        MemoryCandidate(
+            "Preference", "밤에는 조심해야 해", 6, scope, SOURCE_MESSAGE, invalid_text_id
+        ),
+    ) is None
+
+    async with database.session_factory() as session:
+        count = await session.scalar(select(func.count()).select_from(MemoryModel))
+        states = tuple((await session.execute(select(SourceOutboxModel.state))).scalars())
+    assert count == 0
+    assert states == (OUTBOX_COMPLETED, OUTBOX_COMPLETED)
+
+
+async def test_purged_source_candidate_is_rejected_and_acknowledged() -> None:
+    database = await make_database(make_settings())
+    scope = await _scope(database)
+    source_id = await _message(database, scope, text="나는 밤이 무서워")
+    claim = await _claim(database)
+    async with database.session_factory() as session:
+        source = await session.get(MessageModel, source_id)
+        assert source is not None
+        source.content = None
+        source.content_deleted_at = _NOW
+        await session.commit()
+
+    accepted = await MemoryCandidateService(database).accept_and_acknowledge(  # type: ignore[arg-type]
+        claim,
+        MemoryCandidate("Preference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, source_id),
+    )
+
+    assert accepted is None
+    async with database.session_factory() as session:
+        count = await session.scalar(select(func.count()).select_from(MemoryModel))
+        outbox = await session.get(SourceOutboxModel, claim.source_seq)
+    assert count == 0
+    assert outbox is not None and outbox.state == OUTBOX_COMPLETED
+
+
+async def test_promotion_failure_rolls_back_memory_and_source_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await make_database(make_settings())
+    scope = await _scope(database)
+    source_id = await _message(database, scope, text="나는 밤이 무서워")
+    claim = await _claim(database)
+
+    async def fail_promote(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("injected promotion failure")
+
+    monkeypatch.setattr(SourceRepository, "promote", fail_promote)
+    with pytest.raises(RuntimeError, match="injected promotion failure"):
+        await MemoryCandidateService(database).accept(  # type: ignore[arg-type]
+            claim,
+            MemoryCandidate("Preference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, source_id),
+        )
+
+    async with database.session_factory() as session:
+        count = await session.scalar(select(func.count()).select_from(MemoryModel))
+        references = await session.scalar(
+            select(func.count()).select_from(SourceRetentionReferenceModel)
+        )
+        source = await session.get(MessageModel, source_id)
+        outbox = await session.get(SourceOutboxModel, claim.source_seq)
+    assert count == references == 0
+    assert source is not None and source.storage_class == "Transient"
     assert outbox is not None and outbox.state == OUTBOX_CLAIMED
 
 
