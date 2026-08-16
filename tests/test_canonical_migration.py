@@ -19,6 +19,10 @@ TABLES = {
     "source_outbox",
     "source_cursors",
     "legacy_import_reports",
+    "legacy_episodic_memories",
+    "memories",
+    "memory_sources",
+    "memory_migration_reports",
 }
 
 
@@ -34,8 +38,8 @@ def _upgrade(database_path: Path, revision: str, environment: dict[str, str]) ->
     )
 
 
-@pytest.mark.parametrize("start_revision", [None, "0009"])
-def test_0010_creates_canonical_tables_from_fresh_and_0009(
+@pytest.mark.parametrize("start_revision", [None, "0010"])
+def test_0011_creates_source_backed_memory_tables_from_fresh_and_0010(
     tmp_path: Path,
     start_revision: str | None,
 ) -> None:
@@ -69,7 +73,7 @@ def test_0010_creates_canonical_tables_from_fresh_and_0009(
         ).fetchone()[0]
 
     assert TABLES <= tables
-    assert revision == ("0010",)
+    assert revision == ("0011",)
     assert "uq_messages_conversation_sequence" in message_sql
     assert "Transient" in message_sql and "MemorySource" in message_sql
     assert "Tombstone" in outbox_sql

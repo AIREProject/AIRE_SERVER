@@ -25,9 +25,6 @@ from app.admin_models import (
     EnemyCreateRequest,
     EnemyResponse,
     EnemyUpdateRequest,
-    EpisodicMemoryCreateRequest,
-    EpisodicMemoryResponse,
-    EpisodicMemoryUpdateRequest,
     ItemCreateRequest,
     ItemResponse,
     ItemUpdateRequest,
@@ -55,7 +52,6 @@ from app.admin_models import (
 from app.db.models import (
     DeviceModel,
     EnemyModel,
-    EpisodicMemoryModel,
     ItemModel,
     LocationModel,
     OfflineTaskModel,
@@ -206,15 +202,6 @@ ADMIN_RESOURCES: tuple[AdminResourceSpec, ...] = (
         create_schema=LocationCreateRequest,
         update_schema=LocationUpdateRequest,
         response_schema=LocationResponse,
-    ),
-    AdminResourceSpec(
-        name="episodic-memories",
-        model=EpisodicMemoryModel,
-        pk_field="row_id",
-        create_schema=EpisodicMemoryCreateRequest,
-        update_schema=EpisodicMemoryUpdateRequest,
-        response_schema=EpisodicMemoryResponse,
-        prepare_create=_stamp_created_at,
     ),
     AdminResourceSpec(
         name="offline-task-policies",

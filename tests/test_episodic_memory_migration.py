@@ -42,10 +42,14 @@ def test_legacy_memory_files_are_imported_with_the_new_scale(tmp_path, monkeypat
 
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
-            "SELECT player_key, importance, text FROM episodic_memories"
+            "SELECT player_key, importance, text FROM legacy_episodic_memories"
+        ).fetchone()
+        report = connection.execute(
+            "SELECT status, quarantined_count FROM memory_migration_reports"
         ).fetchone()
 
     assert row == (player_key, 6, "플레이어는 밤을 싫어한다")
+    assert report == ("quarantined_without_canonical_source", 1)
 
 
 def test_episodic_memory_migration_succeeds_without_memory_directory(tmp_path, monkeypatch) -> None:
@@ -63,4 +67,11 @@ def test_episodic_memory_migration_succeeds_without_memory_directory(tmp_path, m
     )
 
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM episodic_memories").fetchone() == (0,)
+        count = connection.execute(
+            "SELECT COUNT(*) FROM legacy_episodic_memories"
+        ).fetchone()
+        report = connection.execute(
+            "SELECT quarantined_count FROM memory_migration_reports"
+        ).fetchone()
+        assert count == (0,)
+        assert report == (0,)

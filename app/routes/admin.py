@@ -23,9 +23,6 @@ from app.admin_models import (
     EnemyCreateRequest,
     EnemyResponse,
     EnemyUpdateRequest,
-    EpisodicMemoryCreateRequest,
-    EpisodicMemoryResponse,
-    EpisodicMemoryUpdateRequest,
     ItemCreateRequest,
     ItemResponse,
     ItemUpdateRequest,
@@ -514,56 +511,6 @@ async def update_location(
 @router.delete("/locations/{location_id}", status_code=204)
 async def delete_location(location_id: str, session: DatabaseSession) -> None:
     await _locations_service(session).delete_resource(location_id)
-
-
-# --- episodic-memories ----------------------------------------------------------------
-
-
-def _episodic_memories_service(
-    session: DatabaseSession,
-) -> AdminCrudService[EpisodicMemoryResponse]:
-    return AdminCrudService(
-        ADMIN_RESOURCES_BY_NAME["episodic-memories"], AdminRepository(session)
-    )
-
-
-@router.post("/episodic-memories", response_model=EpisodicMemoryResponse)
-async def create_episodic_memory(
-    body: EpisodicMemoryCreateRequest, session: DatabaseSession
-) -> EpisodicMemoryResponse:
-    return await _episodic_memories_service(session).create_resource(body)
-
-
-@router.post("/episodic-memories/bulk", response_model=BulkCreateResponse[EpisodicMemoryResponse])
-async def create_episodic_memories_bulk(
-    body: BulkCreateRequest[EpisodicMemoryCreateRequest], session: DatabaseSession
-) -> BulkCreateResponse[EpisodicMemoryResponse]:
-    created = await _episodic_memories_service(session).create_resources(body.items)
-    return BulkCreateResponse(created=created)
-
-
-@router.get("/episodic-memories", response_model=list[EpisodicMemoryResponse])
-async def list_episodic_memories(
-    session: DatabaseSession, limit: Limit = 50, offset: Offset = 0
-) -> list[EpisodicMemoryResponse]:
-    return await _episodic_memories_service(session).list_resources(limit=limit, offset=offset)
-
-
-@router.get("/episodic-memories/{row_id}", response_model=EpisodicMemoryResponse)
-async def get_episodic_memory(row_id: str, session: DatabaseSession) -> EpisodicMemoryResponse:
-    return await _episodic_memories_service(session).get_resource(row_id)
-
-
-@router.patch("/episodic-memories/{row_id}", response_model=EpisodicMemoryResponse)
-async def update_episodic_memory(
-    row_id: str, body: EpisodicMemoryUpdateRequest, session: DatabaseSession
-) -> EpisodicMemoryResponse:
-    return await _episodic_memories_service(session).update_resource(row_id, body)
-
-
-@router.delete("/episodic-memories/{row_id}", status_code=204)
-async def delete_episodic_memory(row_id: str, session: DatabaseSession) -> None:
-    await _episodic_memories_service(session).delete_resource(row_id)
 
 
 # --- offline-task-policies ------------------------------------------------------------

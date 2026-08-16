@@ -343,29 +343,9 @@ def test_location_crud_cycle_round_trips_coordinates_alias(seeded: Any) -> None:
     assert deleted.status_code == 204
 
 
-def test_episodic_memory_crud_cycle(seeded: Any) -> None:
+def test_episodic_memory_admin_crud_is_not_exposed(seeded: Any) -> None:
     client, _ids = seeded
-    created = client.post(
-        "/api/v1/admin/episodic-memories",
-        headers=HEADERS,
-        json={
-            "row_id": "mem1",
-            "player_key": "pk1",
-            "kind": "episode",
-            "text": "테스트 기억",
-            "importance": 5,
-        },
-    )
-    assert created.status_code == 200
-
-    updated = client.patch(
-        "/api/v1/admin/episodic-memories/mem1", headers=HEADERS, json={"importance": 7}
-    )
-    assert updated.status_code == 200
-    assert updated.json()["importance"] == 7
-
-    deleted = client.delete("/api/v1/admin/episodic-memories/mem1", headers=HEADERS)
-    assert deleted.status_code == 204
+    assert client.post("/api/v1/admin/episodic-memories", headers=HEADERS).status_code == 404
 
 
 def test_offline_task_crud_cycle(seeded: Any) -> None:

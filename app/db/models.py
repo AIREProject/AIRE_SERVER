@@ -4,7 +4,8 @@
 `MessageModel`/`ChatRequestModel`(요청 멱등성 + 감사 기록)은 이번 범위 밖이다 —
 `docs/temporary-scaffolds.md` §2 에 후속 과제로 남겨 뒀다. 게임 마스터 데이터는
 `app/gamedata/dataset.py`를 Alembic으로 적재하며, 장기기억은 별도 `episodic_memories` 행으로
-저장한다.
+저장했다. P3 이후 새 기억은 canonical Message/Event 출처를 가진 `memories`와
+`memory_sources`에만 저장한다.
 
 brain 의 레시피·적 사실은 이제 이 테이블들을 앱 시작 시점에 한 번 읽은 스냅샷을 쓴다
 (`app/db/game_data_loader.py`, `app/main.py`) — `app/gamedata/dataset.py` 는 여전히 Alembic
@@ -17,6 +18,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -166,8 +168,14 @@ class LocationModel(Base):
     coordinates: Mapped[dict[str, float]] = mapped_column(JSON)
 
 
-class EpisodicMemoryModel(Base):
-    __tablename__ = "episodic_memories"
+class LegacyEpisodicMemoryModel(Base):
+    """P3가 격리한 P2 이전의 무출처 기억 행.
+
+    이 모델은 legacy JSON quarantine 확인용으로만 남긴다. 새 기억 경로에서는 사용하지
+    않는다.
+    """
+
+    __tablename__ = "legacy_episodic_memories"
     __table_args__ = (
         UniqueConstraint("player_key", "text", name="uq_episodic_memories_player_text"),
     )
@@ -184,6 +192,72 @@ class EpisodicMemoryModel(Base):
     recall_count: Mapped[int] = mapped_column(Integer, default=0)
     embedding: Mapped[list[float] | None] = mapped_column(JSON)
     embedding_model: Mapped[str | None] = mapped_column(String(128))
+
+
+# 기존 retention/legacy-file 검증 코드의 명시적 호환 별칭이다. 서비스 조립은 이 모델을
+# 더 이상 장기기억 저장소로 사용하지 않는다.
+EpisodicMemoryModel = LegacyEpisodicMemoryModel
+
+
+class MemoryModel(Base):
+    __tablename__ = "memories"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "save_slot_row_id",
+            "companion_id",
+            "memory_type",
+            "normalized_text",
+            name="uq_memories_scope_type_text",
+        ),
+        CheckConstraint(
+            "memory_type IN ('ProfileFact', 'Preference', 'Episode', "
+            "'Promise', 'RelationshipEvidence')",
+            name="ck_memories_type",
+        ),
+        CheckConstraint("status = 'Active'", name="ck_memories_status"),
+        CheckConstraint("importance >= 1 AND importance <= 10", name="ck_memories_importance"),
+    )
+
+    memory_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.profile_id"), index=True)
+    save_slot_row_id: Mapped[str] = mapped_column(ForeignKey("save_slots.row_id"), index=True)
+    companion_id: Mapped[str] = mapped_column(String(128), index=True)
+    memory_type: Mapped[str] = mapped_column(String(32), index=True)
+    text: Mapped[str] = mapped_column(Text)
+    normalized_text: Mapped[str] = mapped_column(Text)
+    importance: Mapped[int] = mapped_column(Integer)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(16), default="Active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class MemorySourceModel(Base):
+    __tablename__ = "memory_sources"
+    __table_args__ = (
+        UniqueConstraint("memory_id", "source_type", "source_id", name="uq_memory_sources"),
+        CheckConstraint(
+            "source_type IN ('Message', 'Event')", name="ck_memory_sources_type"
+        ),
+    )
+
+    row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    memory_id: Mapped[str] = mapped_column(ForeignKey("memories.memory_id"), index=True)
+    source_type: Mapped[str] = mapped_column(String(16), index=True)
+    source_id: Mapped[str] = mapped_column(String(128), index=True)
+    source_mode: Mapped[str] = mapped_column(String(16))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class MemoryMigrationReportModel(Base):
+    __tablename__ = "memory_migration_reports"
+
+    row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_table: Mapped[str] = mapped_column(String(64), unique=True)
+    status: Mapped[str] = mapped_column(String(64))
+    quarantined_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class OfflineTaskPolicyModel(Base):

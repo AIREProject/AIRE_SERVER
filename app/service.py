@@ -44,7 +44,6 @@ from app.brain import (
 from app.brain.contract import BrainProvenance, ResponseProvenance
 from app.brain.enemies import EnemyRepository
 from app.brain.llm import build_llm_provider
-from app.brain.memory import LongTermStore
 from app.brain.recipes import RecipeRepository
 from app.brain.resources import MAX_GATHER_QUANTITY, ResourceId
 from app.brain.store import InMemoryConversationStore
@@ -54,7 +53,6 @@ from app.db.connection import Database
 from app.db.offline_task_repository import SqlAlchemyOfflineTaskRepository
 from app.db.save_slot_repository import SaveSlotRepository
 from app.embedding import build_embedding_provider
-from app.episodic_memory_store import EpisodicMemoryStore
 from app.errors import (
     AIServiceInvalidOutputError,
     AIServiceTimeoutError,
@@ -143,11 +141,6 @@ class CompanionService:
         selected = build_llm_provider(settings)
         selected_embedding = build_embedding_provider(settings)
         effective_dataset = game_dataset or DATASET
-        long_term: LongTermStore | None = None
-        if settings.long_term_memory_enabled:
-            long_term = EpisodicMemoryStore(
-                database, embedding_model=selected_embedding.model_version
-            )
         transcript: TranscriptStore | None = None
         if settings.transcript_enabled:
             transcript = FileTranscriptStore(
@@ -164,7 +157,9 @@ class CompanionService:
                 ),
                 recipes=RecipeRepository(effective_dataset),
                 enemies=EnemyRepository(effective_dataset),
-                long_term=long_term,
+                # P3-T01은 canonical source 검증 전의 transcript 기반 기억 저장을
+                # 중단한다. T02가 source-backed retrieval을 다시 연결한다.
+                long_term=None,
                 transcript=transcript,
                 embedder=selected_embedding.provider,
                 embedding_model=selected_embedding.model_version,
