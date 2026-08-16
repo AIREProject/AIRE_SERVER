@@ -35,6 +35,7 @@ from app.brain import (
     CompanionTurn,
     InventoryFacts,
     InventoryItemFacts,
+    MemoryScope,
     ResourceFacts,
     SituationTurn,
     ThreatFacts,
@@ -77,6 +78,7 @@ from app.models import (
 from app.offline_task_models import CreateOfflineTaskRequest, OfflineTaskType
 from app.offline_task_service import OfflineTaskService
 from app.settings import Settings
+from app.source_memory_store import SourceBackedMemoryStore
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -158,8 +160,9 @@ class CompanionService:
                 recipes=RecipeRepository(effective_dataset),
                 enemies=EnemyRepository(effective_dataset),
                 # P3-T01은 canonical source 검증 전의 transcript 기반 기억 저장을
-                # 중단한다. T02가 source-backed retrieval을 다시 연결한다.
+                # 중단했다. T02는 검증된 source-backed 기억만 별도 읽기 경로로 연결한다.
                 long_term=None,
+                source_memory=SourceBackedMemoryStore(database),
                 transcript=transcript,
                 embedder=selected_embedding.provider,
                 embedding_model=selected_embedding.model_version,
@@ -237,6 +240,11 @@ class CompanionService:
                         save_slot_id=request.save_slot_id,
                     ),
                     companion_id=request.companion_id,
+                    memory_scope=MemoryScope(
+                        profile_id=identity.profile_id,
+                        save_slot_row_id=start.conversation.save_slot_row_id,
+                        companion_id=request.companion_id,
+                    ),
                 )
                 try:
                     async with asyncio.timeout(self._ai_timeout_seconds):
@@ -323,10 +331,9 @@ class CompanionService:
         identity.validate_claims(request.profile_id, request.device_id)
         if request.companion_id not in COMPANION_PROFILES:
             raise UnknownCompanionError(request.companion_id)
-        await SaveSlotRepository(session).get_or_create(
+        slot = await SaveSlotRepository(session).get_or_create(
             profile_id=identity.profile_id, save_slot_id=request.save_slot_id
         )
-
         turn = SituationTurn(
             situation=tuple(request.situation),
             surface=request.surface,
@@ -342,6 +349,11 @@ class CompanionService:
                 protector, profile_id=identity.profile_id, save_slot_id=request.save_slot_id
             ),
             companion_id=request.companion_id,
+            memory_scope=MemoryScope(
+                profile_id=identity.profile_id,
+                save_slot_row_id=slot.row_id,
+                companion_id=request.companion_id,
+            ),
         )
         try:
             async with asyncio.timeout(self._ai_timeout_seconds):

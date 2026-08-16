@@ -1,0 +1,181 @@
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import select
+
+from app.db.models import (
+    ConversationModel,
+    MemoryModel,
+    MemorySourceModel,
+    MessageModel,
+    ProfileModel,
+    SaveSlotModel,
+)
+from app.db.source_repository import SOURCE_MESSAGE, SourceScope
+from app.source_memory_store import SourceBackedMemoryStore
+from tests.conftest import make_database, make_settings
+
+_NOW = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
+
+
+async def _memory(
+    database: object,
+    *,
+    memory_id: str,
+    profile_id: str = "profile-a",
+    slot_id: str = "slot-a",
+    companion_id: str = "mako",
+    text: str,
+    pinned: bool = False,
+    deleted_source: bool = False,
+    importance: int = 6,
+) -> None:
+    async with database.session_factory() as session:  # type: ignore[attr-defined]
+        if await session.get(ProfileModel, profile_id) is None:
+            session.add(ProfileModel(profile_id=profile_id, created_at=_NOW))
+            await session.flush()
+            session.add(
+                SaveSlotModel(
+                    row_id=slot_id,
+                    save_slot_id=slot_id,
+                    profile_id=profile_id,
+                    created_at=_NOW,
+                )
+            )
+            await session.flush()
+        conversation_id = f"conversation-{memory_id}"
+        message_id = f"message-{memory_id}"
+        session.add(
+            ConversationModel(
+                row_id=conversation_id,
+                conversation_id=conversation_id,
+                profile_id=profile_id,
+                save_slot_row_id=slot_id,
+                companion_id=companion_id,
+                session_id=f"session-{memory_id}",
+                surface="mobile",
+                created_at=_NOW,
+            )
+        )
+        session.add(
+            MessageModel(
+                row_id=message_id,
+                message_id=message_id,
+                conversation_row_id=conversation_id,
+                profile_id=profile_id,
+                save_slot_row_id=slot_id,
+                companion_id=companion_id,
+                request_id=f"request-{memory_id}",
+                sequence=1,
+                speaker="player",
+                source_mode="RealWorld",
+                content=None if deleted_source else text,
+                content_digest="a" * 64,
+                time_context={},
+                storage_class="MemorySource",
+                retention_reason="test",
+                expires_at=None,
+                audit_expires_at=_NOW + timedelta(days=30),
+                content_deleted_at=_NOW if deleted_source else None,
+                created_at=_NOW,
+                delivered_at=_NOW,
+            )
+        )
+        session.add(
+            MemoryModel(
+                memory_id=memory_id,
+                profile_id=profile_id,
+                save_slot_row_id=slot_id,
+                companion_id=companion_id,
+                memory_type="Preference",
+                text=text,
+                normalized_text=text.casefold(),
+                importance=importance,
+                pinned=pinned,
+                status="Active",
+                created_at=_NOW,
+                recalled_at=None,
+                recall_count=0,
+                embedding=None,
+                embedding_model=None,
+            )
+        )
+        session.add(
+            MemorySourceModel(
+                row_id=f"source-{memory_id}",
+                memory_id=memory_id,
+                source_type=SOURCE_MESSAGE,
+                source_id=message_id,
+                source_mode="RealWorld",
+                occurred_at=_NOW,
+                created_at=_NOW,
+            )
+        )
+        await session.commit()
+
+
+async def test_recall_is_scoped_relevant_and_keeps_only_trace_ids_in_prompt_text() -> None:
+    database = await make_database(make_settings())
+    await _memory(database, memory_id="memory-night", text="나는 밤이 무서워")
+    await _memory(database, memory_id="memory-stone", text="나는 돌을 좋아해")
+    await _memory(
+        database,
+        memory_id="memory-foreign",
+        profile_id="profile-b",
+        slot_id="slot-b",
+        text="나는 밤이 무서워",
+    )
+    recalled = await SourceBackedMemoryStore(database).recall(
+        SourceScope("profile-a", "slot-a", "mako"),
+        query="밤이 무서워",
+        source_mode="RealWorld",
+    )
+
+    assert [(item.trace_id, item.text) for item in recalled] == [("M0", "나는 밤이 무서워")]
+    assert recalled[0].memory_id == "memory-night"
+
+
+async def test_purged_source_and_unrelated_query_fail_closed() -> None:
+    database = await make_database(make_settings())
+    await _memory(database, memory_id="memory-purged", text="나는 밤이 무서워", deleted_source=True)
+    store = SourceBackedMemoryStore(database)
+    scope = SourceScope("profile-a", "slot-a", "mako")
+
+    assert await store.recall(scope, query="밤", source_mode="RealWorld") == ()
+    assert await store.recall(scope, query="레시피", source_mode="RealWorld") == ()
+
+
+async def test_prompt_memory_budget_never_exceeds_three_entries_or_360_characters() -> None:
+    database = await make_database(make_settings())
+    for index in range(4):
+        await _memory(
+            database,
+            memory_id=f"memory-{index}",
+            text=f"밤이 무서워 {index} {'가' * 100}",
+        )
+    recalled = await SourceBackedMemoryStore(database).recall(
+        SourceScope("profile-a", "slot-a", "mako"), query="밤이", source_mode="RealWorld"
+    )
+
+    assert len(recalled) <= 3
+    assert sum(len(f"[{item.trace_id}] {item.text}") for item in recalled) <= 360
+
+
+async def test_recall_counter_is_capped_in_scoring_and_archive_candidates_do_not_mutate() -> None:
+    database = await make_database(make_settings())
+    await _memory(database, memory_id="memory-old", text="나는 밤이 무서워")
+    await _memory(database, memory_id="memory-pinned", text="나는 밤을 좋아해", pinned=True)
+    store = SourceBackedMemoryStore(database)
+    scope = SourceScope("profile-a", "slot-a", "mako")
+    for _ in range(7):
+        assert await store.recall(scope, query="밤이", source_mode="RealWorld")
+
+    async with database.session_factory() as session:
+        memory = await session.get(MemoryModel, "memory-old")
+        assert memory is not None and memory.recall_count == 7
+    candidates = await store.archive_candidates(
+        scope, threshold=10.0, now=_NOW + timedelta(days=365)
+    )
+    assert candidates == ("memory-old",)
+    async with database.session_factory() as session:
+        statuses = tuple((await session.execute(select(MemoryModel.status))).scalars())
+    assert statuses == ("Active", "Active")

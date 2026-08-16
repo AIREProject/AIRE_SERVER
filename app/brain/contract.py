@@ -13,6 +13,15 @@ from pydantic import JsonValue
 
 from app.models import CommandType, Surface, TimeContext
 
+
+@dataclass(frozen=True, slots=True)
+class MemoryScope:
+    """Authenticated canonical scope for source-backed memory retrieval."""
+
+    profile_id: str
+    save_slot_row_id: str
+    companion_id: str
+
 FallbackReason = Literal[
     "provider_timeout",
     "provider_unavailable",
@@ -152,6 +161,7 @@ class CompanionTurn:
     allowed_actions: frozenset[CommandType] = frozenset()
     world_context: WorldContextFacts = WorldContextFacts()
     game_time: TimeContext | None = None
+    memory_scope: MemoryScope | None = None
 
     def __post_init__(self) -> None:
         if not self.conversation_key:
@@ -174,6 +184,7 @@ class SituationTurn:
     companion_id: str = ""
     surface: Surface = Surface.GAME
     game_time: TimeContext | None = None
+    memory_scope: MemoryScope | None = None
 
     def __post_init__(self) -> None:
         if not self.conversation_key:

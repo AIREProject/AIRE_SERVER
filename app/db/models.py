@@ -230,6 +230,10 @@ class MemoryModel(Base):
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(16), default="Active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recalled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    recall_count: Mapped[int] = mapped_column(Integer, default=0)
+    embedding: Mapped[list[float] | None] = mapped_column(JSON)
+    embedding_model: Mapped[str | None] = mapped_column(String(128))
 
 
 class MemorySourceModel(Base):

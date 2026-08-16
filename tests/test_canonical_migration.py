@@ -39,7 +39,7 @@ def _upgrade(database_path: Path, revision: str, environment: dict[str, str]) ->
 
 
 @pytest.mark.parametrize("start_revision", [None, "0010"])
-def test_0011_creates_source_backed_memory_tables_from_fresh_and_0010(
+def test_source_backed_memory_migrations_upgrade_from_fresh_and_0010(
     tmp_path: Path,
     start_revision: str | None,
 ) -> None:
@@ -71,9 +71,13 @@ def test_0011_creates_source_backed_memory_tables_from_fresh_and_0010(
         result_sql = connection.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'command_results'"
         ).fetchone()[0]
+        memory_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(memories)")
+        }
 
     assert TABLES <= tables
-    assert revision == ("0011",)
+    assert revision == ("0012",)
+    assert {"recalled_at", "recall_count", "embedding", "embedding_model"} <= memory_columns
     assert "uq_messages_conversation_sequence" in message_sql
     assert "Transient" in message_sql and "MemorySource" in message_sql
     assert "Tombstone" in outbox_sql

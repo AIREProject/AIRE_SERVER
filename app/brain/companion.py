@@ -23,12 +23,17 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
+from app.db.source_repository import SourceScope
+from app.models import TimeContext
+from app.source_memory_store import SourceBackedMemoryStore
+
 from .contract import (
     BrainProvenance,
     CompanionReply,
     CompanionTurn,
     FallbackReason,
     FinalResponseSource,
+    MemoryScope,
     ProviderCallProvenance,
     SituationTurn,
 )
@@ -183,6 +188,7 @@ class CompanionBrain:
         enemies: EnemyRepository | None = None,
         store: ConversationStore | None = None,
         long_term: LongTermStore | None = None,
+        source_memory: SourceBackedMemoryStore | None = None,
         transcript: TranscriptStore | None = None,
         embedder: EmbeddingProvider | None = None,
         embedding_model: str | None = None,
@@ -205,6 +211,7 @@ class CompanionBrain:
         # 세션을 넘는 기억. **없어도 두뇌는 온전히 동작한다** — 넘기지 않으면 회수도 추출도
         # 일어나지 않고, 지금까지와 똑같이 한 대화 안에서만 기억한다.
         self._long_term = long_term
+        self._source_memory = source_memory
         # 증류의 원본. **추출은 이것 없이는 돌지 않는다** — 커서가 가리킬 로그가 없다.
         # 전사만 끄면 회수는 계속 되지만(이미 있는 기억은 쓰인다) 새 기억은 생기지 않는다.
         self._transcript = transcript
@@ -260,7 +267,7 @@ class CompanionBrain:
                 del self._locks[key]
 
     async def respond(self, turn: CompanionTurn) -> CompanionReply:
-        recalled = await self._recall(turn.player_key, turn.text)
+        recalled = await self._recall(turn.memory_scope, turn.player_key, turn.text, turn.game_time)
         async with self._conversation_lock(turn.conversation_key):
             prepared = await self._prepare_response_locked(
                 turn,
@@ -285,7 +292,7 @@ class CompanionBrain:
 
         # 회수는 락 밖에서 한다. 이 발화만 보고 고르므로 대화 기억과 경합할 것이 없고,
         # 파일을 읽는 동안 같은 대화의 다음 턴을 막을 이유도 없다.
-        recalled = await self._recall(turn.player_key, turn.text)
+        recalled = await self._recall(turn.memory_scope, turn.player_key, turn.text, turn.game_time)
         async with self._conversation_lock(turn.conversation_key):
             return await self._prepare_response_locked(
                 turn,
@@ -379,7 +386,7 @@ class CompanionBrain:
         """
 
         query = " ".join(turn.situation)
-        recalled = await self._recall(turn.player_key, query)
+        recalled = await self._recall(turn.memory_scope, turn.player_key, query, turn.game_time)
         async with self._conversation_lock(turn.conversation_key):
             memory = self._store.load(turn.conversation_key)
             spec = build_situation_spec(turn, history=memory.recent_turns, memories=recalled)
@@ -429,14 +436,40 @@ class CompanionBrain:
         if self._embedder is not None:
             await self._embedder.aclose()
 
-    async def _recall(self, player_key: str, query: str) -> tuple[str, ...]:
+    async def _recall(
+        self,
+        memory_scope: MemoryScope | None,
+        player_key: str,
+        query: str,
+        game_time: TimeContext | None,
+    ) -> tuple[str, ...]:
         """이번 발화(또는 상황)와 관련 있는 장기기억을 문장으로만 꺼낸다.
 
         그래프에는 저장소가 아니라 이미 고른 문장만 들어간다. 노드가 저장소를 쥐고 있으면
         분류 노드도 기억을 볼 수 있게 되고, 그 순간 세 세션 전 "따라와" 가 지금 명령이 된다.
         """
 
-        if self._long_term is None or not player_key or self._recall_limit <= 0:
+        if self._recall_limit <= 0:
+            return ()
+        if self._source_memory is not None:
+            if memory_scope is None:
+                return ()
+            scope = SourceScope(
+                memory_scope.profile_id,
+                memory_scope.save_slot_row_id,
+                memory_scope.companion_id,
+            )
+            source_mode = None if game_time is None else game_time.source.value
+            source_recalled = await self._source_memory.recall(
+                scope,
+                query=query,
+                source_mode=source_mode,
+                query_embedding=await self._embed_text(query),
+                embedding_model=self._embedding_model,
+                limit=self._recall_limit,
+            )
+            return tuple(f"[{memory.trace_id}] {memory.text}" for memory in source_recalled)
+        if self._long_term is None or not player_key:
             return ()
         query_embedding = await self._embed_text(query)
         if self._embedder is None:
