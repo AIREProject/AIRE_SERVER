@@ -14,6 +14,8 @@ from app.errors import (
     AIServiceUnavailableError,
     APIError,
     AuthenticationUnavailableError,
+    CommandCandidateNotFoundError,
+    CommandResultTransitionError,
     DeviceLimitExceededError,
     DeviceNotFoundError,
     DeviceRoleNotAllowedError,
@@ -24,6 +26,7 @@ from app.errors import (
     ExpiredPairingCodeError,
     GameStateNotFoundError,
     GameStateVersionConflictError,
+    IdempotencyRecordExpiredError,
     IdentityScopeMismatchError,
     InvalidPairingCodeError,
     OfflineTaskInvalidRequestError,
@@ -96,6 +99,12 @@ APPLICATION_ERROR_MAP: dict[type[Exception], tuple[int, ErrorCode, str, bool]] =
         "The request ID was already used with different content.",
         False,
     ),
+    IdempotencyRecordExpiredError: (
+        410,
+        ErrorCode.IDEMPOTENCY_RECORD_EXPIRED,
+        "The idempotent response content has expired.",
+        False,
+    ),
     IdentityScopeMismatchError: (
         403,
         ErrorCode.IDENTITY_SCOPE_MISMATCH,
@@ -154,6 +163,18 @@ APPLICATION_ERROR_MAP: dict[type[Exception], tuple[int, ErrorCode, str, bool]] =
         409,
         ErrorCode.GAME_STATE_VERSION_CONFLICT,
         "The Game State version is not newer than the stored version.",
+        False,
+    ),
+    CommandCandidateNotFoundError: (
+        404,
+        ErrorCode.COMMAND_CANDIDATE_NOT_FOUND,
+        "The command candidate was not found.",
+        False,
+    ),
+    CommandResultTransitionError: (
+        409,
+        ErrorCode.COMMAND_RESULT_TRANSITION,
+        "The command result cannot make that state transition.",
         False,
     ),
     UnauthorizedAdminError: (

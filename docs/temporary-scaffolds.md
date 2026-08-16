@@ -38,13 +38,14 @@ COMPANION_DEFAULT_LOCATION_ID=forest_camp
 않습니다. Pepper가 비어 있으면 고정 demo key를 사용하며, `register-game` 경로만 별도의
 `DEV_GAME_DEVICE_TOKEN`이 필요합니다.
 
-대화 관련 저장은 세 층입니다.
+대화 관련 저장은 다음 경계로 바뀌었습니다.
 
 | 층 | 저장 위치 | 수명 |
 |---|---|---|
-| 최근 대화/되묻기 | process memory | 서버 재시작 전까지 |
-| 원문 Transcript | `data/transcripts/*.jsonl` | 기본 30일 |
-| 장기기억 | SQLite `episodic_memories` | 명시적으로 삭제할 때까지 |
+| canonical 대화/원문 | SQLite `conversations`/`messages` | 기본·최대 7일 |
+| 최근 되묻기 cache | process memory | DB 완료 뒤 갱신, 서버 재시작 전까지 |
+| 개발 Transcript | `data/transcripts/*.jsonl` | 기본 off, opt-in 최대 24시간 |
+| 기존 장기기억 | SQLite `episodic_memories` | P2에서는 조회만 유지 |
 
 현재 일반 사용자용 Memory 목록·삭제·초기화 API는 없습니다. Admin API만 DB Memory CRUD를
 제공합니다.
@@ -55,19 +56,22 @@ ChatRequest는 최대 32개의 `recent_event_ids`를 받지만 현재 다음 동
 
 - Event 존재 확인
 - Profile/Save/Companion scope 확인
-- Event 저장
+- Event를 Chat prompt fact로 자동 승격
 - Prompt fact 승격
 - Command Result와 연결
 
-UE Event ingest와 Command Result API가 생기기 전까지 형식 검증용 field입니다.
+Event ingest와 Command Result 저장 API는 구현됐지만, `recent_event_ids`를 Message history나
+prompt fact로 연결하는 작업은 P3 source-memory 범위입니다.
 
 ## 4. Chat/Situation 멱등성
 
-Chat과 Situation의 `request_id`는 body/header 상관관계와 로그 추적에 사용되며 결과를 저장해
-재사용하는 멱등 key가 아닙니다.
+Chat은 profile/save/companion/request ID와 canonical JSON digest를 durable operation으로
+저장합니다. 같은 payload는 HTTP/WS에서 최초 결과를 재생하고 다른 payload는 409입니다.
+원문 purge 후 같은 digest는 410이며 다른 digest는 계속 409입니다.
 
-- Timeout 뒤 같은 request를 자동 재전송하지 않습니다.
+- 실패한 Pending Chat은 같은 request로 재개할 수 있습니다.
 - 사용자가 새로 보내면 새 request/message ID를 만듭니다.
+- Situation은 canonical source와 이 멱등 계약에 포함하지 않습니다.
 - Offline Task 생성은 request ID 기반 중복 방지가 있지만 상태 전환은 별도 멱등 receipt가
   없습니다.
 

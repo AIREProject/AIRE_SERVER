@@ -60,6 +60,9 @@ def isolate_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("LONG_TERM_MEMORY_DIR", str(tmp_path / "memories"))
     monkeypatch.setenv("TRANSCRIPT_DIR", str(tmp_path / "transcripts"))
+    monkeypatch.setenv(
+        "LEGACY_MEMORY_QUARANTINE_DIR", str(tmp_path / "memory-quarantine")
+    )
     monkeypatch.setenv("ACCESS_LOG_PATH", str(tmp_path / "requests.log"))
     # `CompanionService.from_settings` 는 이제 `CredentialProtector` 를 만들 수 있어야
     # 한다(디바이스 인증, docs/temporary-scaffolds.md §2). 실제 배포 값이 아니라 테스트

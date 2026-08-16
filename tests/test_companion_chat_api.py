@@ -143,6 +143,38 @@ async def test_request_context_fields_round_trip(authed_client: Any) -> None:
     assert response.json()["message_id"] == "message-1"
 
 
+async def test_same_request_replays_and_different_payload_conflicts(
+    authed_client: Any,
+) -> None:
+    client, token, _profile_id = authed_client
+    payload = _body("안녕, 마코", message_id="message-replay-1")
+
+    first = client.post("/api/v1/chat", headers=_headers(token), json=payload)
+    replay = client.post("/api/v1/chat", headers=_headers(token), json=payload)
+    conflict = client.post(
+        "/api/v1/chat",
+        headers=_headers(token),
+        json={**payload, "user_message": "다른 내용"},
+    )
+
+    assert first.status_code == 200
+    assert replay.json() == first.json()
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "DuplicateRequest"
+
+
+async def test_server_generates_canonical_input_message_id(authed_client: Any) -> None:
+    client, token, _profile_id = authed_client
+
+    response = client.post(
+        "/api/v1/chat", headers=_headers(token), json=_body("안녕, 마코")
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message_id"].startswith("message-")
+    assert response.json()["response_id"].startswith("response-")
+
+
 async def test_unsupported_schema_version_is_rejected(authed_client: Any) -> None:
     client, token, _profile_id = authed_client
 
@@ -150,6 +182,26 @@ async def test_unsupported_schema_version_is_rejected(authed_client: Any) -> Non
         "/api/v1/chat",
         headers=_headers(token),
         json=_body("안녕, 마코", schema_version=2),
+    )
+
+    assert response.status_code == 400
+
+
+async def test_game_chat_rejects_real_world_time_context(authed_client: Any) -> None:
+    client, token, _profile_id = authed_client
+
+    response = client.post(
+        "/api/v1/chat",
+        headers=_headers(token),
+        json=_body(
+            "안녕, 마코",
+            time_context={
+                "source": "RealWorld",
+                "day": 1,
+                "hour": 12,
+                "period": "Afternoon",
+            },
+        ),
     )
 
     assert response.status_code == 400

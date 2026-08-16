@@ -5,6 +5,7 @@ MockLLMProvider 로 결정론적으로 라우팅·대사가 재현되므로 외�
 디바이스 행을 만드는 `tests.conftest.make_authenticated_device` 로 지름길을 쓴다.
 """
 
+import asyncio
 import re
 from typing import Any
 
@@ -17,8 +18,9 @@ from app.brain import CompanionBrain
 from app.brain.dialogue import DialogueSpec
 from app.brain.llm import MockLLMProvider
 from app.credentials import CredentialProtector
+from app.db.canonical_repository import CanonicalChatRepository
 from app.db.connection import Database
-from app.db.models import ItemModel, OfflineTaskModel
+from app.db.models import ChatOperationModel, ItemModel, MessageModel, OfflineTaskModel
 from app.errors import AIServiceUnavailableError
 from app.identity import AuthenticatedDevice, DeviceRole
 from app.models import (
@@ -80,12 +82,13 @@ def make_request(
     message_id: str | None = None,
     time_context: TimeContext | None = None,
     surface: Surface = Surface.GAME,
+    request_id: str = "req-1",
 ) -> ChatRequest:
     request_game_context = (
         None if surface is Surface.MOBILE else game_context or empty_game_context()
     )
     return ChatRequest(
-        request_id="req-1",
+        request_id=request_id,
         session_id=session_id,
         save_slot_id=save_slot_id,
         companion_id=companion_id,
@@ -186,7 +189,12 @@ async def test_stop_and_cancel_utterances_emit_same_command_type(
         service, identity, session, "그만", allowed_commands=allowed_commands
     )
     cancel_result = await respond(
-        service, identity, session, "됐어", allowed_commands=allowed_commands
+        service,
+        identity,
+        session,
+        "됐어",
+        allowed_commands=allowed_commands,
+        request_id="req-2",
     )
 
     assert stop_result.command_candidates[0].type is CommandType.CANCEL_CURRENT
@@ -600,6 +608,115 @@ async def test_brain_failure_becomes_service_unavailable(
         await respond(service, identity, session, "따라와")
 
 
+async def test_brain_failure_leaves_retryable_canonical_input(
+    identity: AuthenticatedDevice, session: AsyncSession
+) -> None:
+    from tests.test_companion_graph import ExplodingLLMProvider
+
+    failing = CompanionService(
+        CompanionBrain(ExplodingLLMProvider()),
+        metadata=METADATA,
+        ai_timeout_seconds=5.0,
+    )
+    request = make_request("따라와", allowed_commands=[CommandType.FOLLOW])
+
+    with pytest.raises(AIServiceUnavailableError):
+        await failing.create_response(request, identity, session, PROTECTOR)
+
+    operation = (await session.execute(select(ChatOperationModel))).scalar_one()
+    inputs = tuple(
+        (await session.execute(select(MessageModel).where(MessageModel.speaker == "player")))
+        .scalars()
+        .all()
+    )
+    assert operation.state == "Pending"
+    assert len(inputs) == 1
+
+    recovered = await make_service().create_response(request, identity, session, PROTECTOR)
+
+    await session.refresh(operation)
+    assert recovered.command_candidates[0].type is CommandType.FOLLOW
+    assert operation.state == "Completed"
+    assert len((await session.execute(select(MessageModel))).scalars().all()) == 2
+
+
+async def test_generated_draft_retry_does_not_call_llm_again(
+    identity: AuthenticatedDevice,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = RecordingProvider()
+    service = make_service(llm=provider)
+    request = make_request("안녕, 마코", request_id="req-draft-retry")
+    original_complete = CanonicalChatRepository.complete
+
+    async def fail_complete(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("injected final transaction failure")
+
+    monkeypatch.setattr(CanonicalChatRepository, "complete", fail_complete)
+    with pytest.raises(RuntimeError, match="injected final transaction failure"):
+        await service.create_response(request, identity, session, PROTECTOR)
+
+    operation = (
+        await session.execute(
+            select(ChatOperationModel).where(
+                ChatOperationModel.request_id == "req-draft-retry"
+            )
+        )
+    ).scalar_one()
+    assert operation.state == "Generated"
+    assert operation.response_message_id is not None
+    provider_calls = len(provider.dialogue_specs)
+
+    monkeypatch.setattr(CanonicalChatRepository, "complete", original_complete)
+    recovered = await service.create_response(request, identity, session, PROTECTOR)
+
+    assert recovered.response_id == operation.response_message_id
+    assert len(provider.dialogue_specs) == provider_calls
+
+
+async def test_concurrent_duplicate_chat_generates_once(
+    database: Database,
+    identity: AuthenticatedDevice,
+) -> None:
+    provider = RecordingProvider()
+    service = make_service(llm=provider)
+    request = make_request("안녕, 마코", request_id="req-concurrent-replay")
+
+    async with (
+        database.session_factory() as first_session,
+        database.session_factory() as second_session,
+    ):
+        first, second = await asyncio.gather(
+            service.create_response(request, identity, first_session, PROTECTOR),
+            service.create_response(request, identity, second_session, PROTECTOR),
+        )
+
+    assert first == second
+    assert len(provider.dialogue_specs) == 1
+
+
+async def test_completed_chat_replays_after_service_restart(
+    database: Database,
+    identity: AuthenticatedDevice,
+) -> None:
+    request = make_request("안녕, 마코", request_id="req-restart-replay")
+    async with database.session_factory() as first_session:
+        first = await make_service().create_response(
+            request, identity, first_session, PROTECTOR
+        )
+
+    replay_provider = RecordingProvider()
+    restarted = make_service(llm=replay_provider)
+    async with database.session_factory() as second_session:
+        replay = await restarted.create_response(
+            request, identity, second_session, PROTECTOR
+        )
+
+    assert replay == first
+    assert replay_provider.dialogue_specs == []
+
+
 async def test_conversation_key_carries_multi_turn_state(
     identity: AuthenticatedDevice, session: AsyncSession
 ) -> None:
@@ -611,7 +728,14 @@ async def test_conversation_key_carries_multi_turn_state(
     asked = await respond(
         service, identity, session, "저것 좀 캐 줘", allowed_commands=allowed
     )
-    answered = await respond(service, identity, session, "나무", allowed_commands=allowed)
+    answered = await respond(
+        service,
+        identity,
+        session,
+        "나무",
+        allowed_commands=allowed,
+        request_id="req-2",
+    )
 
     assert asked.command_candidates == []
     assert len(answered.command_candidates) == 1
@@ -626,7 +750,13 @@ async def test_different_sessions_do_not_share_state(
 
     await respond(service, identity, session, "저것 좀 캐 줘", allowed_commands=allowed)
     other = await respond(
-        service, identity, session, "나무", allowed_commands=allowed, session_id="session-2"
+        service,
+        identity,
+        session,
+        "나무",
+        allowed_commands=allowed,
+        session_id="session-2",
+        request_id="req-2",
     )
 
     assert other.command_candidates == []

@@ -18,8 +18,10 @@ player key를 만든다. 별도 pepper가 없는 단일 플레이어 demo에서�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from typing import TYPE_CHECKING
@@ -47,6 +49,7 @@ from app.brain.recipes import RecipeRepository
 from app.brain.resources import MAX_GATHER_QUANTITY, ResourceId
 from app.brain.store import InMemoryConversationStore
 from app.brain.transcript import FileTranscriptStore, TranscriptStore
+from app.db.canonical_repository import CanonicalChatRepository
 from app.db.connection import Database
 from app.db.offline_task_repository import SqlAlchemyOfflineTaskRepository
 from app.db.save_slot_repository import SaveSlotRepository
@@ -56,6 +59,8 @@ from app.errors import (
     AIServiceInvalidOutputError,
     AIServiceTimeoutError,
     AIServiceUnavailableError,
+    DuplicateRequestError,
+    IdempotencyRecordExpiredError,
     UnknownCompanionError,
 )
 from app.game_context_models import GameContextV1
@@ -102,6 +107,9 @@ class CompanionService:
         command_ttl_seconds: float = 30.0,
         default_location_id: str | None = None,
         configured_provider: str | None = None,
+        user_message_retention_days: int = 7,
+        companion_message_retention_days: int = 7,
+        audit_retention_days: int = 30,
     ) -> None:
         self._brain = brain
         self._metadata = metadata
@@ -111,6 +119,11 @@ class CompanionService:
         # 임시 발판(→ `_location_id`, docs/temporary-scaffolds.md §1). 게임이 위치를
         # 보내기 시작하면 이 필드째 지운다.
         self._default_location_id = default_location_id
+        self._user_message_retention_days = user_message_retention_days
+        self._companion_message_retention_days = companion_message_retention_days
+        self._audit_retention_days = audit_retention_days
+        self._chat_locks: dict[str, asyncio.Lock] = {}
+        self._chat_lock_users: dict[str, int] = {}
 
     @classmethod
     def from_settings(
@@ -172,6 +185,9 @@ class CompanionService:
             command_ttl_seconds=settings.companion_command_ttl_seconds,
             default_location_id=settings.companion_default_location_id,
             configured_provider=selected.configured_name,
+            user_message_retention_days=settings.user_message_retention_days,
+            companion_message_retention_days=settings.companion_message_retention_days,
+            audit_retention_days=settings.audit_retention_days,
         )
 
     async def create_response(
@@ -185,70 +201,114 @@ class CompanionService:
         identity.validate_claims(request.profile_id, request.device_id)
         if request.companion_id not in COMPANION_PROFILES:
             raise UnknownCompanionError(request.companion_id)
-        await SaveSlotRepository(session).get_or_create(
-            profile_id=identity.profile_id, save_slot_id=request.save_slot_id
+        lock_key = json.dumps(
+            [identity.profile_id, request.save_slot_id, request.companion_id, request.request_id],
+            separators=(",", ":"),
         )
-
-        turn = CompanionTurn(
-            text=request.user_message,
-            surface=request.surface,
-            allowed_actions=frozenset(request.allowed_commands),
-            world_context=self._world_context_facts(request.game_context),
-            game_time=request.time_context,
-            conversation_key=_conversation_key(
-                protector,
-                profile_id=identity.profile_id,
-                save_slot_id=request.save_slot_id,
-                companion_id=request.companion_id,
-                session_id=request.session_id,
-            ),
-            player_key=_player_key(
-                protector, profile_id=identity.profile_id, save_slot_id=request.save_slot_id
-            ),
-            companion_id=request.companion_id,
-        )
-        try:
-            async with asyncio.timeout(self._ai_timeout_seconds):
-                reply = await self._brain.respond(turn)
-        except TimeoutError as error:
-            raise AIServiceTimeoutError from error
-        except Exception as error:  # 두뇌 장애는 표준 오류로 변환한다.
-            raise AIServiceUnavailableError from error
-
-        offline_task_id: str | None = None
-        if (
-            identity.role is DeviceRole.WEB_CLIENT
-            and reply.action is not None
-            and reply.action.type is CommandType.GATHER_RESOURCE
-        ):
-            # 이 대화엔 명령을 즉시 받을 살아있는 GameClient가 없다 — 명령 후보 대신
-            # Offline_Task 를 등록하고, 게임 쪽엔 만료되는 명령 후보를 주지 않는다.
-            offline_task_id = await self._create_gather_task(
-                request, identity, session, reply.action
+        async with self._chat_lock(lock_key):
+            repository = CanonicalChatRepository(
+                session,
+                user_retention_days=self._user_message_retention_days,
+                companion_retention_days=self._companion_message_retention_days,
+                audit_retention_days=self._audit_retention_days,
             )
-            candidates: list[CommandCandidate] = []
-        else:
-            candidates = self._candidates(request, reply)
-        self._assert_within_allowlist(request, candidates)
-        response = ChatResponse(
-            request_id=request.request_id,
-            message_id=request.message_id,
-            session_id=request.session_id,
-            save_slot_id=request.save_slot_id,
-            companion_id=request.companion_id,
-            response_id=f"response-{uuid4()}",
-            display_text=reply.text,
-            command_candidates=candidates,
-            offline_task_id=offline_task_id,
-            ai_metadata=self._metadata,
-        )
-        self._log_provenance(
-            request_id=request.request_id,
-            surface=request.surface.value,
-            brain=reply.provenance,
-            started_at=started_at,
-        )
-        return response
+            start = await repository.begin(
+                request,
+                identity,
+                request_digest=_chat_request_digest(request, identity.role),
+            )
+            if start.operation.request_digest != _chat_request_digest(request, identity.role):
+                raise DuplicateRequestError
+            if start.operation.state == "Completed":
+                replay = await repository.build_response(start.operation)
+                if replay is None:
+                    raise IdempotencyRecordExpiredError
+                return replay
+
+            prepared = None
+            response = await repository.build_response(start.operation)
+            if response is None:
+                history = await repository.history_before(start.input_message)
+                turn = CompanionTurn(
+                    text=request.user_message,
+                    surface=request.surface,
+                    allowed_actions=frozenset(request.allowed_commands),
+                    world_context=self._world_context_facts(request.game_context),
+                    game_time=request.time_context,
+                    conversation_key=start.conversation.conversation_id,
+                    player_key=_player_key(
+                        protector,
+                        profile_id=identity.profile_id,
+                        save_slot_id=request.save_slot_id,
+                    ),
+                    companion_id=request.companion_id,
+                )
+                try:
+                    async with asyncio.timeout(self._ai_timeout_seconds):
+                        if hasattr(self._brain, "prepare_response"):
+                            prepared = await self._brain.prepare_response(
+                                turn, history=history
+                            )
+                            reply = prepared.reply
+                        else:
+                            reply = await self._brain.respond(turn)
+                except TimeoutError as error:
+                    raise AIServiceTimeoutError from error
+                except Exception as error:
+                    raise AIServiceUnavailableError from error
+
+                offline_task_id: str | None = None
+                offline_task_plan: dict[str, object] | None = None
+                if (
+                    identity.role is DeviceRole.WEB_CLIENT
+                    and reply.action is not None
+                    and reply.action.type is CommandType.GATHER_RESOURCE
+                ):
+                    offline_task_id = f"task-{uuid4()}"
+                    offline_task_plan = self._gather_task_plan(reply.action)
+                    candidates: list[CommandCandidate] = []
+                else:
+                    candidates = self._candidates(request, reply)
+                self._assert_within_allowlist(request, candidates)
+                response = ChatResponse(
+                    request_id=request.request_id,
+                    message_id=start.operation.input_message_id,
+                    session_id=request.session_id,
+                    save_slot_id=request.save_slot_id,
+                    companion_id=request.companion_id,
+                    response_id=f"response-{uuid4()}",
+                    display_text=reply.text,
+                    command_candidates=candidates,
+                    offline_task_id=offline_task_id,
+                    ai_metadata=self._metadata,
+                )
+                await repository.save_generated(
+                    start,
+                    response,
+                    offline_task_plan=offline_task_plan,
+                )
+                self._log_provenance(
+                    request_id=request.request_id,
+                    surface=request.surface.value,
+                    brain=reply.provenance,
+                    started_at=started_at,
+                )
+
+            if response.offline_task_id is not None:
+                offline_task_plan = repository.offline_task_plan(start.operation)
+                if offline_task_plan is None:
+                    raise AIServiceInvalidOutputError
+                await self._create_gather_task(
+                    request,
+                    identity,
+                    session,
+                    offline_task_plan,
+                    task_id=response.offline_task_id,
+                )
+            await repository.complete(start, response, response.command_candidates)
+            if prepared is not None:
+                await self._brain.commit_response(prepared)
+            return response
 
     async def create_situation_response(
         self,
@@ -352,7 +412,9 @@ class CompanionService:
         request: ChatRequest,
         identity: AuthenticatedDevice,
         session: AsyncSession,
-        action: CompanionAction,
+        plan: dict[str, object],
+        *,
+        task_id: str,
     ) -> str:
         """채집 액션을 Offline_Task(Gathering) 로 등록하고 새 task_id 를 돌려준다.
 
@@ -361,17 +423,10 @@ class CompanionService:
         멱등이라, 챗 요청이 재시도돼도 작업이 중복 생성되지 않는다.
         """
 
-        resource = action.parameters.get("resource")
-        item_id = _GATHER_ITEM_IDS.get(ResourceId(resource)) if isinstance(resource, str) else None
-        if item_id is None:
-            # gather_node 는 지원 자원만 액션으로 내보낸다 — 여기 오면 그래프 회귀다.
+        item_id = plan.get("item_id")
+        quantity = plan.get("quantity")
+        if not isinstance(item_id, str) or not isinstance(quantity, int):
             raise AIServiceInvalidOutputError
-        # 플레이어가 수량을 말하지 않으면(브레인이 키 자체를 생략) 상한치를 요청 수량으로
-        # 삼는다 — 살아있는 GameClient가 없어 서버가 대신 "얼마나 모았는지" 시간으로
-        # 역산해야 하므로, 상한이 없으면 그 계산의 기준을 정할 수 없다.
-        quantity = action.parameters.get("quantity")
-        if not isinstance(quantity, int):
-            quantity = MAX_GATHER_QUANTITY
         create_request = CreateOfflineTaskRequest(
             request_id=request.request_id,
             save_slot_id=request.save_slot_id,
@@ -380,14 +435,49 @@ class CompanionService:
             quantity=quantity,
         )
         result = await OfflineTaskService(SqlAlchemyOfflineTaskRepository(session)).create(
-            create_request, identity, auto_start=True
+            create_request,
+            identity,
+            auto_start=True,
+            commit=False,
+            task_id=task_id,
         )
         return result.task.task_id
+
+    @staticmethod
+    def _gather_task_plan(action: CompanionAction) -> dict[str, object]:
+        resource = action.parameters.get("resource")
+        item_id = (
+            _GATHER_ITEM_IDS.get(ResourceId(resource))
+            if isinstance(resource, str)
+            else None
+        )
+        if item_id is None:
+            raise AIServiceInvalidOutputError
+        quantity = action.parameters.get("quantity")
+        if not isinstance(quantity, int):
+            quantity = MAX_GATHER_QUANTITY
+        return {"item_id": item_id, "quantity": quantity}
 
     async def aclose(self) -> None:
         """앱 종료 시 두뇌가 보유한 HTTP 클라이언트 등을 정리한다."""
 
         await self._brain.aclose()
+
+    @asynccontextmanager
+    async def _chat_lock(self, key: str) -> AsyncIterator[None]:
+        lock = self._chat_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._chat_locks[key] = lock
+        self._chat_lock_users[key] = self._chat_lock_users.get(key, 0) + 1
+        try:
+            async with lock:
+                yield
+        finally:
+            self._chat_lock_users[key] -= 1
+            if self._chat_lock_users[key] == 0:
+                del self._chat_lock_users[key]
+                del self._chat_locks[key]
 
     def _candidates(
         self,
@@ -525,3 +615,31 @@ def _player_key(
         separators=(",", ":"),
     )
     return protector.hash_value("player-key", scope)
+
+
+def _chat_request_digest(request: ChatRequest, role: DeviceRole) -> str:
+    request_payload = request.model_dump(mode="json")
+    request_payload.pop("profile_id", None)
+    request_payload.pop("device_id", None)
+    request_payload["allowed_commands"] = sorted(request_payload["allowed_commands"])
+    request_payload["recent_event_ids"] = sorted(request_payload["recent_event_ids"])
+    context = request_payload.get("game_context")
+    if isinstance(context, dict):
+        context["nearby_resources"] = sorted(
+            context["nearby_resources"], key=lambda item: item["kind"]
+        )
+        context["available_workstations"] = sorted(context["available_workstations"])
+        for inventory in context["inventories"]:
+            inventory["item_totals"] = sorted(
+                inventory["item_totals"], key=lambda item: item["item_id"]
+            )
+        context["inventories"] = sorted(
+            context["inventories"], key=lambda item: item["container_id"]
+        )
+    payload = json.dumps(
+        {"device_role": role.value, "request": request_payload},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()

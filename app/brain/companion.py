@@ -54,6 +54,7 @@ from .recipes import RecipeRepository
 from .resources import ResourceRepository
 from .situation import build_spec as build_situation_spec
 from .store import (
+    ConversationMemory,
     ConversationStore,
     ConversationTurn,
     InMemoryConversationStore,
@@ -160,6 +161,15 @@ class _Pending:
     summarized: bool
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedCompanionReply:
+    conversation_key: str
+    player_key: str
+    saved_memory: ConversationMemory
+    turns: tuple[ConversationTurn, ...]
+    reply: CompanionReply
+
+
 class CompanionBrain:
     """발화 한 번을 받아 마코의 대사와 행동을 정한다."""
 
@@ -250,57 +260,109 @@ class CompanionBrain:
                 del self._locks[key]
 
     async def respond(self, turn: CompanionTurn) -> CompanionReply:
+        recalled = await self._recall(turn.player_key, turn.text)
+        async with self._conversation_lock(turn.conversation_key):
+            prepared = await self._prepare_response_locked(
+                turn,
+                history=None,
+                recalled=recalled,
+            )
+            self._store.save(prepared.conversation_key, prepared.saved_memory)
+        await self._record(
+            prepared.conversation_key,
+            prepared.player_key,
+            prepared.turns,
+        )
+        return prepared.reply
+
+    async def prepare_response(
+        self,
+        turn: CompanionTurn,
+        *,
+        history: Sequence[ConversationTurn] | None = None,
+    ) -> PreparedCompanionReply:
+        """Generate a reply without mutating process memory or debug transcript."""
+
         # 회수는 락 밖에서 한다. 이 발화만 보고 고르므로 대화 기억과 경합할 것이 없고,
         # 파일을 읽는 동안 같은 대화의 다음 턴을 막을 이유도 없다.
         recalled = await self._recall(turn.player_key, turn.text)
         async with self._conversation_lock(turn.conversation_key):
-            memory = self._store.load(turn.conversation_key)
-            provider_token = begin_provider_trace()
-            sanitizer_token = begin_sanitizer_trace()
-            try:
-                final = cast(CompanionState, await self._graph.ainvoke(
+            return await self._prepare_response_locked(
+                turn,
+                history=history,
+                recalled=recalled,
+            )
+
+    async def _prepare_response_locked(
+        self,
+        turn: CompanionTurn,
+        *,
+        history: Sequence[ConversationTurn] | None,
+        recalled: tuple[str, ...],
+    ) -> PreparedCompanionReply:
+        memory = self._store.load(turn.conversation_key)
+        prompt_memory = (
+            replace(memory, recent_turns=tuple(history))
+            if history is not None
+            else memory
+        )
+        provider_token = begin_provider_trace()
+        sanitizer_token = begin_sanitizer_trace()
+        try:
+            final = cast(
+                CompanionState,
+                await self._graph.ainvoke(
                     {
                         "turn": turn,
                         "text": turn.text,
-                        "pending": memory.pending,
-                        "recipe_reference": memory.recipe_reference,
-                        "history": memory.recent_turns,
+                        "pending": prompt_memory.pending,
+                        "recipe_reference": prompt_memory.recipe_reference,
+                        "history": prompt_memory.recent_turns,
                         "long_term": recalled,
                     }
-                ))
-            finally:
-                provider_calls = finish_provider_trace(provider_token)
-                sanitizer_results = finish_sanitizer_trace(sanitizer_token)
-            display_text: str = final["display_text"]
-            # 되물은 노드만 next_pending 을 채운다. 비어 있으면 슬롯은 여기서 사라진다.
-            # 기록은 실제로 오간 말을 남긴다 — 폴백으로 말한 턴도 플레이어가 들은 것은
-            # 그 문장이다.
-            saved = replace(
-                memory.appended(turn.text, display_text),
-                pending=final.get("next_pending"),
-                recipe_reference=final.get("next_recipe_reference"),
+                ),
             )
-            self._store.save(turn.conversation_key, saved)
+        finally:
+            provider_calls = finish_provider_trace(provider_token)
+            sanitizer_results = finish_sanitizer_trace(sanitizer_token)
+        display_text: str = final["display_text"]
+        saved = replace(
+            prompt_memory.appended(turn.text, display_text),
+            pending=final.get("next_pending"),
+            recipe_reference=final.get("next_recipe_reference"),
+        )
 
-        # 응답을 만든 뒤에 남긴다. 증류는 여기서 하지 않고 루프에 맡긴다.
-        await self._record(
-            turn.conversation_key,
-            turn.player_key,
-            (
-                ConversationTurn(speaker="player", text=turn.text),
-                ConversationTurn(speaker="companion", text=display_text),
+        turns = (
+            ConversationTurn(speaker="player", text=turn.text),
+            ConversationTurn(speaker="companion", text=display_text),
+        )
+        return PreparedCompanionReply(
+            conversation_key=turn.conversation_key,
+            player_key=turn.player_key,
+            saved_memory=saved,
+            turns=turns,
+            reply=CompanionReply(
+                text=display_text,
+                action=final.get("action"),
+                provenance=_build_provenance(
+                    final,
+                    provider_calls=provider_calls,
+                    sanitizer_results=sanitizer_results,
+                    route=selected_route(final),
+                ),
             ),
         )
-        self._ensure_loop()
-        return CompanionReply(
-            text=display_text,
-            action=final.get("action"),
-            provenance=_build_provenance(
-                final,
-                provider_calls=provider_calls,
-                sanitizer_results=sanitizer_results,
-                route=selected_route(final),
-            ),
+
+    async def commit_response(self, prepared: PreparedCompanionReply) -> None:
+        """Publish a prepared reply after canonical persistence succeeds."""
+
+        async with self._conversation_lock(prepared.conversation_key):
+            self._store.save(prepared.conversation_key, prepared.saved_memory)
+        await self._record(
+            prepared.conversation_key,
+            prepared.player_key,
+            prepared.turns,
+            enqueue_memory=False,
         )
 
     async def react(self, turn: SituationTurn) -> str:
@@ -442,7 +504,12 @@ class CompanionBrain:
         await self._long_term.remember(player_key, embedded)
 
     async def _record(
-        self, conversation_key: str, player_key: str, turns: Sequence[ConversationTurn]
+        self,
+        conversation_key: str,
+        player_key: str,
+        turns: Sequence[ConversationTurn],
+        *,
+        enqueue_memory: bool = True,
     ) -> None:
         """이번 턴(또는 상황 반응)의 원문을 전사에 덧붙이고 증류 대기열을 갱신한다.
 
@@ -460,7 +527,12 @@ class CompanionBrain:
             appended_upto = await self._transcript.append(conversation_key, turns)
         except Exception:
             return
-        if self._long_term is None or not player_key or appended_upto <= 0:
+        if (
+            not enqueue_memory
+            or self._long_term is None
+            or not player_key
+            or appended_upto <= 0
+        ):
             return
         self._enqueue(conversation_key, player_key, appended_upto, len(turns))
 

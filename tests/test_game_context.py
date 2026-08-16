@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import FrozenInstanceError
 from typing import Any
@@ -11,8 +12,10 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
 
 from app.brain import CompanionBrain, CompanionReply, CompanionTurn
+from app.brain.companion import PreparedCompanionReply
 from app.brain.dialogue import DialogueSpec
 from app.brain.llm import MockLLMProvider
+from app.brain.store import ConversationTurn
 from app.credentials import CredentialProtector
 from app.db.connection import Database
 from app.game_context_models import GameContextV1
@@ -406,6 +409,15 @@ class RecordingBrain(CompanionBrain):
         self.turns.append(turn)
         return await super().respond(turn)
 
+    async def prepare_response(
+        self,
+        turn: CompanionTurn,
+        *,
+        history: Sequence[ConversationTurn] | None = None,
+    ) -> PreparedCompanionReply:
+        self.turns.append(turn)
+        return await super().prepare_response(turn, history=history)
+
 
 def make_service(
     provider: RecordingProvider, brain: RecordingBrain | None = None
@@ -421,8 +433,12 @@ def make_service(
     )
 
 
-def make_request(context: dict[str, Any]) -> ChatRequest:
-    return ChatRequest.model_validate(make_chat_payload(game_context=context))
+def make_request(
+    context: dict[str, Any], *, request_id: str = "request-context-1"
+) -> ChatRequest:
+    payload = make_chat_payload(game_context=context)
+    payload["request_id"] = request_id
+    return ChatRequest.model_validate(payload)
 
 
 @pytest.fixture
@@ -444,13 +460,15 @@ async def record_context_facts(
     database: Database,
     identity: AuthenticatedDevice,
     context: dict[str, Any],
+    *,
+    request_id: str = "request-context-1",
 ) -> tuple[DialogueSpec, CompanionTurn]:
     protector = CredentialProtector(SecretStr("test-only-pepper-not-for-production"))
     brain = RecordingBrain(provider)
     service = make_service(provider, brain)
     async with database.session_factory() as session:
         await service.create_response(
-            make_request(context), identity, session, protector
+            make_request(context, request_id=request_id), identity, session, protector
         )
     assert provider.dialogue_specs
     assert brain.turns
@@ -554,7 +572,11 @@ async def test_context_array_order_is_normalized_before_dialogue_facts(
         first_provider, context_database, context_identity, first
     )
     second_spec, _second_turn = await record_context_facts(
-        second_provider, context_database, context_identity, second
+        second_provider,
+        context_database,
+        context_identity,
+        second,
+        request_id="request-context-2",
     )
 
     assert first_spec.facts == second_spec.facts

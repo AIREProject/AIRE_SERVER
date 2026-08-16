@@ -97,9 +97,7 @@ async def test_websocket_response_matches_http_response(authed_app: Any) -> None
 
     assert ws_message["type"] == "chat_response"
     ws_payload = ws_message["payload"]
-    # response_id 는 매번 새로 만들어지므로 비교에서 제외한다.
-    for field in ("request_id", "session_id", "display_text", "ai_metadata"):
-        assert ws_payload[field] == http_response[field]
+    assert ws_payload == http_response
     assert len(ws_payload["command_candidates"]) == 1
     assert ws_payload["command_candidates"][0]["type"] == "Command.HoldPosition"
 

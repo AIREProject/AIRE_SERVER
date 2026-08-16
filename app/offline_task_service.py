@@ -60,6 +60,8 @@ class OfflineTaskService:
         identity: AuthenticatedDevice,
         *,
         auto_start: bool = False,
+        commit: bool = True,
+        task_id: str | None = None,
     ) -> OfflineTaskResponse:
         """Offline_Task를 만든다.
 
@@ -104,7 +106,7 @@ class OfflineTaskService:
             else OfflineTaskStatus.PENDING
         )
         task = await self._repository.create_task(
-            task_id=f"task-{uuid4()}",
+            task_id=task_id or f"task-{uuid4()}",
             profile_id=identity.profile_id,
             save_slot_row_id=slot.row_id,
             issuing_device_id=identity.device_id,
@@ -116,18 +118,21 @@ class OfflineTaskService:
             quantity=request.quantity,
             seconds_per_item=seconds_per_item,
         )
-        try:
-            await self._repository.commit()
-        except IntegrityError:
-            await self._repository.rollback()
-            existing = await self._repository.find_by_creation_request(
-                profile_id=identity.profile_id,
-                save_slot_row_id=slot.row_id,
-                request_id=request.request_id,
-            )
-            if existing is None:
-                raise
-            task = existing
+        if commit:
+            try:
+                await self._repository.commit()
+            except IntegrityError:
+                await self._repository.rollback()
+                existing = await self._repository.find_by_creation_request(
+                    profile_id=identity.profile_id,
+                    save_slot_row_id=slot.row_id,
+                    request_id=request.request_id,
+                )
+                if existing is None:
+                    raise
+                task = existing
+        else:
+            await self._repository.flush()
         return OfflineTaskResponse(
             request_id=request.request_id,
             task=await self._view(task, request.save_slot_id),

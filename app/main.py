@@ -8,15 +8,18 @@ from typing import Any
 from fastapi import FastAPI
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.brain.transcript import FileTranscriptStore
 from app.db.connection import Database
 from app.db.game_data_loader import load_game_dataset
 from app.errors_http import register_error_handlers
 from app.gamedata.dataset import GameDataSet
 from app.logging import configure_logging
 from app.middleware import RequestContextMiddleware
+from app.retention import RetentionService
 from app.routes.admin import router as admin_router
 from app.routes.chat import router as chat_router
 from app.routes.devices import router as devices_router
+from app.routes.events import router as events_router
 from app.routes.game_state import router as game_state_router
 from app.routes.offline_tasks import router as offline_tasks_router
 from app.routes.situations import router as situations_router
@@ -26,6 +29,19 @@ from app.service import CompanionService
 from app.settings import Settings, get_settings
 
 logger = logging.getLogger("aire.backend")
+
+
+async def _run_retention_loop(
+    retention: RetentionService,
+    *,
+    interval_seconds: float,
+) -> None:
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await retention.sweep()
+        except Exception:
+            logger.exception("retention_periodic_sweep_failed")
 
 
 def _run_to_completion[T](coro: Coroutine[Any, Any, T]) -> T:
@@ -115,12 +131,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     companion = CompanionService.from_settings(
         selected_settings, database, game_dataset=game_dataset
     )
+    retention = RetentionService(
+        database,
+        settings=selected_settings,
+        transcript=(
+            FileTranscriptStore(
+                directory=selected_settings.transcript_dir,
+                max_conversations=selected_settings.transcript_max_conversations,
+            )
+            if selected_settings.transcript_enabled
+            else None
+        ),
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        yield
-        await companion.aclose()
-        await database.dispose()
+        try:
+            await retention.sweep()
+        except SQLAlchemyError:
+            logger.warning("retention_startup_sweep_skipped_unmigrated_database")
+        retention_task = asyncio.create_task(
+            _run_retention_loop(
+                retention,
+                interval_seconds=selected_settings.retention_sweep_interval_seconds,
+            )
+        )
+        try:
+            yield
+        finally:
+            retention_task.cancel()
+            try:
+                await retention_task
+            except asyncio.CancelledError:
+                pass
+            await companion.aclose()
+            await database.dispose()
 
     app = FastAPI(
         title="Mako Companion API",
@@ -129,6 +174,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.companion = companion
     app.state.database = database
+    app.state.retention = retention
     if settings is not None:
         app.dependency_overrides[get_settings] = lambda: selected_settings
 
@@ -142,6 +188,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(chat_router)
     app.include_router(ws_chat_router)
     app.include_router(devices_router)
+    app.include_router(events_router)
     app.include_router(game_state_router)
     app.include_router(offline_tasks_router)
     app.include_router(situations_router)

@@ -31,8 +31,10 @@ AX-I05 로컬 구현은 2026-08-13 전체 Backend pytest 574건, Ruff와 mypy를
 Request model은 알 수 없는 body field를 `400 InvalidRequest`로 거부합니다. Response를 사용하는
 클라이언트는 필수 field를 검증하고, 모르는 선택 field는 실행 경로에 노출하지 않고 무시합니다.
 
-Chat과 Situation의 같은 `request_id` 재전송은 멱등하지 않습니다. Timeout 뒤 같은 요청을
-자동 재전송하면 LLM과 기억 side effect가 중복될 수 있습니다.
+Chat은 `(profile, save_slot, companion, request_id)`와 canonical JSON digest로 멱등합니다.
+HTTP/WS에서 같은 payload를 재전송하면 최초 응답을 재생하며, 다른 payload는
+`409 DuplicateRequest`입니다. 원문 보존 기간이 끝난 동일 payload는
+`410 IdempotencyRecordExpired`이고, Situation은 이 멱등 계약의 대상이 아닙니다.
 
 ## 2. Endpoint 요약
 
@@ -50,6 +52,8 @@ Chat과 Situation의 같은 `request_id` 재전송은 멱등하지 않습니다.
 | DELETE | `/api/v1/tasks/{id}` | WebClient 미정산 예약 취소 |
 | PUT | `/api/v1/game-state` | GameClient가 마지막 승인 Game State Snapshot 저장 |
 | GET | `/api/v1/game-state` | GameClient/WebClient가 마지막 승인 Snapshot 조회 |
+| POST | `/api/v1/events` | GameClient가 allowlist GameEvent 저장 |
+| POST | `/api/v1/command-results` | GameClient가 Command 실행 결과 상태 전이 저장 |
 | `/api/v1/devices/*` | 여러 Method | 기존 random token/pairing 호환 경로 |
 | `/api/v1/admin/*` | 여러 Method | 운영자 CRUD, `ADMIN_API_TOKEN` 필요 |
 
@@ -277,6 +281,35 @@ Context는 대사 생성용 facts-only 입력이다. 이를 근거로 Backend가
 ```
 
 Response에는 최상위 `schema_version`, `interaction_mode`, `memory_candidates`가 없습니다.
+`message_id`를 생략하면 서버가 canonical 사용자 Message ID를 생성하며, `response_id`는
+canonical 동료 Message ID입니다. 사용자 Message를 먼저 commit하므로 LLM 실패 뒤 같은
+요청을 재시도할 수 있고, 생성 draft가 저장된 뒤의 재시도는 LLM을 다시 호출하지 않습니다.
+
+### 4.5 저장 경계
+
+신규 Chat 원문은 SQLite `Conversation`/`Message`가 canonical source입니다. 개발 JSONL은
+기본 비활성화이며 기존 `episodic_memories`는 조회만 유지합니다. Message는 기본·최대 7일,
+원문 없는 audit/idempotency ledger는 기본·최대 30일 보존합니다. Memory가 source를 참조하면
+`MemorySource`로 승격되고 마지막 참조가 제거되면 즉시 purge 대상 `Transient`로 돌아갑니다.
+
+## 5. GameEvent와 Command Result
+
+두 endpoint는 `GameClient` 전용이고, body ID와 같은 `X-Request-ID` 및 정확한 raw request
+body의 lowercase SHA-256인 `X-Content-SHA256`을 요구합니다. 같은 ID와 raw body는 최초
+응답을 재생하고 다른 body는 `409 DuplicateRequest`입니다.
+
+`POST /api/v1/events`는 `schema_version=1`, timezone이 있는 `occurred_at`, `GameWorld`
+`time_context`, stable `actor_id`, 중복 없는 최대 8개 `target_ids`, 정확히 빈 `payload={}`를
+요구합니다. 허용 type은 `Event.Combat.Started`, `Event.Combat.Ended`,
+`Event.Danger.Detected`, `Event.Rescue.Completed`, `Event.Discovery.Found`,
+`Event.Companion.Returned`뿐입니다. importance는 서버가 Combat/Returned=`Normal`,
+Danger/Rescue/Discovery=`High`로 결정합니다.
+
+`POST /api/v1/command-results`는 canonical Chat이 저장한 동일 scope/session의 Command
+candidate를 참조합니다. 최초 상태는 `Accepted | Rejected | Expired`, 이후
+`Accepted → Running → Succeeded | Failed | Cancelled | Expired`만 허용합니다. 없는 후보,
+다른 scope 또는 candidate의 request/type 불일치는 존재 여부를 숨기기 위해 404이며,
+잘못된 전이와 terminal 이후 보고는 `409 CommandResultTransitionNotAllowed`입니다.
 
 ### 4.5 주요 field
 
@@ -289,7 +322,7 @@ Response에는 최상위 `schema_version`, `interaction_mode`, `memory_candidate
 - `allowed_commands`: 서버가 반환할 수 있는 command allowlist
 - `recent_event_ids`: 최대 32개를 검증하지만 현재 저장·사용하지 않음
 
-## 5. Situation
+## 6. Situation
 
 플레이어 발화 없이 UE가 관찰한 상황을 전달하고 MAKO 대사만 받습니다.
 
@@ -323,7 +356,7 @@ X-Request-ID: situation-1
 
 `situation`은 1~4개, 각 1~200자입니다. 응답에는 command candidate가 없습니다.
 
-## 6. Offline Task
+## 7. Offline Task
 
 ### 6.1 역할
 
@@ -424,7 +457,7 @@ PATCH /api/v1/admin/offline-task-policies/{policy_id}
 `offline_tasks.seconds_per_item`에 snapshot하므로 정책 변경은 이후 생성 Task에만 적용되고
 이미 존재하는 Task의 계산은 바뀌지 않습니다.
 
-## 7. Game State Snapshot (AX-I09 local Review 계약)
+## 8. Game State Snapshot (AX-I09 local Review 계약)
 
 AX-I09의 다음 계약은 로컬 구현과 사전 배포 Review 기준입니다. 아직 공개 배포 서버의
 `/openapi.json`에는 이 경로가 없으며, 이 문서만으로 배포 런타임 지원을 주장하지 않습니다.
@@ -539,7 +572,7 @@ PUT은 `(profile, save_slot, companion, operation_id)`와 원문 body hash를 �
 strict field, schema/content version, Inventory bounds, Item/Weapon 의미 검증 실패는
 `400 InvalidRequest`이며 저장 상태를 바꾸지 않습니다.
 
-## 8. 기존 Device/Pairing 경로
+## 9. 기존 Device/Pairing 경로
 
 `/api/v1/devices/register-game`, `/pairing-codes`, `/pair`와 Device 조회·해지는 호환성을 위해
 남아 있습니다. 현재 UE/Web 제품은 이 경로를 사용하지 않고 `AIRE_GAME`, `AIRE_WEB`을 바로
@@ -552,7 +585,7 @@ strict field, schema/content version, Inventory bounds, Item/Weapon 의미 검�
 DEV_GAME_DEVICE_TOKEN=replace-with-bootstrap-token
 ```
 
-## 9. Admin API
+## 10. Admin API
 
 `/api/v1/admin/*`는 Profile, Device, Pairing Code, Save Slot, Item, Recipe, Smelting Recipe,
 Enemy, Location, Episodic Memory와 Offline Task CRUD를 제공합니다.
@@ -573,7 +606,7 @@ Authorization: Bearer replace-with-admin-token
 Token이 비어 있으면 Admin API는 `503 AdminAuthenticationUnavailable`입니다. 자세한 개별
 Admin request/response는 실행 중인 `/docs`를 사용합니다.
 
-## 10. WebSocket 호환 경로
+## 11. WebSocket 호환 경로
 
 `WS /api/v1/chat`은 남아 있지만 AX client 기준은 HTTP입니다. WS는 frame마다 token을 넣습니다.
 `payload`는 HTTP `ChatRequest`와 같은 strict 모델을 사용한다. 따라서 game frame은 Context v1을
@@ -607,7 +640,7 @@ Admin request/response는 실행 중인 `/docs`를 사용합니다.
 
 새 UE/Web 구현은 HTTP를 사용하고 WS와 HTTP를 동시에 추측 지원하지 않습니다.
 
-## 11. 오류
+## 12. 오류
 
 모든 HTTP 실패는 같은 ErrorEnvelope를 사용합니다.
 

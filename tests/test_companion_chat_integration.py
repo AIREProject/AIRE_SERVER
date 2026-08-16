@@ -151,7 +151,12 @@ async def test_conversation_key_separates_sessions(
         _request("저것 좀 캐 줘", allowed_commands=allowed), identity, session, PROTECTOR
     )
     other = await service.create_response(
-        _request("나무", allowed_commands=allowed, session_id="session-2"),
+        _request(
+            "나무",
+            allowed_commands=allowed,
+            session_id="session-2",
+            request_id="req-2",
+        ),
         identity,
         session,
         PROTECTOR,

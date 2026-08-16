@@ -54,6 +54,10 @@ class DuplicateRequestError(RuntimeError):
     pass
 
 
+class IdempotencyRecordExpiredError(RuntimeError):
+    pass
+
+
 class IdentityScopeMismatchError(RuntimeError):
     pass
 
@@ -94,6 +98,14 @@ class GameStateVersionConflictError(RuntimeError):
     pass
 
 
+class CommandCandidateNotFoundError(RuntimeError):
+    pass
+
+
+class CommandResultTransitionError(RuntimeError):
+    pass
+
+
 # --- 관리자 CRUD (app/routes/admin.py) -----------------------------------------------
 
 
@@ -130,6 +142,7 @@ class ErrorCode(StrEnum):
     DEVICE_NOT_FOUND = "DeviceNotFound"
     DEVICE_ROLE_NOT_ALLOWED = "DeviceRoleNotAllowed"
     DUPLICATE_REQUEST = "DuplicateRequest"
+    IDEMPOTENCY_RECORD_EXPIRED = "IdempotencyRecordExpired"
     IDENTITY_SCOPE_MISMATCH = "IdentityScopeMismatch"
     INVALID_PAIRING_CODE = "InvalidPairingCode"
     EXPIRED_PAIRING_CODE = "ExpiredPairingCode"
@@ -140,6 +153,8 @@ class ErrorCode(StrEnum):
     UNKNOWN_COMPANION = "UnknownCompanion"
     GAME_STATE_NOT_FOUND = "GameStateNotFound"
     GAME_STATE_VERSION_CONFLICT = "GameStateVersionConflict"
+    COMMAND_CANDIDATE_NOT_FOUND = "CommandCandidateNotFound"
+    COMMAND_RESULT_TRANSITION = "CommandResultTransitionNotAllowed"
     UNAUTHORIZED_ADMIN = "UnauthorizedAdmin"
     ADMIN_AUTHENTICATION_UNAVAILABLE = "AdminAuthenticationUnavailable"
     ADMIN_RESOURCE_NOT_FOUND = "AdminResourceNotFound"
