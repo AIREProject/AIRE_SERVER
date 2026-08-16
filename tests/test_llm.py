@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.brain.dialogue import SURFACE_PROFILES, DialogueSpec
+from app.brain.dialogue import SURFACE_PROFILES, DialogueOutput, DialogueScene, DialogueSpec
 from app.brain.intent import CommandLabel, ResourceSlot, TopIntent
 from app.brain.llm import (
     LocalLLMProvider,
@@ -20,6 +21,26 @@ from app.brain.store import ConversationTurn
 from app.models import Surface
 from app.settings import Settings
 from tests.conftest import make_settings
+
+
+def dialogue_json(
+    text: str,
+    purpose: DialogueScene,
+    *,
+    fact_references: tuple[int, ...] = (),
+    accepts_command: bool = False,
+) -> str:
+    return json.dumps(
+        {
+            "text": text,
+            "purpose": purpose,
+            "fact_references": fact_references,
+            "memory_references": (),
+            "situation_references": (),
+            "accepts_command": accepts_command,
+        },
+        ensure_ascii=False,
+    )
 
 
 # 단언이 확인하는 값은 **전부 명시한다.** 기본값에 기대면 그 기본값이 바뀔 때
@@ -60,7 +81,11 @@ async def test_openai_provider_uses_minimal_reasoning() -> None:
             SimpleNamespace(
                 output_text='{"command":"wait","resource":"unspecified","quantity":null}'
             ),
-            SimpleNamespace(output_text='{"text":"여기서 기다릴게."}'),
+            SimpleNamespace(
+                output_text=dialogue_json(
+                    "여기서 기다릴게.", "wait", accepts_command=True
+                )
+            ),
         ]
     )
 
@@ -74,9 +99,20 @@ async def test_openai_provider_uses_minimal_reasoning() -> None:
     assert (await provider.classify_command("기다려")).command is CommandLabel.WAIT
     assert (
         await provider.generate_dialogue(
-            DialogueSpec(scene="wait", fallback="알겠어. 여기서 기다릴게.")
+            DialogueSpec(
+                scene="wait",
+                fallback="알겠어. 여기서 기다릴게.",
+                command_candidate_present=True,
+            )
         )
-        == "여기서 기다릴게."
+        == DialogueOutput(
+            text="여기서 기다릴게.",
+            purpose="wait",
+            fact_references=(),
+            memory_references=(),
+            situation_references=(),
+            accepts_command=True,
+        )
     )
 
     assert client.responses.create.await_count == 3
@@ -103,7 +139,13 @@ async def test_local_provider_uses_chat_completions() -> None:
     client = MagicMock()
     client.chat.completions.create = AsyncMock(
         return_value=SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="  반가워!  "))]
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=dialogue_json("반가워!", "conversation")
+                    )
+                )
+            ]
         )
     )
 
@@ -115,13 +157,23 @@ async def test_local_provider_uses_chat_completions() -> None:
         fallback="안녕! 오늘은 어디부터 둘러볼까?",
         user_text="안녕, 마코",
     )
-    assert await provider.generate_dialogue(spec) == "반가워!"
+    assert (await provider.generate_dialogue(spec)).text == "반가워!"
     call = client.chat.completions.create.await_args.kwargs
     assert call["model"] == "balanced-q4-k-m-mtp"
     assert call["temperature"] == 0.6
     assert call["max_tokens"] == 160
     assert call["extra_body"] == {
         "chat_template_kwargs": {"enable_thinking": False}
+    }
+    dialogue_schema = call["response_format"]["json_schema"]
+    assert dialogue_schema["name"] == "dialogue_output"
+    assert set(dialogue_schema["schema"]["required"]) == {
+        "text",
+        "purpose",
+        "fact_references",
+        "memory_references",
+        "situation_references",
+        "accepts_command",
     }
     assert call["messages"][0]["role"] == "system"
     assert "확정 사실" in call["messages"][0]["content"]
@@ -130,6 +182,7 @@ async def test_local_provider_uses_chat_completions() -> None:
         "content": (
             "[지시] 플레이어의 말에 가볍게 반응한다.\n"
             "[확정 사실] 없음\n"
+            "[Command Candidate] 없음\n"
             "[플레이어] 안녕, 마코"
         ),
     }
@@ -401,7 +454,7 @@ async def test_local_provider_falls_back_when_call_fails() -> None:
         fallback="안녕! 오늘은 어디부터 둘러볼까?",
         user_text="안녕",
     )
-    assert await provider.generate_dialogue(spec) == (
+    assert (await provider.generate_dialogue(spec)).text == (
         SURFACE_PROFILES[Surface.GAME].provider_retry
     )
 
@@ -411,7 +464,15 @@ async def test_local_dialogue_prompt_contains_facts_but_not_fallback() -> None:
     client = MagicMock()
     client.chat.completions.create = AsyncMock(
         return_value=SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="철괴 3개가 필요해."))]
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=dialogue_json(
+                            "철괴 3개가 필요해.", "recipe", fact_references=(0,)
+                        )
+                    )
+                )
+            ]
         )
     )
 
@@ -424,7 +485,7 @@ async def test_local_dialogue_prompt_contains_facts_but_not_fallback() -> None:
         user_text="철검는 어떻게 만들어?",
         facts=("철괴 3개가 필요하다",),
     )
-    assert await provider.generate_dialogue(spec) == "철괴 3개가 필요해."
+    assert (await provider.generate_dialogue(spec)).text == "철괴 3개가 필요해."
 
     messages = client.chat.completions.create.await_args.kwargs["messages"]
     assert "철괴 3개가 필요하다" in str(messages)
@@ -437,7 +498,7 @@ async def test_mock_returns_the_scene_fallback_verbatim() -> None:
 
     spec = DialogueSpec(scene="conversation", fallback="안녕! 무슨 일이야?", user_text="안녕")
 
-    assert await MockLLMProvider().generate_dialogue(spec) == spec.fallback
+    assert (await MockLLMProvider().generate_dialogue(spec)).text == spec.fallback
 
 
 @pytest.mark.asyncio
@@ -447,7 +508,13 @@ async def test_dialogue_system_prompt_switches_with_the_surface() -> None:
     client = MagicMock()
     client.chat.completions.create = AsyncMock(
         return_value=SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="응, 나 여기 있어."))]
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=dialogue_json("응, 나 여기 있어.", "conversation")
+                    )
+                )
+            ]
         )
     )
 
@@ -467,6 +534,10 @@ async def test_dialogue_system_prompt_switches_with_the_surface() -> None:
     assert prompts[Surface.GAME] != prompts[Surface.MOBILE]
     # 사실 규칙은 창구와 무관하다. 말투를 바꾸다 가드가 창구마다 달라지면 안 된다.
     for prompt in prompts.values():
+        assert "[prompt_version] companion-v3" in prompt
+        assert "현재 단계는 Growing" in prompt
+        assert "과도한 애착·독점·영원한 약속" in prompt
+        assert "Command Candidate가 없으면" in prompt
         assert "[확정 사실]에 적힌 내용만 사용하고" in prompt
 
 
@@ -495,7 +566,7 @@ def test_dialogue_message_puts_situation_between_memory_and_history() -> None:
 
     assert message.index("[기억]") < message.index("[상황]")
     assert message.index("[상황]") < message.index("[최근 대화]")
-    assert "- 지금은 게임 세계 기준 7일차 밤, 23시다." in message
+    assert "[0] 지금은 게임 세계 기준 7일차 밤, 23시다." in message
 
 
 def test_dialogue_message_puts_history_before_the_instruction() -> None:
@@ -544,7 +615,7 @@ def test_dialogue_message_puts_memories_before_the_history() -> None:
 
     assert message.index("[기억]") < message.index("[최근 대화]")
     assert message.index("[최근 대화]") < message.index("[지시]")
-    assert "- 플레이어는 밤을 싫어한다" in message
+    assert "[0] 플레이어는 밤을 싫어한다" in message
 
 
 def test_dialogue_message_keeps_memories_out_of_the_verified_facts() -> None:
@@ -575,7 +646,7 @@ def test_dialogue_message_omits_the_player_line_without_user_text() -> None:
     )
 
     assert "[플레이어]" not in message
-    assert "- 적이 나타났다" in message
+    assert "[0] 적이 나타났다" in message
 
 
 def test_dialogue_message_labels_a_situation_speaker_in_history() -> None:

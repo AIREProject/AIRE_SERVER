@@ -53,12 +53,10 @@ async def test_scripted_provider_implements_every_typed_method_in_order() -> Non
     classification = await provider.classify_command("원문은 기록하지 않는다")
     assert classification.command is CommandLabel.ATTACK
     assert await provider.resolve_pending("원문은 기록하지 않는다", pending) is ResourceSlot.WOOD
-    assert (
-        await provider.generate_dialogue(
-            DialogueSpec(scene="conversation", fallback="고정 대사", user_text="합성 발화")
-        )
-        == "합성 대사"
+    dialogue = await provider.generate_dialogue(
+        DialogueSpec(scene="conversation", fallback="고정 대사", user_text="합성 발화")
     )
+    assert dialogue.text == "합성 대사"
     extraction = await provider.extract_memories(MemoryExtractionSpec(recent_turns=turns))
     summary = await provider.summarize_session(SessionSummarySpec(turns=turns))
     consolidation = await provider.consolidate_memories(ConsolidationSpec(memories=()))
@@ -124,7 +122,7 @@ async def test_invalid_provider_separates_dialogue_failure_modes(
         DialogueSpec(scene="conversation", fallback="고정 대사")
     )
 
-    assert result == expected
+    assert (result if isinstance(result, str) else result.text) == expected
     assert provider.failures[0].reason == reason
     assert provider.failures[0].fallback_used
     provider.assert_consumed()

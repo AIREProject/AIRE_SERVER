@@ -303,6 +303,8 @@ def build_companion_graph(
         scene: DialogueScene,
         fallback: str,
         facts: tuple[str, ...] = (),
+        *,
+        command_candidate_present: bool = False,
     ) -> str:
         """검증된 사실을 근거로 대사를 생성하고, 실패 시 고정 템플릿으로 복구한다.
 
@@ -321,6 +323,7 @@ def build_companion_graph(
                 history=state.get("history", ()),
                 memories=state.get("long_term", ()),
                 situation=describe(state["turn"].game_time),
+                command_candidate_present=command_candidate_present,
             ),
         )
 
@@ -438,7 +441,9 @@ def build_companion_graph(
             return await decline(state)
 
         return {
-            "display_text": await say(state, scene, fallback),
+            "display_text": await say(
+                state, scene, fallback, command_candidate_present=True
+            ),
             "action": CompanionAction(type=action_type),
         }
 
@@ -457,7 +462,12 @@ def build_companion_graph(
         target_id = enemies.resolve_target(state["text"])
         parameters: dict[str, JsonValue] = {"target_id": target_id} if target_id else {}
         return {
-            "display_text": await say(state, "attack", "알겠어. 공격할게."),
+            "display_text": await say(
+                state,
+                "attack",
+                "알겠어. 공격할게.",
+                command_candidate_present=True,
+            ),
             "action": CompanionAction(type=CommandType.ATTACK, parameters=parameters),
         }
 
@@ -545,7 +555,13 @@ def build_companion_graph(
         facts = () if quantity is None else (f"요청 수량은 {quantity}개다",)
         parameters = GatherParameters(resource=resource, quantity=quantity)
         return {
-            "display_text": await say(state, scene, fallback, facts),
+            "display_text": await say(
+                state,
+                scene,
+                fallback,
+                facts,
+                command_candidate_present=True,
+            ),
             "action": CompanionAction(
                 type=CommandType.GATHER_RESOURCE,
                 parameters=parameters.model_dump(mode="json", exclude_none=True),

@@ -39,7 +39,7 @@ FIXTURE_DIRECTORY = Path(__file__).parent / "fixtures" / "companion_ai"
 FIXTURE_ID_PATTERN = re.compile(r"^p0\.[a-z0-9_]+\.[a-z0-9_]+\.\d{3}$")
 PROTECTOR = CredentialProtector(SecretStr("fixture-only-pepper-not-for-production"))
 METADATA = AIMetadata(
-    provider="scripted-v1", model_version="scripted-v1", prompt_version="companion-v2"
+    provider="scripted-v1", model_version="scripted-v1", prompt_version="companion-v3"
 )
 
 ProviderName = Literal["scripted-v1", "invalid-v1", "local-invalid-json-v1"]

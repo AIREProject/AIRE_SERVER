@@ -66,7 +66,7 @@ Local endpoint가 지원해야 하는 기능:
 - OpenAI-compatible Chat Completions
 - `response_format.type=json_schema`
 - strict JSON Schema output
-- 일반 assistant text output
+- `dialogue_output` 대사 JSON Schema output
 - 요청 body의 `chat_template_kwargs.enable_thinking=false`를 허용하거나 무시
 
 Base URL은 일반적으로 `/v1`까지 포함합니다. model name은 Local server의 model 목록에 등록된
@@ -171,7 +171,7 @@ TRANSCRIPT_RETENTION_DAYS=30
   "ai_metadata": {
     "provider": "local",
     "model_version": "your-model-name",
-    "prompt_version": "companion-v2"
+    "prompt_version": "companion-v3"
   }
 }
 ```

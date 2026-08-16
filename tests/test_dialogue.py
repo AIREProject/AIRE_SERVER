@@ -4,6 +4,8 @@ import pytest
 
 from app.brain.dialogue import (
     SURFACE_PROFILES,
+    DialogueOutput,
+    DialogueScene,
     DialogueSpec,
     provider_failure_fallback,
     render,
@@ -11,6 +13,23 @@ from app.brain.dialogue import (
 )
 from app.brain.store import ConversationTurn
 from app.models import Surface
+
+
+def generated(
+    text: str,
+    purpose: DialogueScene,
+    *,
+    fact_references: tuple[int, ...] = (),
+    accepts_command: bool = False,
+) -> DialogueOutput:
+    return DialogueOutput(
+        text=text,
+        purpose=purpose,
+        fact_references=fact_references,
+        memory_references=(),
+        situation_references=(),
+        accepts_command=accepts_command,
+    )
 
 
 def test_every_surface_has_a_profile() -> None:
@@ -55,7 +74,9 @@ def test_sanitize_rejects_empty_or_overlong_dialogue(text: str) -> None:
 
 
 def test_sanitize_folds_newlines_and_repeated_whitespace() -> None:
-    spec = DialogueSpec(scene="wait", fallback="기다릴게.")
+    spec = DialogueSpec(
+        scene="wait", fallback="기다릴게.", command_candidate_present=True
+    )
 
     assert sanitize("  여기서\n  기다릴게.  ", spec) == "여기서 기다릴게."
 
@@ -75,6 +96,71 @@ def test_sanitize_exempts_conversation_from_number_guard() -> None:
     spec = DialogueSpec(scene="conversation", fallback="안녕!", facts=())
 
     assert sanitize("오늘도 100점짜리 하루를 보내자.", spec) is not None
+
+
+def test_sanitize_rejects_mismatched_purpose_and_out_of_range_reference() -> None:
+    spec = DialogueSpec(scene="enemy", fallback="확인된 정보가 없어.", facts=("약점은 다리다",))
+
+    assert sanitize(
+        generated("다리를 노려.", "conversation", fact_references=(0,)),
+        spec,
+    ) is None
+    assert sanitize(
+        generated("다리를 노려.", "enemy", fact_references=(1,)),
+        spec,
+    ) is None
+
+
+def test_sanitize_requires_a_lexical_anchor_for_each_reference() -> None:
+    spec = DialogueSpec(scene="enemy", fallback="확인된 정보가 없어.", facts=("약점은 다리다",))
+
+    assert sanitize(
+        generated("불로 공격해.", "enemy", fact_references=(0,)),
+        spec,
+    ) is None
+    assert sanitize(
+        generated("다리를 노려.", "enemy", fact_references=(0,)),
+        spec,
+    ) == "다리를 노려."
+
+
+def test_sanitize_rejects_fact_claim_without_a_fact_reference() -> None:
+    spec = DialogueSpec(scene="conversation", fallback="안녕!")
+
+    assert sanitize(
+        generated("그 적의 약점은 불이야.", "conversation"),
+        spec,
+    ) is None
+
+
+def test_sanitize_rejects_command_acceptance_without_a_candidate() -> None:
+    spec = DialogueSpec(scene="conversation", fallback="안녕!")
+
+    assert sanitize(
+        generated(
+            text="알겠어. 따라갈게.", purpose="conversation", accepts_command=True
+        ),
+        spec,
+    ) is None
+    assert sanitize(
+        generated("알겠어. 따라갈게.", "conversation"),
+        spec,
+    ) is None
+
+
+def test_sanitize_allows_acceptance_with_a_real_candidate() -> None:
+    spec = DialogueSpec(
+        scene="follow_player",
+        fallback="알겠어. 따라갈게.",
+        command_candidate_present=True,
+    )
+
+    assert sanitize(
+        generated(
+            text="좋아, 따라갈게.", purpose="follow_player", accepts_command=True
+        ),
+        spec,
+    ) == "좋아, 따라갈게."
 
 
 @pytest.mark.asyncio
@@ -177,6 +263,7 @@ def test_confirmed_facts_still_permit_their_own_numbers() -> None:
         fallback="알겠어. 근처의 나무를 찾아볼게.",
         facts=("요청 수량은 20개다",),
         history=(ConversationTurn(speaker="player", text="아까 3개 말했잖아"),),
+        command_candidate_present=True,
     )
 
     assert sanitize("20개 캐 올게.", spec) == "20개 캐 올게."

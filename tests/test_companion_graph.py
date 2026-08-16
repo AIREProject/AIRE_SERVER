@@ -8,7 +8,7 @@ import pytest
 from langgraph.graph.state import CompiledStateGraph
 
 from app.brain import CompanionBrain, CompanionReply, CompanionTurn
-from app.brain.dialogue import SURFACE_PROFILES, DialogueSpec
+from app.brain.dialogue import SURFACE_PROFILES, DialogueOutput, DialogueSpec
 from app.brain.enemies import EnemyRepository
 from app.brain.graph import (
     CompanionState,
@@ -537,9 +537,39 @@ class RecordingProvider(MockLLMProvider):
         self.classify_inputs.append(text)
         return await super().resolve_pending(text, pending)
 
-    async def generate_dialogue(self, spec: DialogueSpec) -> str:
+    async def generate_dialogue(self, spec: DialogueSpec) -> DialogueOutput:
         self.dialogue_specs.append(spec)
         return await super().generate_dialogue(spec)
+
+
+async def test_dialogue_candidate_flag_matches_the_emitted_action() -> None:
+    accepted_provider = RecordingProvider()
+    accepted = await say(
+        CompanionBrain(accepted_provider), "따라와", key="candidate-accepted"
+    )
+
+    assert accepted.action is not None
+    assert accepted_provider.dialogue_specs[-1].command_candidate_present is True
+
+    declined_provider = RecordingProvider()
+    declined = await CompanionBrain(declined_provider).respond(
+        make_turn("따라와", allowed_actions=frozenset())
+    )
+
+    assert declined.action is None
+    assert declined_provider.dialogue_specs[-1].scene == "unsupported"
+    assert declined_provider.dialogue_specs[-1].command_candidate_present is False
+
+    information_provider = RecordingProvider()
+    information = await say(
+        CompanionBrain(information_provider),
+        "참호병은 어떻게 잡아?",
+        key="candidate-information",
+    )
+
+    assert information.action is None
+    assert information_provider.dialogue_specs[-1].scene == "enemy"
+    assert information_provider.dialogue_specs[-1].command_candidate_present is False
 
 
 async def test_recipe_list_detail_and_compare_bypass_dialogue_generation() -> None:

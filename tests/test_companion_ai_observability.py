@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from app.brain import CompanionBrain, CompanionTurn, SituationTurn
-from app.brain.dialogue import SURFACE_PROFILES, DialogueSpec
+from app.brain.dialogue import SURFACE_PROFILES, DialogueOutput, DialogueSpec
 from app.brain.llm import LocalLLMProvider, MockLLMProvider
 from app.credentials import CredentialProtector
 from app.main import create_app
@@ -40,9 +40,20 @@ class _FakeCompletions:
         self._dialogue = dialogue
 
     async def create(self, **kwargs: Any) -> Any:
-        result = self._classification if "response_format" in kwargs else self._dialogue
+        response_format = kwargs.get("response_format", {})
+        schema_name = response_format.get("json_schema", {}).get("name")
+        result = self._dialogue if schema_name == "dialogue_output" else self._classification
         if isinstance(result, Exception):
             raise result
+        if schema_name == "dialogue_output" and isinstance(result, str) and result.strip():
+            result = DialogueOutput(
+                text=result,
+                purpose="conversation",
+                fact_references=(),
+                memory_references=(),
+                situation_references=(),
+                accepts_command=False,
+            ).model_dump_json()
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=result))]
         )
@@ -167,6 +178,29 @@ async def test_conversation_sanitizer_rejection_uses_safe_guidance() -> None:
     assert reply.provenance is not None
     assert reply.provenance.final_response_source == "validation_rejection"
     assert reply.provenance.final_fallback_reason == "sanitizer_rejection"
+
+
+async def test_sanitizer_rejection_is_deterministic_across_repeated_inputs() -> None:
+    replies = [
+        await CompanionBrain(_UnsafeDialogueProvider()).respond(
+            _turn("골리앗 약점이 뭐야?", key=f"sanitizer-repeat-{index}")
+        )
+        for index in range(2)
+    ]
+
+    conclusions = {
+        (
+            reply.text,
+            reply.provenance.final_response_source if reply.provenance else None,
+            reply.provenance.final_fallback_reason if reply.provenance else None,
+        )
+        for reply in replies
+    }
+    assert len(conclusions) == 1
+    assert next(iter(conclusions))[1:] == (
+        "validation_rejection",
+        "sanitizer_rejection",
+    )
 
 
 async def test_situation_reply_records_the_situation_route() -> None:

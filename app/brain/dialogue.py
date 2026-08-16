@@ -5,6 +5,8 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
 from app.models import Surface
 
 from .contract import FallbackReason
@@ -34,6 +36,28 @@ DialogueScene = Literal[
 ]
 
 
+class DialogueOutput(BaseModel):
+    """Provider가 생성한 대사와 그 대사가 사용했다고 선언한 근거."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str = Field(min_length=1, max_length=200)
+    purpose: DialogueScene
+    fact_references: tuple[int, ...]
+    memory_references: tuple[int, ...]
+    situation_references: tuple[int, ...]
+    accepts_command: bool
+
+    @field_validator("fact_references", "memory_references", "situation_references")
+    @classmethod
+    def validate_references(cls, references: tuple[int, ...]) -> tuple[int, ...]:
+        if any(reference < 0 for reference in references):
+            raise ValueError("dialogue references must not be negative")
+        if len(set(references)) != len(references):
+            raise ValueError("dialogue references must be unique")
+        return references
+
+
 @dataclass(frozen=True, slots=True)
 class DialogueSpec:
     """LLM에 전달할 장면과 코드가 확정한 사실, 실패 시 복구 대사를 묶는다."""
@@ -54,6 +78,9 @@ class DialogueSpec:
     # 게임이 현재 턴에 알려 준 상황. 게임 시계는 서버가 신뢰하는 값이지만 장면의 확정
     # 사실과는 다른 블록으로 보여 준다.
     situation: tuple[str, ...] = ()
+    # 이 대사와 함께 실제 CompanionAction이 반환되는지. LLM의 선언이 아니라 그래프가
+    # 검증을 끝낸 뒤 정하며, false이면 실행 수락·약속을 생성할 수 없다.
+    command_candidate_present: bool = False
 
 
 SCENE_GUIDE: dict[DialogueScene, str] = {
@@ -186,6 +213,17 @@ def provider_failure_fallback(spec: DialogueSpec, reason: FallbackReason) -> str
 
 _NUMBER_PATTERN = re.compile(r"\d+")
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+_ANCHOR_PATTERN = re.compile(r"[0-9A-Za-z가-힣]+")
+_COMMAND_ACCEPTANCE_PATTERN = re.compile(
+    r"(?:따라갈게|기다릴게|멈출게|공격할게|돌아갈게|가져올게|"
+    r"캐\s*올게|모아\s*올게|만들게|시작할게|취소할게|해\s*줄게|하겠습니다)"
+)
+_FACT_CLAIM_PATTERN = re.compile(
+    r"(?:레시피|제작법|재료|필요량|작업대|체력|약점|내성|역사|유래)"
+)
+_FACT_GROUNDED_SCENES: frozenset[DialogueScene] = frozenset(
+    {"recipe", "enemy", "lore", "unsupported", "event_completed", "event_failed"}
+)
 _sanitizer_context: ContextVar[list[bool] | None] = ContextVar(
     "sanitizer_results", default=None
 )
@@ -201,11 +239,36 @@ def finish_sanitizer_trace(token: Token[list[bool] | None]) -> tuple[bool, ...]:
     return results
 
 
-def sanitize(text: str, spec: DialogueSpec) -> str | None:
-    """대사 형식과 확정 사실의 숫자를 검증하고 안전한 한 줄로 정리한다."""
+def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
+    """대사의 목적·근거·Command 경계와 형식을 검증해 안전한 한 줄로 정리한다."""
+
+    text = output.text if isinstance(output, DialogueOutput) else output
 
     normalized = _WHITESPACE_PATTERN.sub(" ", text).strip()
     if not normalized or len(normalized) > 200:
+        return None
+
+    if isinstance(output, DialogueOutput):
+        if output.purpose != spec.scene:
+            return None
+        if output.accepts_command != spec.command_candidate_present:
+            return None
+        if not _references_are_valid(output.fact_references, spec.facts, normalized):
+            return None
+        if not _references_are_valid(output.memory_references, spec.memories, normalized):
+            return None
+        if not _references_are_valid(output.situation_references, spec.situation, normalized):
+            return None
+        if (
+            spec.scene in _FACT_GROUNDED_SCENES
+            and spec.facts
+            and not output.fact_references
+        ):
+            return None
+        if _FACT_CLAIM_PATTERN.search(normalized) and not output.fact_references:
+            return None
+
+    if not spec.command_candidate_present and _COMMAND_ACCEPTANCE_PATTERN.search(normalized):
         return None
 
     if spec.scene != "conversation":
@@ -217,10 +280,33 @@ def sanitize(text: str, spec: DialogueSpec) -> str | None:
     return normalized
 
 
+def _references_are_valid(
+    references: tuple[int, ...],
+    sources: tuple[str, ...],
+    normalized: str,
+) -> bool:
+    for reference in references:
+        if reference >= len(sources) or not _has_lexical_anchor(normalized, sources[reference]):
+            return False
+    return True
+
+
+def _has_lexical_anchor(text: str, source: str) -> bool:
+    """활용형을 허용하도록 정규화된 두 글자 조각 하나 이상이 겹치는지만 확인한다."""
+
+    text_anchors = _bigrams(text)
+    return bool(text_anchors.intersection(_bigrams(source)))
+
+
+def _bigrams(text: str) -> set[str]:
+    normalized = "".join(_ANCHOR_PATTERN.findall(text.casefold()))
+    return {normalized[index : index + 2] for index in range(len(normalized) - 1)}
+
+
 @dataclass(frozen=True, slots=True)
 class RenderedDialogue:
     text: str
-    sanitizer_succeeded: bool
+    sanitizer_succeeded: bool | None
 
 
 async def render_observed(llm: LLMProvider, spec: DialogueSpec) -> RenderedDialogue:
@@ -237,16 +323,16 @@ async def render_observed(llm: LLMProvider, spec: DialogueSpec) -> RenderedDialo
         )
         result = RenderedDialogue(
             text=provider_failure_fallback(spec, reason),
-            sanitizer_succeeded=False,
+            sanitizer_succeeded=None,
         )
-        _record_sanitizer_result(result.sanitizer_succeeded)
         return result
     sanitized = sanitize(generated, spec)
+    sanitizer_succeeded = sanitized is not None
     result = RenderedDialogue(
         text=sanitized or provider_failure_fallback(spec, "sanitizer_rejection"),
-        sanitizer_succeeded=sanitized is not None,
+        sanitizer_succeeded=sanitizer_succeeded,
     )
-    _record_sanitizer_result(result.sanitizer_succeeded)
+    _record_sanitizer_result(sanitizer_succeeded)
     return result
 
 

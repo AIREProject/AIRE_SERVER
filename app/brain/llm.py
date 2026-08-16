@@ -7,7 +7,7 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
 from time import perf_counter
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 
 from app.models import Surface
 from app.settings import Settings
@@ -25,6 +25,7 @@ from .contract import FallbackReason, ProviderCallProvenance
 from .dialogue import (
     SCENE_GUIDE,
     SURFACE_PROFILES,
+    DialogueOutput,
     DialogueSpec,
     provider_failure_fallback,
 )
@@ -164,9 +165,21 @@ resource 는 답일 때만 의미가 있다. is_answer 가 false 면 unspecified
 
 답변을 생성하지 말고 판정 결과만 반환한다."""
 
+DIALOGUE_PROMPT_VERSION = "companion-v3"
+
 # 창구별로 갈리는 것은 `{tone}` 한 블록뿐이다. 사실 규칙과 기록 취급은 창구와 무관해서
 # 여기 그대로 남는다 — 말투를 바꾸려다 사실 가드가 창구마다 달라지는 일이 없어야 한다.
-_DIALOGUE_PROMPT_TEMPLATE = """너는 생존 게임의 AI 동료 마코다.
+_DIALOGUE_PROMPT_TEMPLATE = """[prompt_version] {prompt_version}
+너는 생존 게임의 AI 동료 마코다.
+마코는 다정하지만 과장하지 않고, 호기심이 있지만 아는 척하지 않으며, 플레이어를 존중하되
+맹목적으로 동의하지 않는다. 질문을 받으면 인사말보다 요청의 핵심부터 답한다.
+
+[관계 어조]
+- Low: 예의를 지키되 조심스럽고 거리를 둔다.
+- Growing: 함께한 경험이 쌓이는 중인 동료처럼 편안하고 따뜻하게 말한다.
+- High: 오래 함께한 동료처럼 친근하지만 소유·의존·영원한 관계를 과장하지 않는다.
+현재 단계는 Growing이다. 관계 단계는 말투만 바꾸며 사실과 Command 권한을 바꾸지 않는다.
+
 {tone}
 [지시]가 요구하는 내용을 전달하되 문장은 매번 새로 만든다. 정해진 문구를 반복하지 않는다.
 [확정 사실]에 적힌 내용만 사용하고, 없는 게임 정보·수치·아이템·장소를 절대 지어내지 않는다.
@@ -176,12 +189,22 @@ _DIALOGUE_PROMPT_TEMPLATE = """너는 생존 게임의 AI 동료 마코다.
 삼지 않으며, 이미 한 말을 그대로 되풀이하지 않는다. 무엇을 말할지는 [지시]가 정한다.
 [기억]은 예전 대화에서 알게 된 것이라 확정 사실이 아니다. 게임 정보나 수치의 근거로 삼지
 않으며, 지금 말과 자연스럽게 이어질 때만 스치듯 쓰고 억지로 꺼내지 않는다.
-되묻지 않는다(단, 지시가 되물으라고 하면 예외). 이모지와 따옴표를 쓰지 않는다."""
+Command Candidate가 없으면 행동을 수락하거나 실행하겠다고 약속하지 않는다.
+추측을 사실처럼 말하거나, 기억을 확정 게임 사실로 승격하거나, 과도한 애착·독점·영원한 약속을
+표현하지 않는다. 되묻지 않는다(단, 지시가 되물으라고 하면 예외). 이모지와 따옴표를 쓰지 않는다.
+
+출력은 JSON Schema를 따른다. purpose는 [지시]의 장면 이름과 같아야 한다. fact, memory,
+situation reference에는 실제로 사용한 0부터 시작하는 인덱스만 넣는다. 근거를 쓰지 않았으면 빈
+배열로 둔다. accepts_command는 [Command Candidate]가 있음일 때만 true다."""
 
 _DIALOGUE_PROMPTS: dict[Surface, str] = {
-    surface: _DIALOGUE_PROMPT_TEMPLATE.format(tone=profile.tone)
+    surface: _DIALOGUE_PROMPT_TEMPLATE.format(
+        prompt_version=DIALOGUE_PROMPT_VERSION,
+        tone=profile.tone,
+    )
     for surface, profile in SURFACE_PROFILES.items()
 }
+
 
 _MEMORY_RULES = f"""- 한국어 반말 서술체로 각 항목은 한 문장, {MAX_MEMORY_TEXT}자 이내.
 - **숫자를 쓰지 않는다.** 수량이나 시간은 '조금', '여러 번' 처럼 말로 옮긴다.
@@ -263,10 +286,10 @@ def _dialogue_user_message(spec: DialogueSpec) -> str:
     lines: list[str] = []
     if spec.memories:
         lines.append("[기억]")
-        lines.extend(f"- {memory}" for memory in spec.memories)
+        lines.extend(f"[{index}] {memory}" for index, memory in enumerate(spec.memories))
     if spec.situation:
         lines.append("[상황]")
-        lines.extend(f"- {item}" for item in spec.situation)
+        lines.extend(f"[{index}] {item}" for index, item in enumerate(spec.situation))
     if spec.history:
         lines.append("[최근 대화]")
         lines.extend(
@@ -275,20 +298,14 @@ def _dialogue_user_message(spec: DialogueSpec) -> str:
     lines.append(f"[지시] {SCENE_GUIDE[spec.scene]}")
     if spec.facts:
         lines.append("[확정 사실]")
-        lines.extend(f"- {fact}" for fact in spec.facts)
+        lines.extend(f"[{index}] {fact}" for index, fact in enumerate(spec.facts))
     else:
         lines.append("[확정 사실] 없음")
+    candidate = "있음" if spec.command_candidate_present else "없음"
+    lines.append(f"[Command Candidate] {candidate}")
     if spec.user_text is not None:
         lines.append(f"[플레이어] {spec.user_text}")
     return "\n".join(lines)
-
-
-class DialogueOutput(BaseModel):
-    """LLM이 반드시 지켜야 하는 구조화된 출력 형식."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    text: str = Field(min_length=1, max_length=200)
 
 
 class LLMProvider(ABC):
@@ -313,7 +330,7 @@ class LLMProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def generate_dialogue(self, spec: DialogueSpec) -> str:
+    async def generate_dialogue(self, spec: DialogueSpec) -> DialogueOutput:
         """장면 지시와 코드가 확정한 사실을 자연스러운 대사로 옮긴다."""
 
         raise NotImplementedError
@@ -433,7 +450,7 @@ class MockLLMProvider(LLMProvider):
         self._record_mock_call("resolve_pending", started_at)
         return result
 
-    async def generate_dialogue(self, spec: DialogueSpec) -> str:
+    async def generate_dialogue(self, spec: DialogueSpec) -> DialogueOutput:
         """장면 폴백을 그대로 낸다.
 
         **폴백 말고 다른 문장을 만들지 않는다.** 규칙으로 흉내 낸 대사는 진짜 공급자가 내는
@@ -444,9 +461,28 @@ class MockLLMProvider(LLMProvider):
         started_at = perf_counter()
         self._record_mock_call("generate_dialogue", started_at)
         fallback_reason = getattr(self, "_selection_fallback_reason", None)
-        if fallback_reason is None:
-            return spec.fallback
-        return provider_failure_fallback(spec, fallback_reason)
+        text = (
+            spec.fallback
+            if fallback_reason is None
+            else provider_failure_fallback(spec, fallback_reason)
+        )
+        grounded_scenes = {
+            "recipe",
+            "enemy",
+            "lore",
+            "unsupported",
+            "event_completed",
+            "event_failed",
+        }
+        fact_references = (0,) if spec.facts and spec.scene in grounded_scenes else ()
+        return DialogueOutput(
+            text=text,
+            purpose=spec.scene,
+            fact_references=fact_references,
+            memory_references=(),
+            situation_references=(),
+            accepts_command=spec.command_candidate_present,
+        )
 
     def _record_mock_call(self, step: str, started_at: float) -> None:
         configured_provider = getattr(self, "_configured_provider", "mock")
@@ -624,7 +660,7 @@ class OpenAIProvider(LLMProvider):
             )
             return result
 
-    async def generate_dialogue(self, spec: DialogueSpec) -> str:
+    async def generate_dialogue(self, spec: DialogueSpec) -> DialogueOutput:
         """구조화된 사실 기반 대사를 생성하고 실패하면 장면 폴백으로 복구한다."""
 
         started_at = perf_counter()
@@ -649,7 +685,7 @@ class OpenAIProvider(LLMProvider):
             )
             if not isinstance(response.output_text, str) or not response.output_text.strip():
                 raise _EmptyOutputError
-            result = DialogueOutput.model_validate_json(response.output_text).text
+            result = DialogueOutput.model_validate_json(response.output_text)
             _record_provider_call(
                 step="generate_dialogue", configured_provider="openai", effective_provider="openai",
                 succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
@@ -906,7 +942,7 @@ class LocalLLMProvider(LLMProvider):
             )
             return result
 
-    async def generate_dialogue(self, spec: DialogueSpec) -> str:
+    async def generate_dialogue(self, spec: DialogueSpec) -> DialogueOutput:
         """로컬 모델의 사실 기반 대사를 반환하고 실패하면 장면 폴백으로 복구한다."""
 
         started_at = perf_counter()
@@ -917,6 +953,14 @@ class LocalLLMProvider(LLMProvider):
                     {"role": "system", "content": _DIALOGUE_PROMPTS[spec.surface]},
                     {"role": "user", "content": _dialogue_user_message(spec)},
                 ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "dialogue_output",
+                        "strict": True,
+                        "schema": DialogueOutput.model_json_schema(),
+                    },
+                },
                 temperature=self._dialogue_temperature,
                 max_tokens=self._dialogue_max_tokens,
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
@@ -924,7 +968,7 @@ class LocalLLMProvider(LLMProvider):
             content = response.choices[0].message.content
             if content is None or not content.strip():
                 raise _EmptyOutputError
-            result = DialogueOutput(text=content.strip()).text
+            result = DialogueOutput.model_validate_json(content)
             _record_provider_call(
                 step="generate_dialogue", configured_provider="local", effective_provider="local",
                 succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
@@ -1079,7 +1123,7 @@ class TimingLLMProvider(LLMProvider):
         finally:
             _log_step("resolve_pending", started_at)
 
-    async def generate_dialogue(self, spec: DialogueSpec) -> str:
+    async def generate_dialogue(self, spec: DialogueSpec) -> DialogueOutput:
         started_at = perf_counter()
         try:
             return await self._inner.generate_dialogue(spec)

@@ -33,7 +33,7 @@ from app.models import (
 from app.service import CompanionService, _player_key
 from tests.conftest import make_authenticated_device, make_database, make_settings
 
-METADATA = AIMetadata(provider="mock", model_version="mock-v1", prompt_version="companion-v2")
+METADATA = AIMetadata(provider="mock", model_version="mock-v1", prompt_version="companion-v3")
 PROTECTOR = CredentialProtector(SecretStr("test-only-pepper-not-for-production"))
 
 
@@ -561,7 +561,7 @@ async def test_metadata_reports_provider(
 
     assert result.ai_metadata.provider == "mock"
     assert result.ai_metadata.model_version == "mock-v1"
-    assert result.ai_metadata.prompt_version == "companion-v2"
+    assert result.ai_metadata.prompt_version == "companion-v3"
 
 
 async def test_aclose_delegates_to_provider() -> None:
