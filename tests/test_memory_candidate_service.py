@@ -17,9 +17,11 @@ from app.db.models import (
     SourceRetentionReferenceModel,
 )
 from app.db.source_repository import (
+    OUTBOX_CLAIMED,
     OUTBOX_COMPLETED,
     SOURCE_EVENT,
     SOURCE_MESSAGE,
+    ClaimedSource,
     SourceRepository,
     SourceScope,
 )
@@ -196,6 +198,59 @@ async def test_duplicate_after_restart_reuses_memory_and_adds_second_source() ->
         links = await session.scalar(select(func.count()).select_from(MemorySourceModel))
     assert count == 1
     assert links == 2
+
+
+async def test_similar_or_conflicting_candidate_is_held_without_new_memory() -> None:
+    database = await make_database(make_settings())
+    scope = await _scope(database)
+    first_id = await _message(database, scope, text="나는 밤이 무서워")
+    first_claim = await _claim(database)
+    service = MemoryCandidateService(database)  # type: ignore[arg-type]
+    assert await service.accept_and_acknowledge(
+        first_claim,
+        MemoryCandidate("Preference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, first_id),
+    ) is not None
+
+    conflicting_id = await _message(database, scope, text="나는 밤이 무섭지 않아")
+    conflicting_claim = await _claim(database)
+    assert await service.accept_and_acknowledge(
+        conflicting_claim,
+        MemoryCandidate(
+            "Preference", "나는 밤이 무섭지 않아", 6, scope, SOURCE_MESSAGE, conflicting_id
+        ),
+    ) is None
+
+    async with database.session_factory() as session:
+        count = await session.scalar(select(func.count()).select_from(MemoryModel))
+        outbox = await session.get(SourceOutboxModel, conflicting_claim.source_seq)
+    assert count == 1
+    assert outbox is not None and outbox.state == OUTBOX_COMPLETED
+
+
+async def test_mismatched_claim_cannot_persist_or_acknowledge_a_memory() -> None:
+    database = await make_database(make_settings())
+    scope = await _scope(database)
+    source_id = await _message(database, scope, text="나는 밤이 무서워")
+    claim = await _claim(database)
+    stale_claim = ClaimedSource(
+        source_seq=claim.source_seq,
+        source_type=claim.source_type,
+        source_id=claim.source_id,
+        lease_token="not-the-lease-token",
+        lease_expires_at=claim.lease_expires_at,
+    )
+
+    accepted = await MemoryCandidateService(database).accept_and_acknowledge(  # type: ignore[arg-type]
+        stale_claim,
+        MemoryCandidate("Preference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, source_id),
+    )
+
+    assert accepted is None
+    async with database.session_factory() as session:
+        count = await session.scalar(select(func.count()).select_from(MemoryModel))
+        outbox = await session.get(SourceOutboxModel, claim.source_seq)
+    assert count == 0
+    assert outbox is not None and outbox.state == OUTBOX_CLAIMED
 
 
 async def test_companion_and_foreign_scope_candidates_are_rejected_and_acknowledged() -> None:

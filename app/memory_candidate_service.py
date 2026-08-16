@@ -5,13 +5,21 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 from uuid import uuid4
 
 from sqlalchemy import select
 
 from app.db.connection import Database
-from app.db.models import GameEventModel, MemoryModel, MemorySourceModel, MessageModel
+from app.db.models import (
+    GameEventModel,
+    MemoryModel,
+    MemorySourceModel,
+    MessageModel,
+    SourceOutboxModel,
+)
 from app.db.source_repository import (
+    OUTBOX_CLAIMED,
     ClaimedSource,
     SourceContentDeletedError,
     SourceNotFoundError,
@@ -25,6 +33,7 @@ MEMORY_TYPES = frozenset(
 _MESSAGE_ONLY_TYPES = frozenset({"ProfileFact", "Preference", "Promise"})
 _EVENT_ONLY_TYPES = frozenset({"RelationshipEvidence"})
 _WHITESPACE = re.compile(r"\s+")
+_SIMILARITY_HOLD_THRESHOLD = 0.6
 
 
 class MemoryCandidateRejectedError(ValueError):
@@ -82,6 +91,7 @@ class MemoryCandidateService:
             raise MemoryCandidateRejectedError("Memory text must not be blank.")
 
         async with self._database.session_factory() as session:
+            await self._validate_claim(session, claim, candidate)
             sources = SourceRepository(session)
             try:
                 source = await sources.get_source(
@@ -97,11 +107,26 @@ class MemoryCandidateService:
                     MemoryModel.save_slot_row_id == candidate.scope.save_slot_row_id,
                     MemoryModel.companion_id == candidate.scope.companion_id,
                     MemoryModel.memory_type == candidate.memory_type,
-                    MemoryModel.normalized_text == normalized,
                     MemoryModel.status == "Active",
                 )
             )
-            memory = result.scalar_one_or_none()
+            active_memories = tuple(result.scalars())
+            memory = next(
+                (
+                    item
+                    for item in active_memories
+                    if item.normalized_text == normalized
+                ),
+                None,
+            )
+            if memory is None and any(
+                SequenceMatcher(None, item.normalized_text, normalized).ratio()
+                >= _SIMILARITY_HOLD_THRESHOLD
+                for item in active_memories
+            ):
+                raise MemoryCandidateRejectedError(
+                    "Similar or conflicting active memory is held for later review."
+                )
             created = memory is None
             now = datetime.now(UTC)
             if memory is None:
@@ -150,6 +175,25 @@ class MemoryCandidateService:
                 )
             await session.commit()
             return MemoryAcceptance(memory.memory_id, created)
+
+    @staticmethod
+    async def _validate_claim(
+        session: object, claim: ClaimedSource, candidate: MemoryCandidate
+    ) -> None:
+        outbox = await session.get(SourceOutboxModel, claim.source_seq)  # type: ignore[attr-defined]
+        expires_at = outbox.lease_expires_at if outbox is not None else None
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if (
+            outbox is None
+            or outbox.state != OUTBOX_CLAIMED
+            or outbox.source_type != candidate.source_type
+            or outbox.source_id != candidate.source_id
+            or outbox.lease_token != claim.lease_token
+            or expires_at is None
+            or expires_at <= datetime.now(UTC)
+        ):
+            raise MemoryCandidateRejectedError("Outbox claim is missing, stale, or mismatched.")
 
     async def accept_and_acknowledge(
         self, claim: ClaimedSource, candidate: MemoryCandidate
