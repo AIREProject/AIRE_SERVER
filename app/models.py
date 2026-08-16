@@ -212,3 +212,53 @@ class SituationResponse(StrictModel):
     response_id: StableId
     display_text: str = Field(min_length=1, max_length=4000)
     ai_metadata: AIMetadata
+
+
+class MemoryView(StrictModel):
+    memory_id: StableId
+    save_slot_id: StableId
+    companion_id: StableId
+    memory_type: str = Field(min_length=1, max_length=32)
+    text: str = Field(min_length=1, max_length=4000)
+    importance: int = Field(ge=1, le=10)
+    pinned: bool
+    corrected: bool
+    created_at: datetime
+
+
+class MemoryListResponse(StrictModel):
+    request_id: str
+    memories: list[MemoryView]
+
+
+class SearchMemoriesRequest(StrictModel):
+    save_slot_id: StableId
+    companion_id: StableId
+    query: str = Field(min_length=1, max_length=2000)
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class UpdateMemoryRequest(StrictModel):
+    corrected_text: str | None = Field(default=None, min_length=1, max_length=4000)
+    correction_reason: str | None = Field(default=None, min_length=1, max_length=512)
+    importance: int | None = Field(default=None, ge=1, le=10)
+    pinned: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_correction(self) -> Self:
+        if (self.corrected_text is None) != (self.correction_reason is None):
+            raise ValueError("corrected_text and correction_reason must be provided together.")
+        if self.corrected_text is None and self.importance is None and self.pinned is None:
+            raise ValueError("At least one memory field must be updated.")
+        return self
+
+
+class ResetMemoriesRequest(StrictModel):
+    save_slot_id: StableId
+    companion_id: StableId
+    reason: str = Field(min_length=1, max_length=512)
+
+
+class MemoryResetResponse(StrictModel):
+    request_id: str
+    archived_count: int = Field(ge=0)

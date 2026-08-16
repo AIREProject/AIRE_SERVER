@@ -47,8 +47,9 @@ COMPANION_DEFAULT_LOCATION_ID=forest_camp
 | 개발 Transcript | `data/transcripts/*.jsonl` | 기본 off, opt-in 최대 24시간 |
 | 기존 장기기억 | SQLite `episodic_memories` | P2에서는 조회만 유지 |
 
-현재 일반 사용자용 Memory 목록·삭제·초기화 API는 없습니다. Admin API만 DB Memory CRUD를
-제공합니다.
+일반 사용자는 `/api/v1/memories`에서 인증된 save-slot/companion scope의 Active memory를
+조회하고 정정·삭제·reset할 수 있습니다. 삭제는 `Archived` tombstone 전이이며 canonical source
+원문을 변경하지 않습니다. legal erasure와 Admin Memory CRUD는 현재 범위 밖입니다.
 
 ## 3. `recent_event_ids`
 

@@ -215,7 +215,9 @@ class MemoryModel(Base):
             "'Promise', 'RelationshipEvidence')",
             name="ck_memories_type",
         ),
-        CheckConstraint("status = 'Active'", name="ck_memories_status"),
+        CheckConstraint(
+            "status IN ('Active', 'Archived')", name="ck_memories_status"
+        ),
         CheckConstraint("importance >= 1 AND importance <= 10", name="ck_memories_importance"),
     )
 
@@ -234,6 +236,8 @@ class MemoryModel(Base):
     recall_count: Mapped[int] = mapped_column(Integer, default=0)
     embedding: Mapped[list[float] | None] = mapped_column(JSON)
     embedding_model: Mapped[str | None] = mapped_column(String(128))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_reason: Mapped[str | None] = mapped_column(String(512))
 
 
 class MemorySourceModel(Base):
@@ -251,6 +255,18 @@ class MemorySourceModel(Base):
     source_id: Mapped[str] = mapped_column(String(128), index=True)
     source_mode: Mapped[str] = mapped_column(String(16))
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class MemoryCorrectionModel(Base):
+    """Append-only user corrections; canonical source text is never overwritten."""
+
+    __tablename__ = "memory_corrections"
+
+    row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    memory_id: Mapped[str] = mapped_column(ForeignKey("memories.memory_id"), index=True)
+    corrected_text: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(String(512))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 

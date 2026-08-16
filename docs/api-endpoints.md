@@ -292,6 +292,24 @@ canonical 동료 Message ID입니다. 사용자 Message를 먼저 commit하므�
 원문 없는 audit/idempotency ledger는 기본·최대 30일 보존합니다. Memory가 source를 참조하면
 `MemorySource`로 승격되고 마지막 참조가 제거되면 즉시 purge 대상 `Transient`로 돌아갑니다.
 
+### 4.6 사용자 Memory 제어
+
+인증된 device는 자기 `profile_id` 안의 `save_slot_id`/`companion_id` scope만 조회·수정할 수
+있습니다. `GET /api/v1/memories?save_slot_id={id}&companion_id={id}`와
+`GET /api/v1/memories/{memory_id}`는 Active memory만 반환합니다.
+`POST /api/v1/memories/search`는 `{save_slot_id, companion_id, query, limit?}`를 받고,
+사용자 정정값을 반영한 관련 Active memory만 최대 50개까지 반환합니다. 빈 검색어와 범위 밖
+memory는 허용하지 않으며, Archived memory는 검색·목록·상세에 나타나지 않습니다.
+`PATCH /api/v1/memories/{memory_id}`는 `importance`, `pinned` 또는
+`corrected_text`와 필수 `correction_reason`을 받습니다. 정정은 append-only audit으로 저장되며
+canonical Message/Event 원문은 변경하지 않습니다.
+
+`DELETE /api/v1/memories/{memory_id}?reason={reason}`와
+`POST /api/v1/memories/reset`은 memory를 `Archived`로 전이합니다. 이는 legal erasure가 아니라
+durable 사용자 삭제 tombstone 정책입니다. retrieval/prompt에서 즉시 제외되고 연결 source outbox는
+Tombstone이 되어 restart 뒤 재증류되지 않습니다. shared source 원문은 마지막 Active reference가
+사라질 때까지 보존하며, 마지막 reference가 해제된 source는 retention purge 대상으로 전환됩니다.
+
 ## 5. GameEvent와 Command Result
 
 두 endpoint는 `GameClient` 전용이고, body ID와 같은 `X-Request-ID` 및 정확한 raw request

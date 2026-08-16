@@ -26,11 +26,14 @@ from app.db.source_repository import (
     SourceRepository,
     SourceScope,
 )
+from app.identity import AuthenticatedDevice, DeviceRole
 from app.memory_candidate_service import (
     MemoryCandidate,
     MemoryCandidateService,
     render_event_memory,
 )
+from app.memory_service import MemoryService
+from app.retention import RetentionService
 from tests.conftest import make_database, make_settings
 
 _NOW = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
@@ -169,6 +172,44 @@ async def test_direct_realworld_message_creates_memory_and_promotes_source() -> 
     assert source is not None and source.storage_class == "MemorySource"
     assert references == links == 1
     assert outbox is not None and outbox.state == OUTBOX_COMPLETED
+
+
+async def test_user_delete_releases_last_source_and_source_first_purge_archives_memory() -> None:
+    database = await make_database(make_settings())
+    scope = await _scope(database)
+    source_id = await _message(database, scope, text="나는 비를 좋아해")
+    claim = await _claim(database)
+    accepted = await MemoryCandidateService(database).accept_and_acknowledge(  # type: ignore[arg-type]
+        claim,
+        MemoryCandidate("Preference", "나는 비를 좋아해", 6, scope, SOURCE_MESSAGE, source_id),
+    )
+    assert accepted is not None
+    identity = AuthenticatedDevice(scope.profile_id, "device-1", DeviceRole.WEB_CLIENT)
+    async with database.session_factory() as session:
+        await MemoryService(session).delete(identity, accepted.memory_id, reason="user-request")
+        source = await session.get(MessageModel, source_id)
+        memory = await session.get(MemoryModel, accepted.memory_id)
+        outbox = await session.get(SourceOutboxModel, claim.source_seq)
+        assert source is not None and source.storage_class == "Transient"
+        assert source.expires_at is not None
+        assert memory is not None and memory.status == "Archived"
+        assert outbox is not None and outbox.state == "Tombstone"
+
+    # A source can be removed independently of a memory row; the next retention
+    # sweep archives that memory rather than leaving an invalid Active record.
+    async with database.session_factory() as session:
+        memory = await session.get(MemoryModel, accepted.memory_id)
+        assert memory is not None
+        memory.status = "Active"
+        source = await session.get(MessageModel, source_id)
+        assert source is not None
+        source.content_deleted_at = _NOW
+        await session.commit()
+    await RetentionService(database).sweep(now=_NOW)  # type: ignore[arg-type]
+    async with database.session_factory() as session:
+        memory = await session.get(MemoryModel, accepted.memory_id)
+        assert memory is not None and memory.status == "Archived"
+        assert memory.archived_reason == "SourcePurged"
 
 
 async def test_duplicate_after_restart_reuses_memory_and_adds_second_source() -> None:

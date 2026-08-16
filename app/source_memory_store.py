@@ -228,7 +228,7 @@ class SourceBackedMemoryStore:
         if message_ids:
             result = await session.execute(  # type: ignore[attr-defined]
                 select(MessageModel).where(
-                    MessageModel.message_id.in_(message_ids),
+                    MessageModel.row_id.in_(message_ids),
                     MessageModel.profile_id == scope.profile_id,
                     MessageModel.save_slot_row_id == scope.save_slot_row_id,
                     MessageModel.companion_id == scope.companion_id,
@@ -236,18 +236,18 @@ class SourceBackedMemoryStore:
                     MessageModel.content.is_not(None),
                 )
             )
-            valid.update((SOURCE_MESSAGE, row.message_id) for row in result.scalars())
+            valid.update((SOURCE_MESSAGE, row.row_id) for row in result.scalars())
         if event_ids:
             result = await session.execute(  # type: ignore[attr-defined]
                 select(GameEventModel).where(
-                    GameEventModel.event_id.in_(event_ids),
+                    GameEventModel.row_id.in_(event_ids),
                     GameEventModel.profile_id == scope.profile_id,
                     GameEventModel.save_slot_row_id == scope.save_slot_row_id,
                     GameEventModel.companion_id == scope.companion_id,
                     GameEventModel.content_deleted_at.is_(None),
                 )
             )
-            valid.update((SOURCE_EVENT, row.event_id) for row in result.scalars())
+            valid.update((SOURCE_EVENT, row.row_id) for row in result.scalars())
         return valid
 
     async def _record_recall(

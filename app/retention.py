@@ -31,11 +31,13 @@ from app.db.models import (
     EpisodicMemoryModel,
     GameEventModel,
     LegacyImportReportModel,
+    MemoryModel,
+    MemorySourceModel,
     MessageModel,
     SourceOutboxModel,
     SourceRetentionReferenceModel,
 )
-from app.db.source_repository import SOURCE_EVENT, SOURCE_MESSAGE, SourceRepository
+from app.db.source_repository import SOURCE_EVENT, SOURCE_MESSAGE, SourceRepository, SourceScope
 
 if TYPE_CHECKING:
     from app.brain.transcript import TranscriptStore
@@ -458,6 +460,7 @@ class RetentionService:
 
     async def sweep(self, *, now: datetime | None = None) -> RetentionSweepResult:
         moment = _utc(now)
+        await self._archive_memories_without_source(moment)
         message_count, event_count = await self._purge_canonical(moment)
         audit_count = await self._purge_expired_audit(moment)
         transcript_count = 0
@@ -544,6 +547,49 @@ class RetentionService:
                 event_count += 1
             await session.commit()
         return message_count, event_count
+
+    async def _archive_memories_without_source(self, now: datetime) -> None:
+        """Fail closed when a canonical source was removed before its memory."""
+
+        async with self._database.session_factory() as session:
+            links = tuple((await session.execute(select(MemorySourceModel))).scalars())
+            source_repository = SourceRepository(session)
+            affected: set[str] = set()
+            for link in links:
+                source = await session.get(
+                    MessageModel if link.source_type == SOURCE_MESSAGE else GameEventModel,
+                    link.source_id,
+                )
+                if source is not None and getattr(source, "content_deleted_at", None) is None:
+                    continue
+                memory = await session.get(MemoryModel, link.memory_id)
+                if memory is None or memory.status != "Active":
+                    continue
+                memory.status = "Archived"
+                memory.archived_at = now
+                memory.archived_reason = "SourcePurged"
+                affected.add(memory.memory_id)
+            for memory_id in affected:
+                memory = await session.get(MemoryModel, memory_id)
+                if memory is None:
+                    continue
+                scope = SourceScope(memory.profile_id, memory.save_slot_row_id, memory.companion_id)
+                result = await session.execute(
+                    select(MemorySourceModel).where(MemorySourceModel.memory_id == memory_id)
+                )
+                for link in result.scalars():
+                    if await session.get(
+                        MessageModel if link.source_type == SOURCE_MESSAGE else GameEventModel,
+                        link.source_id,
+                    ) is not None:
+                        await source_repository.release(
+                            link.source_type, link.source_id, memory_id,
+                            scope=scope, now=now, commit=False,
+                        )
+                    await source_repository.mark_tombstone(
+                        link.source_type, link.source_id, now=now, commit=False
+                    )
+            await session.commit()
 
     async def _purge_expired_audit(self, now: datetime) -> int:
         deleted = 0

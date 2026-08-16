@@ -29,6 +29,7 @@ from app.errors import (
     IdempotencyRecordExpiredError,
     IdentityScopeMismatchError,
     InvalidPairingCodeError,
+    MemoryNotFoundError,
     OfflineTaskInvalidRequestError,
     OfflineTaskNotFoundError,
     OfflineTaskTransitionError,
@@ -175,6 +176,12 @@ APPLICATION_ERROR_MAP: dict[type[Exception], tuple[int, ErrorCode, str, bool]] =
         409,
         ErrorCode.COMMAND_RESULT_TRANSITION,
         "The command result cannot make that state transition.",
+        False,
+    ),
+    MemoryNotFoundError: (
+        404,
+        ErrorCode.MEMORY_NOT_FOUND,
+        "The requested memory was not found in this authenticated scope.",
         False,
     ),
     UnauthorizedAdminError: (
