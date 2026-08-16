@@ -263,11 +263,7 @@ def _observe(
         bundle.provider.failures if isinstance(bundle.provider, InvalidLLMProvider) else ()
     )
     fallback = bundle.injected_fallback or any(failure.fallback_used for failure in failures)
-    fact_ids: tuple[str, ...] | str = (
-        "not_observed"
-        if fixture.expect.allowed_fact_ids or fixture.expect.forbidden_fact_ids
-        else ()
-    )
+    fact_ids: tuple[str, ...] | str = tuple(provenance.fact_ids)
     memory_persisted = after.episodic_memories > before.episodic_memories
     side_effect = "none" if before == after else "changed"
     return ObservedEvaluation(

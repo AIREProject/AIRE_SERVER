@@ -24,6 +24,6 @@
     "fallback_reason": null,
     "memory_persisted": false,
     "db_side_effect": "none",
-    "known_gaps": {"fact_ids": "CAI-P0-T03"}
+    "known_gaps": {}
   }
 }

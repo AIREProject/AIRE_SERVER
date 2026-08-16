@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from app.models import Surface
 
+from .contract import FallbackReason
 from .store import ConversationTurn
 
 if TYPE_CHECKING:
@@ -107,6 +108,8 @@ class SurfaceProfile:
     lore_missing: FallbackLine
     greeting: str
     thanks: str
+    provider_retry: str
+    provider_invalid: str
     # 상황 이벤트(`situation.py`)의 LLM 실패 시 폴백. 어떤 상황이 왔는지 모르는 채로 안전해야
     # 하므로 구체적인 내용을 담지 않는다 — `FallbackLine` 이 아닌 이유: 상황 자체가 이미
     # `[상황]` 사실 블록이라 별도의 `fact` 짝이 필요 없다.
@@ -136,6 +139,8 @@ SURFACE_PROFILES: dict[Surface, SurfaceProfile] = {
         ),
         greeting="안녕! 오늘은 어디부터 둘러볼까?",
         thanks="별말을 다 해. 필요하면 언제든 불러 줘.",
+        provider_retry="지금은 답을 만들기 어려워. 잠시 뒤 다시 물어봐 줘.",
+        provider_invalid="답을 안전하게 확인하지 못했어. 질문을 조금 다르게 말해 줘.",
         situation="방금 그거, 봤어?",
     ),
     Surface.MOBILE: SurfaceProfile(
@@ -161,9 +166,22 @@ SURFACE_PROFILES: dict[Surface, SurfaceProfile] = {
         ),
         greeting="안녕! 무슨 일이야?",
         thanks="별말을. 또 필요하면 말해.",
+        provider_retry="지금은 답을 만들기 어려워. 잠시 뒤 다시 물어봐 줘.",
+        provider_invalid="답을 안전하게 확인하지 못했어. 질문을 조금 다르게 말해 줘.",
         situation="방금 거기 무슨 일 있었어?",
     ),
 }
+
+
+def provider_failure_fallback(spec: DialogueSpec, reason: FallbackReason) -> str:
+    """일반 대화만 실패 원인에 맞춰 안내하고 행동·사실 장면은 기존 대사를 보존한다."""
+
+    if spec.scene != "conversation":
+        return spec.fallback
+    surface = SURFACE_PROFILES[spec.surface]
+    if reason in ("provider_timeout", "provider_unavailable"):
+        return surface.provider_retry
+    return surface.provider_invalid
 
 
 _NUMBER_PATTERN = re.compile(r"\d+")
@@ -210,13 +228,22 @@ async def render_observed(llm: LLMProvider, spec: DialogueSpec) -> RenderedDialo
 
     try:
         generated = await llm.generate_dialogue(spec)
-    except Exception:
-        result = RenderedDialogue(text=spec.fallback, sanitizer_succeeded=False)
+    except Exception as error:
+        reason: FallbackReason = (
+            "provider_timeout"
+            if isinstance(error, TimeoutError)
+            or "timeout" in type(error).__name__.casefold()
+            else "provider_unavailable"
+        )
+        result = RenderedDialogue(
+            text=provider_failure_fallback(spec, reason),
+            sanitizer_succeeded=False,
+        )
         _record_sanitizer_result(result.sanitizer_succeeded)
         return result
     sanitized = sanitize(generated, spec)
     result = RenderedDialogue(
-        text=sanitized or spec.fallback,
+        text=sanitized or provider_failure_fallback(spec, "sanitizer_rejection"),
         sanitizer_succeeded=sanitized is not None,
     )
     _record_sanitizer_result(result.sanitizer_succeeded)

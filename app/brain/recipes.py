@@ -86,6 +86,14 @@ class RecipeQuery:
     targets: tuple[RecipeTarget, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class RecipeFactResult:
+    """Repository가 검증한 Recipe 응답과 그 응답에 사용한 stable source ID."""
+
+    text: str
+    fact_ids: tuple[str, ...]
+
+
 def _join_ingredients(ingredients: Iterable[str]) -> str:
     parts = list(ingredients)
     if len(parts) < 2:
@@ -196,6 +204,48 @@ class RecipeRepository:
         if not descriptions:
             return None
         return DialogueFact(kind="recipe", text=" ".join(descriptions))
+
+    def result_for_query(self, query: RecipeQuery) -> RecipeFactResult | None:
+        """검증된 query mode를 목록·상세·비교 Repository 응답으로 변환한다."""
+
+        if query.mode is RecipeQueryMode.LIST_KNOWN:
+            if query.targets:
+                return None
+            targets = tuple(
+                self._targets_by_result[result_id]
+                for result_id in sorted(self._targets_by_result)
+            )
+            names = tuple(
+                self._result_items[target.result_item_id].name_ko for target in targets
+            )
+            if not names:
+                return None
+            return RecipeFactResult(
+                text=f"확인된 제작법은 {', '.join(names)}이야.",
+                fact_ids=self._fact_ids_for(targets),
+            )
+
+        if query.mode is RecipeQueryMode.DETAIL and len(query.targets) == 1:
+            fact = self.fact_for_target(query.targets[0])
+            if fact is None:
+                return None
+            return RecipeFactResult(
+                text=fact.text,
+                fact_ids=self._fact_ids_for(query.targets),
+            )
+
+        if query.mode is RecipeQueryMode.COMPARE and len(query.targets) == 2:
+            if query.targets[0] == query.targets[1]:
+                return None
+            facts = tuple(self.fact_for_target(target) for target in query.targets)
+            if any(fact is None for fact in facts):
+                return None
+            return RecipeFactResult(
+                text="비교하면, " + " ".join(fact.text for fact in facts if fact is not None),
+                fact_ids=self._fact_ids_for(query.targets),
+            )
+
+        return None
 
     def targets_in(self, query: str) -> tuple[RecipeTarget, ...]:
         """별칭 또는 stable Recipe ID가 가리키는 검증된 결과 대상을 반환한다."""
@@ -330,6 +380,14 @@ class RecipeRepository:
         if any(alias_pattern(alias).search(query) is not None for alias in _CRAFT_RESULT_ALIASES):
             matched_result_ids.add("Sword_Iron")
         return matched_result_ids
+
+    @staticmethod
+    def _fact_ids_for(targets: Iterable[RecipeTarget]) -> tuple[str, ...]:
+        return tuple(
+            f"recipe:{recipe_id}"
+            for target in targets
+            for recipe_id in target.recipe_ids
+        )
 
     def _describe_recipe(self, recipe: Recipe) -> str:
         result = self._result_items[recipe.result_item_id]

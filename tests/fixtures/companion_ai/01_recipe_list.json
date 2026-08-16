@@ -10,20 +10,28 @@
   "script": {
     "provider": "scripted-v1",
     "responses": [
-      {"method": "classify_top", "semantic_key": "top", "result": "recipe"},
-      {"method": "generate_dialogue", "semantic_key": "dialogue:unsupported", "result": "확인된 제작법 목록은 아직 연결되지 않았어."}
+      {"method": "classify_top", "semantic_key": "top", "result": "recipe"}
     ]
   },
   "expect": {
     "top_intent": "recipe",
     "query_mode": "list_known",
-    "allowed_fact_ids": ["recipe:recipe-3", "recipe:recipe-4"],
+    "allowed_fact_ids": [
+      "recipe:recipe-8",
+      "recipe:recipe-3",
+      "recipe:recipe-5",
+      "recipe:smelt-3",
+      "recipe:smelt-4",
+      "recipe:recipe-9",
+      "recipe:smelt-1",
+      "recipe:recipe-6"
+    ],
     "forbidden_fact_ids": ["recipe:unknown-test-item"],
     "allowed_command_types": [],
     "fallback": false,
     "fallback_reason": null,
     "memory_persisted": false,
     "db_side_effect": "none",
-    "known_gaps": {"fact_ids": "CAI-P0-T03"}
+    "known_gaps": {}
   }
 }

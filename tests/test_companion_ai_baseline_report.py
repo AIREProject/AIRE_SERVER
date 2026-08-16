@@ -426,7 +426,6 @@ def test_fixture_report_contains_one_deidentified_result(
 
 def test_metric_contract_rejects_unregistered_gap() -> None:
     fixture = FIXTURES[0].model_copy(deep=True)
-    fixture.expect.known_gaps.pop("fact_ids")
     observation = ProvenanceObservation(
         top_intent=fixture.expect.top_intent,
         query_mode=None,
@@ -461,10 +460,10 @@ def test_report_summary_is_deterministic(baseline_report: BaselineReport) -> Non
         for summary in baseline_report.summaries
     ) == (
         ("classification_accuracy", "success", 13, 0, 0, 0, 13, 13, 1.0),
-        ("core_response_rate", "success", 0, 5, 3, 0, 0, 5, 0.0),
-        ("irrelevant_response_rate", "failure", 1, 0, 5, 2, 0, 1, 0.0),
-        ("unnecessary_refusal_rate", "failure", 3, 5, 0, 0, 5, 8, 0.625),
-        ("hallucination_rate", "failure", 1, 0, 4, 3, 0, 1, 0.0),
+        ("core_response_rate", "success", 4, 3, 1, 0, 4, 7, 4 / 7),
+        ("irrelevant_response_rate", "failure", 5, 0, 1, 2, 0, 5, 0.0),
+        ("unnecessary_refusal_rate", "failure", 5, 3, 0, 0, 3, 8, 0.375),
+        ("hallucination_rate", "failure", 5, 0, 0, 3, 0, 5, 0.0),
         ("unnecessary_clarification_rate", "failure", 0, 0, 0, 8, 0, 0, None),
         ("structured_output_failure_rate", "failure", 0, 2, 3, 0, 2, 2, 1.0),
     )
@@ -475,10 +474,6 @@ def test_report_summary_is_deterministic(baseline_report: BaselineReport) -> Non
         if metric.status == "fail"
     )
     assert failure_rows == (
-        ("p0.recipe.list.001", "core_response_rate", "unexpected_refusal"),
-        ("p0.recipe.list.001", "unnecessary_refusal_rate", "unexpected_refusal"),
-        ("p0.recipe.compare.001", "core_response_rate", "unexpected_refusal"),
-        ("p0.recipe.compare.001", "unnecessary_refusal_rate", "unexpected_refusal"),
         ("p0.conversation.greeting.001", "core_response_rate", "unexpected_refusal"),
         ("p0.conversation.greeting.001", "unnecessary_refusal_rate", "unexpected_refusal"),
         ("p0.preference.share.001", "core_response_rate", "unexpected_refusal"),

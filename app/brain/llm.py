@@ -4,7 +4,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import perf_counter
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -22,7 +22,12 @@ from .command_intent import (
     CommandIntentParser,
 )
 from .contract import FallbackReason, ProviderCallProvenance
-from .dialogue import SCENE_GUIDE, SURFACE_PROFILES, DialogueSpec
+from .dialogue import (
+    SCENE_GUIDE,
+    SURFACE_PROFILES,
+    DialogueSpec,
+    provider_failure_fallback,
+)
 from .intent import (
     CommandClassification,
     CommandLabel,
@@ -438,7 +443,10 @@ class MockLLMProvider(LLMProvider):
 
         started_at = perf_counter()
         self._record_mock_call("generate_dialogue", started_at)
-        return spec.fallback
+        fallback_reason = getattr(self, "_selection_fallback_reason", None)
+        if fallback_reason is None:
+            return spec.fallback
+        return provider_failure_fallback(spec, fallback_reason)
 
     def _record_mock_call(self, step: str, started_at: float) -> None:
         configured_provider = getattr(self, "_configured_provider", "mock")
@@ -649,10 +657,17 @@ class OpenAIProvider(LLMProvider):
             return result
         except Exception as error:
             # 네트워크, 인증, 응답 검증 오류가 사용자 요청 전체를 실패시키지 않게 한다.
-            result = await _without_provider_observation(self._fallback.generate_dialogue(spec))
+            reason = _fallback_reason(error)
+            fallback_spec = replace(
+                spec,
+                fallback=provider_failure_fallback(spec, reason),
+            )
+            result = await _without_provider_observation(
+                self._fallback.generate_dialogue(fallback_spec)
+            )
             _record_provider_call(
                 step="generate_dialogue", configured_provider="openai", effective_provider="mock",
-                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                succeeded=False, fallback_used=True, fallback_reason=reason,
                 started_at=started_at,
             )
             return result
@@ -917,10 +932,17 @@ class LocalLLMProvider(LLMProvider):
             return result
         except Exception as error:
             # 로컬 서버 중단이나 호환되지 않는 응답이 API 요청 전체를 실패시키지 않게 한다.
-            result = await _without_provider_observation(self._fallback.generate_dialogue(spec))
+            reason = _fallback_reason(error)
+            fallback_spec = replace(
+                spec,
+                fallback=provider_failure_fallback(spec, reason),
+            )
+            result = await _without_provider_observation(
+                self._fallback.generate_dialogue(fallback_spec)
+            )
             _record_provider_call(
                 step="generate_dialogue", configured_provider="local", effective_provider="mock",
-                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                succeeded=False, fallback_used=True, fallback_reason=reason,
                 started_at=started_at,
             )
             return result

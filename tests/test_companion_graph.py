@@ -35,6 +35,7 @@ from app.brain.memory import (
 from app.brain.recipes import RecipeRepository
 from app.brain.resources import MAX_GATHER_QUANTITY, ResourceRepository
 from app.brain.store import MAX_ASK_COUNT, InMemoryConversationStore, PendingSlot
+from app.gamedata.dataset import ITEMS
 from app.models import CommandType, Surface, TimeContext, TimeSource
 
 
@@ -539,6 +540,48 @@ class RecordingProvider(MockLLMProvider):
     async def generate_dialogue(self, spec: DialogueSpec) -> str:
         self.dialogue_specs.append(spec)
         return await super().generate_dialogue(spec)
+
+
+async def test_recipe_list_detail_and_compare_bypass_dialogue_generation() -> None:
+    llm = RecordingProvider()
+    brain = CompanionBrain(llm)
+
+    listed = await say(brain, "레시피 알고 있는 거 있어?", key="recipe-list")
+    detailed = await say(brain, "돌도끼 레시피 알려줘", key="recipe-detail")
+    compared = await say(
+        brain,
+        "돌도끼와 돌곡괭이 레시피를 비교해 줘",
+        key="recipe-compare",
+    )
+
+    assert llm.dialogue_specs == []
+    assert "돌도끼" in listed.text
+    copper_ingot = next(item.name_ko for item in ITEMS if item.item_id == "CopperIngot")
+    assert copper_ingot in listed.text
+    assert detailed.provenance is not None
+    assert detailed.provenance.repository_match is True
+    assert detailed.provenance.final_response_source == "game_repository"
+    assert detailed.provenance.fact_ids == ("recipe:recipe-3",)
+    assert compared.provenance is not None
+    assert compared.provenance.repository_match is True
+    assert compared.provenance.final_response_source == "game_repository"
+    assert compared.provenance.fact_ids == ("recipe:recipe-3", "recipe:recipe-4")
+
+
+async def test_ambiguous_and_unknown_recipe_use_distinct_fixed_responses() -> None:
+    llm = RecordingProvider()
+    brain = CompanionBrain(llm)
+
+    ambiguous = await say(brain, "그거 어떻게 만들어?", key="recipe-ambiguous")
+    unknown = await say(brain, "전설검 레시피 알려줘", key="recipe-unknown")
+
+    assert ambiguous.text == "어떤 제작법을 말하는지 대상 하나만 알려 줘."
+    assert unknown.text == (
+        "확인된 제작법에 없는 대상이야. 이름이나 Recipe ID를 다시 확인해 줘."
+    )
+    assert ambiguous.action is None
+    assert unknown.action is None
+    assert llm.dialogue_specs == []
 
 
 async def test_game_time_reaches_dialogue_but_not_classifiers() -> None:

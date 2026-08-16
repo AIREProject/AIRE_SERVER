@@ -1,7 +1,7 @@
 from app.brain.command_intent import RECIPE_PATTERN
 from app.brain.intent import RecipeQueryMode
-from app.brain.recipes import RecipeRepository
-from app.gamedata.dataset import ITEMS, RECIPES
+from app.brain.recipes import RecipeQuery, RecipeRepository, RecipeTarget
+from app.gamedata.dataset import ITEMS, RECIPES, SMELTING_RECIPES
 
 
 def _result_name(result_item_id: str) -> str:
@@ -123,3 +123,54 @@ def test_explicit_craft_request_is_not_a_recipe_query() -> None:
 
     assert repository.is_craft_request("철검 하나 만들어") is True
     assert repository.query_for("철검 하나 만들어") is None
+
+
+def test_list_known_returns_every_unique_crafting_and_smelting_result_once() -> None:
+    repository = RecipeRepository()
+    query = repository.query_for("레시피 알고 있는 거 있어?")
+
+    assert query is not None
+    result = repository.result_for_query(query)
+
+    assert result is not None
+    expected_by_result: dict[str, list[str]] = {}
+    for recipe in RECIPES:
+        expected_by_result.setdefault(recipe.result_item_id, []).append(recipe.recipe_id)
+    for recipe in SMELTING_RECIPES:
+        expected_by_result.setdefault(recipe.result_item_id, []).append(recipe.smelt_id)
+    names_by_id = {item.item_id: item.name_ko for item in ITEMS}
+    listed_names = result.text.removeprefix("확인된 제작법은 ").removesuffix("이야.").split(", ")
+
+    assert listed_names == [names_by_id[result_id] for result_id in sorted(expected_by_result)]
+    assert result.fact_ids == tuple(
+        f"recipe:{recipe_id}"
+        for result_id in sorted(expected_by_result)
+        for recipe_id in expected_by_result[result_id]
+    )
+
+
+def test_compare_returns_only_two_canonical_target_facts() -> None:
+    repository = RecipeRepository()
+    query = repository.query_for("돌도끼와 돌곡괭이 레시피를 비교해 줘")
+
+    assert query is not None
+    result = repository.result_for_query(query)
+
+    assert result is not None
+    assert result.text.startswith("비교하면, ")
+    assert "돌도끼" in result.text
+    assert "돌곡괭이" in result.text
+    assert result.fact_ids == ("recipe:recipe-3", "recipe:recipe-4")
+
+    assert repository.result_for_query(
+        RecipeQuery(RecipeQueryMode.COMPARE, query.targets[:1])
+    ) is None
+    assert repository.result_for_query(
+        RecipeQuery(RecipeQueryMode.COMPARE, (*query.targets, query.targets[0]))
+    ) is None
+    assert repository.result_for_query(
+        RecipeQuery(
+            RecipeQueryMode.COMPARE,
+            (query.targets[0], RecipeTarget("Pickaxe_Stone", ("recipe-999",))),
+        )
+    ) is None

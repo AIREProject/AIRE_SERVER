@@ -8,10 +8,11 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from app.brain import CompanionBrain, CompanionTurn, SituationTurn
-from app.brain.dialogue import DialogueSpec
+from app.brain.dialogue import SURFACE_PROFILES, DialogueSpec
 from app.brain.llm import LocalLLMProvider, MockLLMProvider
 from app.credentials import CredentialProtector
 from app.main import create_app
+from app.models import Surface
 from tests.conftest import make_authenticated_device, make_database, make_settings
 
 PROTECTOR = CredentialProtector(SecretStr("test-only-pepper-not-for-production"))
@@ -25,6 +26,12 @@ class _UnsafeDialogueProvider(MockLLMProvider):
     async def generate_dialogue(self, spec: DialogueSpec) -> str:
         del spec
         return "확인되지 않은 수치 999를 알려 줄게."
+
+
+class _InvalidConversationProvider(MockLLMProvider):
+    async def generate_dialogue(self, spec: DialogueSpec) -> str:
+        del spec
+        return ""
 
 
 class _FakeCompletions:
@@ -89,7 +96,21 @@ async def test_local_call_failure_records_mock_fallback_without_error_text(
     assert reply.provenance.final_fallback_reason == reason
     assert all(call.configured_provider == "local" for call in reply.provenance.provider_calls)
     assert all(call.fallback_used for call in reply.provenance.provider_calls)
+    assert reply.text == SURFACE_PROFILES[Surface.GAME].provider_retry
     assert "secret failure detail" not in repr(reply.provenance)
+
+
+async def test_recipe_repository_response_survives_provider_classification_failure() -> None:
+    reply = await CompanionBrain(
+        _local_provider(TimeoutError(), RuntimeError("dialogue must not be called"))
+    ).respond(_turn("돌도끼 레시피 알려줘"))
+
+    assert reply.text.startswith("돌도끼는 ")
+    assert reply.provenance is not None
+    assert reply.provenance.repository_match is True
+    assert reply.provenance.final_response_source == "game_repository"
+    assert reply.provenance.final_fallback_reason == "provider_timeout"
+    assert [call.step for call in reply.provenance.provider_calls] == ["classify_top"]
 
 
 @pytest.mark.parametrize(
@@ -115,6 +136,17 @@ async def test_route_fallback_and_final_local_dialogue_keep_both_sources(
     assert reply.provenance.provider_calls[-1].succeeded is True
 
 
+async def test_empty_conversation_output_uses_safe_guidance() -> None:
+    provider = _local_provider('{"intent":"conversation"}', " ")
+
+    reply = await CompanionBrain(provider).respond(_turn("안녕, 마코"))
+
+    assert reply.text == SURFACE_PROFILES[Surface.GAME].provider_invalid
+    assert reply.provenance is not None
+    assert reply.provenance.final_response_source == "mock_fallback"
+    assert reply.provenance.final_fallback_reason == "empty_output"
+
+
 async def test_sanitizer_rejection_has_a_distinct_final_source() -> None:
     reply = await CompanionBrain(_UnsafeDialogueProvider()).respond(
         _turn("골리앗 약점이 뭐야?")
@@ -124,6 +156,15 @@ async def test_sanitizer_rejection_has_a_distinct_final_source() -> None:
     assert reply.provenance.repository_match is True
     assert reply.provenance.fact_ids == ("Goliath",)
     assert reply.provenance.sanitizer_succeeded is False
+    assert reply.provenance.final_response_source == "validation_rejection"
+    assert reply.provenance.final_fallback_reason == "sanitizer_rejection"
+
+
+async def test_conversation_sanitizer_rejection_uses_safe_guidance() -> None:
+    reply = await CompanionBrain(_InvalidConversationProvider()).respond(_turn("안녕, 마코"))
+
+    assert reply.text == SURFACE_PROFILES[Surface.GAME].provider_invalid
+    assert reply.provenance is not None
     assert reply.provenance.final_response_source == "validation_rejection"
     assert reply.provenance.final_fallback_reason == "sanitizer_rejection"
 

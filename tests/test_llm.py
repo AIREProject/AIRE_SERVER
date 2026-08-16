@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.brain.dialogue import DialogueSpec
+from app.brain.dialogue import SURFACE_PROFILES, DialogueSpec
 from app.brain.intent import CommandLabel, ResourceSlot, TopIntent
 from app.brain.llm import (
     LocalLLMProvider,
@@ -401,7 +401,9 @@ async def test_local_provider_falls_back_when_call_fails() -> None:
         fallback="안녕! 오늘은 어디부터 둘러볼까?",
         user_text="안녕",
     )
-    assert await provider.generate_dialogue(spec) == spec.fallback
+    assert await provider.generate_dialogue(spec) == (
+        SURFACE_PROFILES[Surface.GAME].provider_retry
+    )
 
 
 @pytest.mark.asyncio

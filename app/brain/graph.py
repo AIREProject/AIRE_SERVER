@@ -554,29 +554,39 @@ def build_companion_graph(
 
     async def recipe_node(state: CompanionState) -> CompanionUpdate:
         query = state.get("recipe_query")
-        target = (
-            query.targets[0]
-            if query is not None
-            and query.mode is RecipeQueryMode.DETAIL
-            and len(query.targets) == 1
-            else None
-        )
-        fact = recipes.fact_for_target(target) if target is not None else None
-        if fact is not None:
-            # RecipeRepository가 이미 검증된 재료·수량·작업대·시간 문장을 만든다. 다시
-            # LLM에 맡기면 필수 사실을 생략하거나 World Context Item을 섞을 수 있다.
-            return {
-                "display_text": fact.text,
-                "repository_match": True,
-                "next_recipe_reference": target,
-            }
+        if query is not None:
+            result = recipes.result_for_query(query)
+            if result is not None:
+                # RecipeRepository가 이미 검증된 목록 또는 재료·수량·작업대·시간 문장을
+                # 만든다. 다시 LLM에 맡기면 사실을 생략하거나 World Context Item을 섞을 수
+                # 있다. 직전 참조는 상세 target 하나일 때만 남긴다.
+                reference = (
+                    query.targets[0]
+                    if query.mode is RecipeQueryMode.DETAIL and len(query.targets) == 1
+                    else None
+                )
+                return {
+                    "display_text": result.text,
+                    "action": None,
+                    "repository_match": True,
+                    "fact_ids": result.fact_ids,
+                    "next_recipe_reference": reference,
+                }
+            if query.mode is RecipeQueryMode.AMBIGUOUS:
+                return {
+                    "display_text": "어떤 제작법을 말하는지 대상 하나만 알려 줘.",
+                    "action": None,
+                }
+            if query.mode is RecipeQueryMode.UNKNOWN_RECIPE:
+                return {
+                    "display_text": (
+                        "확인된 제작법에 없는 대상이야. 이름이나 Recipe ID를 다시 확인해 줘."
+                    ),
+                    "action": None,
+                }
         return {
-            "display_text": await say(
-                state,
-                "unsupported",
-                "확인된 제작법을 찾지 못했어.",
-                ("확인된 제작법 정보가 없다",),
-            )
+            "display_text": "확인된 제작법을 찾지 못했어.",
+            "action": None,
         }
 
     async def enemy_node(state: CompanionState) -> CompanionUpdate:
