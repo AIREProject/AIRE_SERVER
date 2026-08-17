@@ -23,6 +23,9 @@ TABLES = {
     "memories",
     "memory_sources",
     "memory_migration_reports",
+    "relationship_states",
+    "relationship_state_evidence",
+    "relationship_state_audits",
 }
 
 
@@ -52,13 +55,9 @@ def test_source_backed_memory_migrations_upgrade_from_fresh_and_0010(
     with sqlite3.connect(database_path) as connection:
         tables = {
             row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
-        revision = connection.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
         message_sql = connection.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'messages'"
         ).fetchone()[0]
@@ -71,12 +70,10 @@ def test_source_backed_memory_migrations_upgrade_from_fresh_and_0010(
         result_sql = connection.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'command_results'"
         ).fetchone()[0]
-        memory_columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(memories)")
-        }
+        memory_columns = {row[1] for row in connection.execute("PRAGMA table_info(memories)")}
 
     assert TABLES <= tables
-    assert revision == ("0012",)
+    assert revision == ("0014",)
     assert {"recalled_at", "recall_count", "embedding", "embedding_model"} <= memory_columns
     assert "uq_messages_conversation_sequence" in message_sql
     assert "Transient" in message_sql and "MemorySource" in message_sql

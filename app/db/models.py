@@ -215,9 +215,7 @@ class MemoryModel(Base):
             "'Promise', 'RelationshipEvidence')",
             name="ck_memories_type",
         ),
-        CheckConstraint(
-            "status IN ('Active', 'Archived')", name="ck_memories_status"
-        ),
+        CheckConstraint("status IN ('Active', 'Archived')", name="ck_memories_status"),
         CheckConstraint("importance >= 1 AND importance <= 10", name="ck_memories_importance"),
     )
 
@@ -244,9 +242,7 @@ class MemorySourceModel(Base):
     __tablename__ = "memory_sources"
     __table_args__ = (
         UniqueConstraint("memory_id", "source_type", "source_id", name="uq_memory_sources"),
-        CheckConstraint(
-            "source_type IN ('Message', 'Event')", name="ck_memory_sources_type"
-        ),
+        CheckConstraint("source_type IN ('Message', 'Event')", name="ck_memory_sources_type"),
     )
 
     row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -277,6 +273,91 @@ class MemoryMigrationReportModel(Base):
     source_table: Mapped[str] = mapped_column(String(64), unique=True)
     status: Mapped[str] = mapped_column(String(64))
     quarantined_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class RelationshipStateModel(Base):
+    """Current non-numeric relationship presentation state for one canonical scope."""
+
+    __tablename__ = "relationship_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "save_slot_row_id",
+            "companion_id",
+            name="uq_relationship_states_scope",
+        ),
+        CheckConstraint("state IN ('Low', 'Growing', 'High')", name="ck_relationship_states_state"),
+    )
+
+    row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.profile_id"), index=True)
+    save_slot_row_id: Mapped[str] = mapped_column(ForeignKey("save_slots.row_id"), index=True)
+    companion_id: Mapped[str] = mapped_column(String(128), index=True)
+    state: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class RelationshipStateEvidenceModel(Base):
+    """Immutable source references admitted by the CAI-P4 relationship rules."""
+
+    __tablename__ = "relationship_state_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "save_slot_row_id",
+            "companion_id",
+            "preference_memory_id",
+            "event_source_id",
+            name="uq_relationship_evidence_source_pair",
+        ),
+        CheckConstraint(
+            "event_type IN ('Event.Danger.Detected', 'Event.Rescue.Completed')",
+            name="ck_relationship_evidence_event_type",
+        ),
+    )
+
+    row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.profile_id"), index=True)
+    save_slot_row_id: Mapped[str] = mapped_column(ForeignKey("save_slots.row_id"), index=True)
+    companion_id: Mapped[str] = mapped_column(String(128), index=True)
+    preference_memory_id: Mapped[str] = mapped_column(String(128), index=True)
+    message_source_id: Mapped[str] = mapped_column(String(128), index=True)
+    event_source_id: Mapped[str] = mapped_column(String(128), index=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class RelationshipStateAuditModel(Base):
+    """Append-only state transition trail; source IDs remain after source content expiry."""
+
+    __tablename__ = "relationship_state_audits"
+    __table_args__ = (
+        CheckConstraint(
+            "previous_state IN ('Low', 'Growing', 'High')",
+            name="ck_relationship_audits_previous_state",
+        ),
+        CheckConstraint(
+            "next_state IN ('Low', 'Growing', 'High')",
+            name="ck_relationship_audits_next_state",
+        ),
+        CheckConstraint(
+            "reason IN ('EvidenceAccepted', 'SourceInvalidated')",
+            name="ck_relationship_audits_reason",
+        ),
+    )
+
+    row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    relationship_state_row_id: Mapped[str] = mapped_column(
+        ForeignKey("relationship_states.row_id"), index=True
+    )
+    evidence_row_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    previous_state: Mapped[str] = mapped_column(String(16))
+    next_state: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str] = mapped_column(String(32))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
@@ -355,12 +436,8 @@ class GameStateSnapshotModel(Base):
     )
 
     row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    profile_id: Mapped[str] = mapped_column(
-        ForeignKey("profiles.profile_id"), index=True
-    )
-    save_slot_row_id: Mapped[str] = mapped_column(
-        ForeignKey("save_slots.row_id"), index=True
-    )
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.profile_id"), index=True)
+    save_slot_row_id: Mapped[str] = mapped_column(ForeignKey("save_slots.row_id"), index=True)
     companion_id: Mapped[str] = mapped_column(String(128), index=True)
     schema_version: Mapped[int] = mapped_column(Integer)
     content_version: Mapped[int] = mapped_column(Integer)
@@ -387,12 +464,8 @@ class GameStateOperationModel(Base):
     )
 
     row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    profile_id: Mapped[str] = mapped_column(
-        ForeignKey("profiles.profile_id"), index=True
-    )
-    save_slot_row_id: Mapped[str] = mapped_column(
-        ForeignKey("save_slots.row_id"), index=True
-    )
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.profile_id"), index=True)
+    save_slot_row_id: Mapped[str] = mapped_column(ForeignKey("save_slots.row_id"), index=True)
     companion_id: Mapped[str] = mapped_column(String(128), index=True)
     operation_id: Mapped[str] = mapped_column(String(128))
     body_hash: Mapped[str] = mapped_column(String(64))
@@ -418,9 +491,7 @@ class ConversationModel(Base):
     row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     conversation_id: Mapped[str] = mapped_column(String(128), unique=True)
     profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.profile_id"), index=True)
-    save_slot_row_id: Mapped[str] = mapped_column(
-        ForeignKey("save_slots.row_id"), index=True
-    )
+    save_slot_row_id: Mapped[str] = mapped_column(ForeignKey("save_slots.row_id"), index=True)
     companion_id: Mapped[str] = mapped_column(String(128), index=True)
     session_id: Mapped[str] = mapped_column(String(128))
     surface: Mapped[str] = mapped_column(String(16))
@@ -453,13 +524,9 @@ class MessageModel(Base):
 
     row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     message_id: Mapped[str] = mapped_column(String(128), index=True)
-    conversation_row_id: Mapped[str] = mapped_column(
-        ForeignKey("conversations.row_id"), index=True
-    )
+    conversation_row_id: Mapped[str] = mapped_column(ForeignKey("conversations.row_id"), index=True)
     profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.profile_id"), index=True)
-    save_slot_row_id: Mapped[str] = mapped_column(
-        ForeignKey("save_slots.row_id"), index=True
-    )
+    save_slot_row_id: Mapped[str] = mapped_column(ForeignKey("save_slots.row_id"), index=True)
     companion_id: Mapped[str] = mapped_column(String(128), index=True)
     request_id: Mapped[str] = mapped_column(String(128), index=True)
     sequence: Mapped[int] = mapped_column(Integer)
@@ -471,9 +538,7 @@ class MessageModel(Base):
     storage_class: Mapped[str] = mapped_column(String(16))
     retention_reason: Mapped[str] = mapped_column(String(64))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-    audit_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), index=True
-    )
+    audit_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     content_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -498,9 +563,7 @@ class ChatOperationModel(Base):
 
     row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.profile_id"), index=True)
-    save_slot_row_id: Mapped[str] = mapped_column(
-        ForeignKey("save_slots.row_id"), index=True
-    )
+    save_slot_row_id: Mapped[str] = mapped_column(ForeignKey("save_slots.row_id"), index=True)
     companion_id: Mapped[str] = mapped_column(String(128), index=True)
     request_id: Mapped[str] = mapped_column(String(128))
     request_digest: Mapped[str] = mapped_column(String(64))
@@ -530,9 +593,7 @@ class CommandCandidateModel(Base):
     row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     command_id: Mapped[str] = mapped_column(String(128), index=True)
     profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.profile_id"), index=True)
-    save_slot_row_id: Mapped[str] = mapped_column(
-        ForeignKey("save_slots.row_id"), index=True
-    )
+    save_slot_row_id: Mapped[str] = mapped_column(ForeignKey("save_slots.row_id"), index=True)
     companion_id: Mapped[str] = mapped_column(String(128), index=True)
     session_id: Mapped[str] = mapped_column(String(128))
     request_id: Mapped[str] = mapped_column(String(128), index=True)
@@ -567,9 +628,7 @@ class GameEventModel(Base):
     row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     event_id: Mapped[str] = mapped_column(String(128), index=True)
     profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.profile_id"), index=True)
-    save_slot_row_id: Mapped[str] = mapped_column(
-        ForeignKey("save_slots.row_id"), index=True
-    )
+    save_slot_row_id: Mapped[str] = mapped_column(ForeignKey("save_slots.row_id"), index=True)
     companion_id: Mapped[str] = mapped_column(String(128), index=True)
     session_id: Mapped[str] = mapped_column(String(128))
     schema_version: Mapped[int] = mapped_column(Integer)
@@ -583,9 +642,7 @@ class GameEventModel(Base):
     storage_class: Mapped[str] = mapped_column(String(16))
     retention_reason: Mapped[str] = mapped_column(String(64))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-    audit_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), index=True
-    )
+    audit_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     content_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     response_body: Mapped[dict[str, object] | None] = mapped_column(JSON)
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -613,9 +670,7 @@ class CommandResultModel(Base):
     row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     operation_id: Mapped[str] = mapped_column(String(128), index=True)
     profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.profile_id"), index=True)
-    save_slot_row_id: Mapped[str] = mapped_column(
-        ForeignKey("save_slots.row_id"), index=True
-    )
+    save_slot_row_id: Mapped[str] = mapped_column(ForeignKey("save_slots.row_id"), index=True)
     companion_id: Mapped[str] = mapped_column(String(128), index=True)
     schema_version: Mapped[int] = mapped_column(Integer)
     candidate_row_id: Mapped[str] = mapped_column(
@@ -693,13 +748,9 @@ class SourceCursorModel(Base):
 class LegacyImportReportModel(Base):
     __tablename__ = "legacy_import_reports"
     __table_args__ = (
-        UniqueConstraint(
-            "file_name", "file_hash", name="uq_legacy_import_reports_file_hash"
-        ),
+        UniqueConstraint("file_name", "file_hash", name="uq_legacy_import_reports_file_hash"),
         CheckConstraint("length(file_hash) = 64", name="ck_legacy_import_reports_hash"),
-        CheckConstraint(
-            "imported_count >= 0", name="ck_legacy_import_reports_imported_count"
-        ),
+        CheckConstraint("imported_count >= 0", name="ck_legacy_import_reports_imported_count"),
     )
 
     row_id: Mapped[str] = mapped_column(String(36), primary_key=True)

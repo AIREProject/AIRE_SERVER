@@ -120,6 +120,7 @@ async def _without_provider_observation[T](awaitable: Awaitable[T]) -> T:
     finally:
         _provider_observation_suppressed.reset(token)
 
+
 _TOP_ROUTER_PROMPT = """사용자의 한국어 발화를 다음 의도 중 정확히 하나로 분류한다.
 - command: 따라오기, 대기, 작업 중지·취소, 자원 채집 요청, 적 공격, 플레이어 곁으로 복귀
 - recipe: 아이템 제작법이나 재료 질문. 적을 상대하는 방법은 enemy다.
@@ -165,7 +166,7 @@ resource 는 답일 때만 의미가 있다. is_answer 가 false 면 unspecified
 
 답변을 생성하지 말고 판정 결과만 반환한다."""
 
-DIALOGUE_PROMPT_VERSION = "companion-v3"
+DIALOGUE_PROMPT_VERSION = "companion-v4"
 
 # 창구별로 갈리는 것은 `{tone}` 한 블록뿐이다. 사실 규칙과 기록 취급은 창구와 무관해서
 # 여기 그대로 남는다 — 말투를 바꾸려다 사실 가드가 창구마다 달라지는 일이 없어야 한다.
@@ -178,7 +179,9 @@ _DIALOGUE_PROMPT_TEMPLATE = """[prompt_version] {prompt_version}
 - Low: 예의를 지키되 조심스럽고 거리를 둔다.
 - Growing: 함께한 경험이 쌓이는 중인 동료처럼 편안하고 따뜻하게 말한다.
 - High: 오래 함께한 동료처럼 친근하지만 소유·의존·영원한 관계를 과장하지 않는다.
-현재 단계는 Growing이다. 관계 단계는 말투만 바꾸며 사실과 Command 권한을 바꾸지 않는다.
+현재 단계는 {relationship_state}이다. 이 단계는 Backend가 계산한 읽기 전용 표현 상태다.
+관계 단계는 말투만 바꾸며 사실과 Command 권한을 바꾸지 않고, 단계 이름이나 점수를 사용자에게
+직접 말하지 않는다.
 
 {tone}
 [지시]가 요구하는 내용을 전달하되 문장은 매번 새로 만든다. 정해진 문구를 반복하지 않는다.
@@ -197,13 +200,13 @@ Command Candidate가 없으면 행동을 수락하거나 실행하겠다고 약�
 situation reference에는 실제로 사용한 0부터 시작하는 인덱스만 넣는다. 근거를 쓰지 않았으면 빈
 배열로 둔다. accepts_command는 [Command Candidate]가 있음일 때만 true다."""
 
-_DIALOGUE_PROMPTS: dict[Surface, str] = {
-    surface: _DIALOGUE_PROMPT_TEMPLATE.format(
+
+def _dialogue_prompt(surface: Surface, relationship_state: str) -> str:
+    return _DIALOGUE_PROMPT_TEMPLATE.format(
         prompt_version=DIALOGUE_PROMPT_VERSION,
-        tone=profile.tone,
+        tone=SURFACE_PROFILES[surface].tone,
+        relationship_state=relationship_state,
     )
-    for surface, profile in SURFACE_PROFILES.items()
-}
 
 
 _MEMORY_RULES = f"""- 한국어 반말 서술체로 각 항목은 한 문장, {MAX_MEMORY_TEXT}자 이내.
@@ -292,9 +295,7 @@ def _dialogue_user_message(spec: DialogueSpec) -> str:
         lines.extend(f"[{index}] {item}" for index, item in enumerate(spec.situation))
     if spec.history:
         lines.append("[최근 대화]")
-        lines.extend(
-            f"{_SPEAKER_LABELS[turn.speaker]}: {turn.text}" for turn in spec.history
-        )
+        lines.extend(f"{_SPEAKER_LABELS[turn.speaker]}: {turn.text}" for turn in spec.history)
     lines.append(f"[지시] {SCENE_GUIDE[spec.scene]}")
     if spec.facts:
         lines.append("[확정 사실]")
@@ -395,8 +396,7 @@ class MockLLMProvider(LLMProvider):
         elif LORE_PATTERN.search(text):
             result = TopIntent.LORE
         elif CONVERSATION_PATTERN.search(text) or (
-            GENERAL_QUESTION_PATTERN.search(text)
-            and UNSUPPORTED_FACT_PATTERN.search(text) is None
+            GENERAL_QUESTION_PATTERN.search(text) and UNSUPPORTED_FACT_PATTERN.search(text) is None
         ):
             result = TopIntent.CONVERSATION
         else:
@@ -566,8 +566,13 @@ class OpenAIProvider(LLMProvider):
                 raise _EmptyOutputError
             result = TopClassification.model_validate_json(response.output_text).intent
             _record_provider_call(
-                step="classify_top", configured_provider="openai", effective_provider="openai",
-                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+                step="classify_top",
+                configured_provider="openai",
+                effective_provider="openai",
+                succeeded=True,
+                fallback_used=False,
+                fallback_reason=None,
+                started_at=started_at,
             )
             return result
         except Exception as error:
@@ -575,8 +580,12 @@ class OpenAIProvider(LLMProvider):
                 self._fallback.classify_top(text, clarification_pending=clarification_pending)
             )
             _record_provider_call(
-                step="classify_top", configured_provider="openai", effective_provider="mock",
-                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                step="classify_top",
+                configured_provider="openai",
+                effective_provider="mock",
+                succeeded=False,
+                fallback_used=True,
+                fallback_reason=_fallback_reason(error),
                 started_at=started_at,
             )
             return result
@@ -606,15 +615,24 @@ class OpenAIProvider(LLMProvider):
                 raise _EmptyOutputError
             result = CommandClassification.model_validate_json(response.output_text)
             _record_provider_call(
-                step="classify_command", configured_provider="openai", effective_provider="openai",
-                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+                step="classify_command",
+                configured_provider="openai",
+                effective_provider="openai",
+                succeeded=True,
+                fallback_used=False,
+                fallback_reason=None,
+                started_at=started_at,
             )
             return result
         except Exception as error:
             result = await _without_provider_observation(self._fallback.classify_command(text))
             _record_provider_call(
-                step="classify_command", configured_provider="openai", effective_provider="mock",
-                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                step="classify_command",
+                configured_provider="openai",
+                effective_provider="mock",
+                succeeded=False,
+                fallback_used=True,
+                fallback_reason=_fallback_reason(error),
                 started_at=started_at,
             )
             return result
@@ -645,8 +663,13 @@ class OpenAIProvider(LLMProvider):
             resolution = PendingResolution.model_validate_json(response.output_text)
             result = resolution.resource if resolution.is_answer else None
             _record_provider_call(
-                step="resolve_pending", configured_provider="openai", effective_provider="openai",
-                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+                step="resolve_pending",
+                configured_provider="openai",
+                effective_provider="openai",
+                succeeded=True,
+                fallback_used=False,
+                fallback_reason=None,
+                started_at=started_at,
             )
             return result
         except Exception as error:
@@ -654,8 +677,12 @@ class OpenAIProvider(LLMProvider):
                 self._fallback.resolve_pending(text, pending)
             )
             _record_provider_call(
-                step="resolve_pending", configured_provider="openai", effective_provider="mock",
-                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                step="resolve_pending",
+                configured_provider="openai",
+                effective_provider="mock",
+                succeeded=False,
+                fallback_used=True,
+                fallback_reason=_fallback_reason(error),
                 started_at=started_at,
             )
             return result
@@ -668,7 +695,10 @@ class OpenAIProvider(LLMProvider):
             response = await self._client.responses.create(
                 model=self._model,
                 input=[
-                    {"role": "system", "content": _DIALOGUE_PROMPTS[spec.surface]},
+                    {
+                        "role": "system",
+                        "content": _dialogue_prompt(spec.surface, spec.relationship_state),
+                    },
                     {"role": "user", "content": _dialogue_user_message(spec)},
                 ],
                 text={
@@ -687,8 +717,13 @@ class OpenAIProvider(LLMProvider):
                 raise _EmptyOutputError
             result = DialogueOutput.model_validate_json(response.output_text)
             _record_provider_call(
-                step="generate_dialogue", configured_provider="openai", effective_provider="openai",
-                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+                step="generate_dialogue",
+                configured_provider="openai",
+                effective_provider="openai",
+                succeeded=True,
+                fallback_used=False,
+                fallback_reason=None,
+                started_at=started_at,
             )
             return result
         except Exception as error:
@@ -702,8 +737,12 @@ class OpenAIProvider(LLMProvider):
                 self._fallback.generate_dialogue(fallback_spec)
             )
             _record_provider_call(
-                step="generate_dialogue", configured_provider="openai", effective_provider="mock",
-                succeeded=False, fallback_used=True, fallback_reason=reason,
+                step="generate_dialogue",
+                configured_provider="openai",
+                effective_provider="mock",
+                succeeded=False,
+                fallback_used=True,
+                fallback_reason=reason,
                 started_at=started_at,
             )
             return result
@@ -842,8 +881,13 @@ class LocalLLMProvider(LLMProvider):
                 raise _EmptyOutputError
             result = TopClassification.model_validate_json(content).intent
             _record_provider_call(
-                step="classify_top", configured_provider="local", effective_provider="local",
-                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+                step="classify_top",
+                configured_provider="local",
+                effective_provider="local",
+                succeeded=True,
+                fallback_used=False,
+                fallback_reason=None,
+                started_at=started_at,
             )
             return result
         except Exception as error:
@@ -851,8 +895,12 @@ class LocalLLMProvider(LLMProvider):
                 self._fallback.classify_top(text, clarification_pending=clarification_pending)
             )
             _record_provider_call(
-                step="classify_top", configured_provider="local", effective_provider="mock",
-                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                step="classify_top",
+                configured_provider="local",
+                effective_provider="mock",
+                succeeded=False,
+                fallback_used=True,
+                fallback_reason=_fallback_reason(error),
                 started_at=started_at,
             )
             return result
@@ -885,15 +933,24 @@ class LocalLLMProvider(LLMProvider):
                 raise _EmptyOutputError
             result = CommandClassification.model_validate_json(content)
             _record_provider_call(
-                step="classify_command", configured_provider="local", effective_provider="local",
-                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+                step="classify_command",
+                configured_provider="local",
+                effective_provider="local",
+                succeeded=True,
+                fallback_used=False,
+                fallback_reason=None,
+                started_at=started_at,
             )
             return result
         except Exception as error:
             result = await _without_provider_observation(self._fallback.classify_command(text))
             _record_provider_call(
-                step="classify_command", configured_provider="local", effective_provider="mock",
-                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                step="classify_command",
+                configured_provider="local",
+                effective_provider="mock",
+                succeeded=False,
+                fallback_used=True,
+                fallback_reason=_fallback_reason(error),
                 started_at=started_at,
             )
             return result
@@ -927,8 +984,13 @@ class LocalLLMProvider(LLMProvider):
             resolution = PendingResolution.model_validate_json(content)
             result = resolution.resource if resolution.is_answer else None
             _record_provider_call(
-                step="resolve_pending", configured_provider="local", effective_provider="local",
-                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+                step="resolve_pending",
+                configured_provider="local",
+                effective_provider="local",
+                succeeded=True,
+                fallback_used=False,
+                fallback_reason=None,
+                started_at=started_at,
             )
             return result
         except Exception as error:
@@ -936,8 +998,12 @@ class LocalLLMProvider(LLMProvider):
                 self._fallback.resolve_pending(text, pending)
             )
             _record_provider_call(
-                step="resolve_pending", configured_provider="local", effective_provider="mock",
-                succeeded=False, fallback_used=True, fallback_reason=_fallback_reason(error),
+                step="resolve_pending",
+                configured_provider="local",
+                effective_provider="mock",
+                succeeded=False,
+                fallback_used=True,
+                fallback_reason=_fallback_reason(error),
                 started_at=started_at,
             )
             return result
@@ -950,7 +1016,10 @@ class LocalLLMProvider(LLMProvider):
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=[
-                    {"role": "system", "content": _DIALOGUE_PROMPTS[spec.surface]},
+                    {
+                        "role": "system",
+                        "content": _dialogue_prompt(spec.surface, spec.relationship_state),
+                    },
                     {"role": "user", "content": _dialogue_user_message(spec)},
                 ],
                 response_format={
@@ -970,8 +1039,13 @@ class LocalLLMProvider(LLMProvider):
                 raise _EmptyOutputError
             result = DialogueOutput.model_validate_json(content)
             _record_provider_call(
-                step="generate_dialogue", configured_provider="local", effective_provider="local",
-                succeeded=True, fallback_used=False, fallback_reason=None, started_at=started_at,
+                step="generate_dialogue",
+                configured_provider="local",
+                effective_provider="local",
+                succeeded=True,
+                fallback_used=False,
+                fallback_reason=None,
+                started_at=started_at,
             )
             return result
         except Exception as error:
@@ -985,8 +1059,12 @@ class LocalLLMProvider(LLMProvider):
                 self._fallback.generate_dialogue(fallback_spec)
             )
             _record_provider_call(
-                step="generate_dialogue", configured_provider="local", effective_provider="mock",
-                succeeded=False, fallback_used=True, fallback_reason=reason,
+                step="generate_dialogue",
+                configured_provider="local",
+                effective_provider="mock",
+                succeeded=False,
+                fallback_used=True,
+                fallback_reason=reason,
                 started_at=started_at,
             )
             return result
@@ -1103,9 +1181,7 @@ class TimingLLMProvider(LLMProvider):
     async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
         started_at = perf_counter()
         try:
-            return await self._inner.classify_top(
-                text, clarification_pending=clarification_pending
-            )
+            return await self._inner.classify_top(text, clarification_pending=clarification_pending)
         finally:
             _log_step("classify_top", started_at)
 

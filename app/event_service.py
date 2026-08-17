@@ -26,6 +26,7 @@ from app.event_models import (
     GameEventType,
 )
 from app.identity import AuthenticatedDevice, DeviceRole
+from app.relationship_service import RelationshipService
 
 _IMPORTANCE = {
     GameEventType.COMBAT_STARTED: EventImportance.NORMAL,
@@ -54,8 +55,10 @@ class EventService:
         *,
         event_retention_days: int,
         audit_retention_days: int,
+        relationship_service: RelationshipService | None = None,
     ) -> None:
         self._repository = repository
+        self._relationship_service = relationship_service
         self._event_retention = timedelta(days=event_retention_days)
         self._audit_retention = timedelta(days=audit_retention_days)
 
@@ -92,7 +95,7 @@ class EventService:
             accepted_at=now,
         )
         try:
-            await self._repository.persist_event(
+            event = await self._repository.persist_event(
                 {
                     "event_id": request.event_id,
                     "profile_id": identity.profile_id,
@@ -116,6 +119,9 @@ class EventService:
                     "received_at": now,
                 }
             )
+            if self._relationship_service is not None:
+                await self._relationship_service.observe_event(event)
+            await self._repository.commit()
         except IntegrityError:
             await self._repository.rollback()
             existing = await self._repository.find_event(

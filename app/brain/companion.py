@@ -23,8 +23,11 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.db.source_repository import SourceScope
 from app.models import TimeContext
+from app.relationship_service import RelationshipPresentationStore, RelationshipState
 from app.source_memory_store import SourceBackedMemoryStore
 
 from .contract import (
@@ -189,6 +192,7 @@ class CompanionBrain:
         store: ConversationStore | None = None,
         long_term: LongTermStore | None = None,
         source_memory: SourceBackedMemoryStore | None = None,
+        relationship_presentation: RelationshipPresentationStore | None = None,
         transcript: TranscriptStore | None = None,
         embedder: EmbeddingProvider | None = None,
         embedding_model: str | None = None,
@@ -212,6 +216,7 @@ class CompanionBrain:
         # 일어나지 않고, 지금까지와 똑같이 한 대화 안에서만 기억한다.
         self._long_term = long_term
         self._source_memory = source_memory
+        self._relationship_presentation = relationship_presentation
         # 증류의 원본. **추출은 이것 없이는 돌지 않는다** — 커서가 가리킬 로그가 없다.
         # 전사만 끄면 회수는 계속 되지만(이미 있는 기억은 쓰인다) 새 기억은 생기지 않는다.
         self._transcript = transcript
@@ -267,6 +272,7 @@ class CompanionBrain:
                 del self._locks[key]
 
     async def respond(self, turn: CompanionTurn) -> CompanionReply:
+        turn = replace(turn, relationship_state=await self._relationship_state(turn.memory_scope))
         recalled = await self._recall(turn.memory_scope, turn.player_key, turn.text, turn.game_time)
         async with self._conversation_lock(turn.conversation_key):
             prepared = await self._prepare_response_locked(
@@ -290,6 +296,7 @@ class CompanionBrain:
     ) -> PreparedCompanionReply:
         """Generate a reply without mutating process memory or debug transcript."""
 
+        turn = replace(turn, relationship_state=await self._relationship_state(turn.memory_scope))
         # 회수는 락 밖에서 한다. 이 발화만 보고 고르므로 대화 기억과 경합할 것이 없고,
         # 파일을 읽는 동안 같은 대화의 다음 턴을 막을 이유도 없다.
         recalled = await self._recall(turn.memory_scope, turn.player_key, turn.text, turn.game_time)
@@ -309,9 +316,7 @@ class CompanionBrain:
     ) -> PreparedCompanionReply:
         memory = self._store.load(turn.conversation_key)
         prompt_memory = (
-            replace(memory, recent_turns=tuple(history))
-            if history is not None
-            else memory
+            replace(memory, recent_turns=tuple(history)) if history is not None else memory
         )
         provider_token = begin_provider_trace()
         sanitizer_token = begin_sanitizer_trace()
@@ -385,6 +390,7 @@ class CompanionBrain:
         — 상황 이벤트는 플레이어의 답이 아니므로 되묻기 도중에 끼어들어도 슬롯이 살아남는다.
         """
 
+        turn = replace(turn, relationship_state=await self._relationship_state(turn.memory_scope))
         query = " ".join(turn.situation)
         recalled = await self._recall(turn.memory_scope, turn.player_key, query, turn.game_time)
         async with self._conversation_lock(turn.conversation_key):
@@ -486,6 +492,21 @@ class CompanionBrain:
             )
         return tuple(memory.text for memory in recalled)
 
+    async def _relationship_state(self, memory_scope: MemoryScope | None) -> RelationshipState:
+        if self._relationship_presentation is None or memory_scope is None:
+            return "Low"
+        scope = SourceScope(
+            memory_scope.profile_id,
+            memory_scope.save_slot_row_id,
+            memory_scope.companion_id,
+        )
+        try:
+            state: RelationshipState = await self._relationship_presentation.read(scope)
+        except SQLAlchemyError:
+            # Presentation state must never turn a working local dialogue into a database outage.
+            state = "Low"
+        return state
+
     async def _embed_text(self, text: str) -> tuple[float, ...] | None:
         """요청 경로의 질의 임베딩. 실패·시간 초과는 키워드 검색으로 폴백한다."""
 
@@ -528,9 +549,7 @@ class CompanionBrain:
             for memory, vector in zip(memories, vectors, strict=True)
         )
 
-    async def _remember(
-        self, player_key: str, memories: Sequence[LongTermMemory]
-    ) -> None:
+    async def _remember(self, player_key: str, memories: Sequence[LongTermMemory]) -> None:
         if self._long_term is None or not player_key or not memories:
             return
         embedded = await self._with_embeddings(memories)
@@ -560,12 +579,7 @@ class CompanionBrain:
             appended_upto = await self._transcript.append(conversation_key, turns)
         except Exception:
             return
-        if (
-            not enqueue_memory
-            or self._long_term is None
-            or not player_key
-            or appended_upto <= 0
-        ):
+        if not enqueue_memory or self._long_term is None or not player_key or appended_upto <= 0:
             return
         self._enqueue(conversation_key, player_key, appended_upto, len(turns))
 
@@ -636,9 +650,7 @@ class CompanionBrain:
                 continue
         await self._sweep(now=now, final=final)
 
-    async def _drain_one(
-        self, key: str, pending: _Pending, *, now: datetime, final: bool
-    ) -> None:
+    async def _drain_one(self, key: str, pending: _Pending, *, now: datetime, final: bool) -> None:
         idle = (now - pending.last_turn_at).total_seconds()
         quiet = final or idle >= self._quiet_seconds
         ended = final or idle >= self._session_end_seconds
@@ -704,9 +716,7 @@ class CompanionBrain:
 
         if self._long_term is None:
             return
-        current = await self._long_term.recall(
-            player_key, query="", limit=MAX_MEMORIES_PER_PLAYER
-        )
+        current = await self._long_term.recall(player_key, query="", limit=MAX_MEMORIES_PER_PLAYER)
         if len(current) < MAX_MEMORIES_PER_PLAYER:
             return
         result = await self._llm.consolidate_memories(
@@ -740,6 +750,4 @@ def _as_turns(entries: Sequence[TranscriptEntry]) -> tuple[ConversationTurn, ...
     말만 알면 되고, `seq` 나 시각은 커서의 것이지 프롬프트의 것이 아니다.
     """
 
-    return tuple(
-        ConversationTurn(speaker=entry.speaker, text=entry.text) for entry in entries
-    )
+    return tuple(ConversationTurn(speaker=entry.speaker, text=entry.text) for entry in entries)

@@ -22,6 +22,7 @@ class MemoryScope:
     save_slot_row_id: str
     companion_id: str
 
+
 FallbackReason = Literal[
     "provider_timeout",
     "provider_unavailable",
@@ -162,6 +163,9 @@ class CompanionTurn:
     world_context: WorldContextFacts = WorldContextFacts()
     game_time: TimeContext | None = None
     memory_scope: MemoryScope | None = None
+    # Backend rules가 계산한 read-only presentation state다. 대사 어조에만 쓰며, 그래프와
+    # Command 후보는 이 값으로 분기하지 않는다.
+    relationship_state: Literal["Low", "Growing", "High"] = "Low"
 
     def __post_init__(self) -> None:
         if not self.conversation_key:
@@ -185,6 +189,7 @@ class SituationTurn:
     surface: Surface = Surface.GAME
     game_time: TimeContext | None = None
     memory_scope: MemoryScope | None = None
+    relationship_state: Literal["Low", "Growing", "High"] = "Low"
 
     def __post_init__(self) -> None:
         if not self.conversation_key:

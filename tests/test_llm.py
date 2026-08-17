@@ -82,9 +82,7 @@ async def test_openai_provider_uses_minimal_reasoning() -> None:
                 output_text='{"command":"wait","resource":"unspecified","quantity":null}'
             ),
             SimpleNamespace(
-                output_text=dialogue_json(
-                    "여기서 기다릴게.", "wait", accepts_command=True
-                )
+                output_text=dialogue_json("여기서 기다릴게.", "wait", accepts_command=True)
             ),
         ]
     )
@@ -93,26 +91,22 @@ async def test_openai_provider_uses_minimal_reasoning() -> None:
         provider = OpenAIProvider(openai_config())
 
     assert (
-        await provider.classify_top("안녕", clarification_pending=False)
-        is TopIntent.CONVERSATION
+        await provider.classify_top("안녕", clarification_pending=False) is TopIntent.CONVERSATION
     )
     assert (await provider.classify_command("기다려")).command is CommandLabel.WAIT
-    assert (
-        await provider.generate_dialogue(
-            DialogueSpec(
-                scene="wait",
-                fallback="알겠어. 여기서 기다릴게.",
-                command_candidate_present=True,
-            )
+    assert await provider.generate_dialogue(
+        DialogueSpec(
+            scene="wait",
+            fallback="알겠어. 여기서 기다릴게.",
+            command_candidate_present=True,
         )
-        == DialogueOutput(
-            text="여기서 기다릴게.",
-            purpose="wait",
-            fact_references=(),
-            memory_references=(),
-            situation_references=(),
-            accepts_command=True,
-        )
+    ) == DialogueOutput(
+        text="여기서 기다릴게.",
+        purpose="wait",
+        fact_references=(),
+        memory_references=(),
+        situation_references=(),
+        accepts_command=True,
     )
 
     assert client.responses.create.await_count == 3
@@ -141,9 +135,7 @@ async def test_local_provider_uses_chat_completions() -> None:
         return_value=SimpleNamespace(
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(
-                        content=dialogue_json("반가워!", "conversation")
-                    )
+                    message=SimpleNamespace(content=dialogue_json("반가워!", "conversation"))
                 )
             ]
         )
@@ -162,9 +154,7 @@ async def test_local_provider_uses_chat_completions() -> None:
     assert call["model"] == "balanced-q4-k-m-mtp"
     assert call["temperature"] == 0.6
     assert call["max_tokens"] == 160
-    assert call["extra_body"] == {
-        "chat_template_kwargs": {"enable_thinking": False}
-    }
+    assert call["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
     dialogue_schema = call["response_format"]["json_schema"]
     assert dialogue_schema["name"] == "dialogue_output"
     assert set(dialogue_schema["schema"]["required"]) == {
@@ -342,9 +332,7 @@ async def test_local_provider_parses_structured_top_classification() -> None:
     call = client.chat.completions.create.await_args.kwargs
     assert call["temperature"] == 0.0
     assert call["max_tokens"] == 64
-    assert call["extra_body"] == {
-        "chat_template_kwargs": {"enable_thinking": False}
-    }
+    assert call["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
     schema = call["response_format"]["json_schema"]["schema"]
     assert schema["$defs"]["TopIntent"]["enum"] == [
         "command",
@@ -381,9 +369,7 @@ async def test_local_provider_parses_structured_command_classification() -> None
             choices=[
                 SimpleNamespace(
                     message=SimpleNamespace(
-                        content=(
-                            '{"command":"gather_resource","resource":"wood","quantity":20}'
-                        )
+                        content=('{"command":"gather_resource","resource":"wood","quantity":20}')
                     )
                 )
             ]
@@ -401,9 +387,7 @@ async def test_local_provider_parses_structured_command_classification() -> None
     call = client.chat.completions.create.await_args.kwargs
     assert call["temperature"] == 0.0
     assert call["max_tokens"] == 64
-    assert call["extra_body"] == {
-        "chat_template_kwargs": {"enable_thinking": False}
-    }
+    assert call["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
     schema = call["response_format"]["json_schema"]["schema"]
     assert schema["$defs"]["CommandLabel"]["enum"] == [
         "follow_player",
@@ -453,6 +437,7 @@ async def test_local_provider_falls_back_when_call_fails() -> None:
         scene="conversation",
         fallback="안녕! 오늘은 어디부터 둘러볼까?",
         user_text="안녕",
+        relationship_state="High",
     )
     assert (await provider.generate_dialogue(spec)).text == (
         SURFACE_PROFILES[Surface.GAME].provider_retry
@@ -467,9 +452,7 @@ async def test_local_dialogue_prompt_contains_facts_but_not_fallback() -> None:
             choices=[
                 SimpleNamespace(
                     message=SimpleNamespace(
-                        content=dialogue_json(
-                            "철괴 3개가 필요해.", "recipe", fact_references=(0,)
-                        )
+                        content=dialogue_json("철괴 3개가 필요해.", "recipe", fact_references=(0,))
                     )
                 )
             ]
@@ -484,11 +467,13 @@ async def test_local_dialogue_prompt_contains_facts_but_not_fallback() -> None:
         fallback="이 폴백 문장은 프롬프트에 들어가면 안 돼.",
         user_text="철검는 어떻게 만들어?",
         facts=("철괴 3개가 필요하다",),
+        relationship_state="High",
     )
     assert (await provider.generate_dialogue(spec)).text == "철괴 3개가 필요해."
 
     messages = client.chat.completions.create.await_args.kwargs["messages"]
     assert "철괴 3개가 필요하다" in str(messages)
+    assert "현재 단계는 High" in messages[0]["content"]
     assert spec.fallback not in str(messages)
 
 
@@ -534,8 +519,8 @@ async def test_dialogue_system_prompt_switches_with_the_surface() -> None:
     assert prompts[Surface.GAME] != prompts[Surface.MOBILE]
     # 사실 규칙은 창구와 무관하다. 말투를 바꾸다 가드가 창구마다 달라지면 안 된다.
     for prompt in prompts.values():
-        assert "[prompt_version] companion-v3" in prompt
-        assert "현재 단계는 Growing" in prompt
+        assert "[prompt_version] companion-v4" in prompt
+        assert "현재 단계는 Low" in prompt
         assert "과도한 애착·독점·영원한 약속" in prompt
         assert "Command Candidate가 없으면" in prompt
         assert "[확정 사실]에 적힌 내용만 사용하고" in prompt

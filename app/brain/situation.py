@@ -29,4 +29,5 @@ def build_spec(
         history=history,
         memories=memories,
         situation=(*turn.situation, *describe(turn.game_time)),
+        relationship_state=turn.relationship_state,
     )

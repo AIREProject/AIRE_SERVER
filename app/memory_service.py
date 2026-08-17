@@ -14,6 +14,7 @@ from app.db.source_repository import SourceRepository, SourceScope
 from app.errors import MemoryNotFoundError
 from app.identity import AuthenticatedDevice
 from app.models import MemoryView, SearchMemoriesRequest, UpdateMemoryRequest
+from app.relationship_service import RelationshipService
 
 
 class MemoryService:
@@ -104,9 +105,7 @@ class MemoryService:
         slot = await self._slot(identity.profile_id, save_slot_id)
         if slot is None:
             return 0
-        rows = await self._active(
-            scope=SourceScope(identity.profile_id, slot.row_id, companion_id)
-        )
+        rows = await self._active(scope=SourceScope(identity.profile_id, slot.row_id, companion_id))
         for memory in rows:
             await self._archive(memory, reason=reason)
         await self._session.commit()
@@ -128,8 +127,12 @@ class MemoryService:
         memory.archived_reason = reason
         for source in sources:
             await repository.release(
-                source.source_type, source.source_id, memory.memory_id,
-                scope=scope, now=now, commit=False,
+                source.source_type,
+                source.source_id,
+                memory.memory_id,
+                scope=scope,
+                now=now,
+                commit=False,
             )
             # The outbox is an extraction cursor, not the source payload.  Keeping a
             # tombstone even for a shared source preserves current retrieval while
@@ -137,6 +140,7 @@ class MemoryService:
             await repository.mark_tombstone(
                 source.source_type, source.source_id, now=now, commit=False
             )
+        await RelationshipService(self._session).refresh(scope, reason="SourceInvalidated")
 
     async def _owned_active(
         self, identity: AuthenticatedDevice, memory_id: str

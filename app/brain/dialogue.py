@@ -78,6 +78,9 @@ class DialogueSpec:
     # 게임이 현재 턴에 알려 준 상황. 게임 시계는 서버가 신뢰하는 값이지만 장면의 확정
     # 사실과는 다른 블록으로 보여 준다.
     situation: tuple[str, ...] = ()
+    # Persistent relationship rules are the sole writer. Providers may only use this to soften or
+    # distance tone; it is not a factual source and never authorizes a Command.
+    relationship_state: Literal["Low", "Growing", "High"] = "Low"
     # 이 대사와 함께 실제 CompanionAction이 반환되는지. LLM의 선언이 아니라 그래프가
     # 검증을 끝낸 뒤 정하며, false이면 실행 수락·약속을 생성할 수 없다.
     command_candidate_present: bool = False
@@ -98,13 +101,13 @@ SCENE_GUIDE: dict[DialogueScene, str] = {
     "lore": "확정 사실의 지역 이야기를 전한다.",
     "conversation": "플레이어의 말에 가볍게 반응한다.",
     "unsupported": (
-        "확정 사실에 적힌 이유로 그 요청은 도울 수 없다고 알리고, "
-        "할 수 있는 일을 짧게 안내한다."
+        "확정 사실에 적힌 이유로 그 요청은 도울 수 없다고 알리고, 할 수 있는 일을 짧게 안내한다."
     ),
     "event_completed": "채집 결과를 확정 사실 그대로 보고한다.",
     "event_failed": "채집 결과를 확정 사실 그대로 보고한다.",
     "situation": "[상황]에 적힌 일이 방금 일어났다. 플레이어에게 먼저 한마디 건넨다.",
 }
+
 
 class FallbackLine(NamedTuple):
     """LLM이 실패했을 때 그대로 나갈 대사와, 같은 상황에서 프롬프트에 넣을 확정 사실.
@@ -218,15 +221,11 @@ _COMMAND_ACCEPTANCE_PATTERN = re.compile(
     r"(?:따라갈게|기다릴게|멈출게|공격할게|돌아갈게|가져올게|"
     r"캐\s*올게|모아\s*올게|만들게|시작할게|취소할게|해\s*줄게|하겠습니다)"
 )
-_FACT_CLAIM_PATTERN = re.compile(
-    r"(?:레시피|제작법|재료|필요량|작업대|체력|약점|내성|역사|유래)"
-)
+_FACT_CLAIM_PATTERN = re.compile(r"(?:레시피|제작법|재료|필요량|작업대|체력|약점|내성|역사|유래)")
 _FACT_GROUNDED_SCENES: frozenset[DialogueScene] = frozenset(
     {"recipe", "enemy", "lore", "unsupported", "event_completed", "event_failed"}
 )
-_sanitizer_context: ContextVar[list[bool] | None] = ContextVar(
-    "sanitizer_results", default=None
-)
+_sanitizer_context: ContextVar[list[bool] | None] = ContextVar("sanitizer_results", default=None)
 
 
 def begin_sanitizer_trace() -> Token[list[bool] | None]:
@@ -259,11 +258,7 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
             return None
         if not _references_are_valid(output.situation_references, spec.situation, normalized):
             return None
-        if (
-            spec.scene in _FACT_GROUNDED_SCENES
-            and spec.facts
-            and not output.fact_references
-        ):
+        if spec.scene in _FACT_GROUNDED_SCENES and spec.facts and not output.fact_references:
             return None
         if _FACT_CLAIM_PATTERN.search(normalized) and not output.fact_references:
             return None
@@ -317,8 +312,7 @@ async def render_observed(llm: LLMProvider, spec: DialogueSpec) -> RenderedDialo
     except Exception as error:
         reason: FallbackReason = (
             "provider_timeout"
-            if isinstance(error, TimeoutError)
-            or "timeout" in type(error).__name__.casefold()
+            if isinstance(error, TimeoutError) or "timeout" in type(error).__name__.casefold()
             else "provider_unavailable"
         )
         result = RenderedDialogue(

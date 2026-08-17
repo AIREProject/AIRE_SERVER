@@ -171,7 +171,7 @@ TRANSCRIPT_RETENTION_DAYS=30
   "ai_metadata": {
     "provider": "local",
     "model_version": "your-model-name",
-    "prompt_version": "companion-v3"
+    "prompt_version": "companion-v4"
   }
 }
 ```

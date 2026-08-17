@@ -11,10 +11,7 @@ import pytest
 
 def _unique_indexes(connection: sqlite3.Connection, table: str) -> list[list[str]]:
     return [
-        [
-            column[2]
-            for column in connection.execute(f"PRAGMA index_info('{index[1]}')")
-        ]
+        [column[2] for column in connection.execute(f"PRAGMA index_info('{index[1]}')")]
         for index in connection.execute(f"PRAGMA index_list('{table}')")
         if index[2]
     ]
@@ -48,16 +45,10 @@ def test_game_state_migration_creates_snapshot_and_operation_tables(
             for row in connection.execute("PRAGMA table_info(game_state_operations)")
         }
         snapshot_foreign_keys = {
-            row[2]
-            for row in connection.execute(
-                "PRAGMA foreign_key_list(game_state_snapshots)"
-            )
+            row[2] for row in connection.execute("PRAGMA foreign_key_list(game_state_snapshots)")
         }
         operation_foreign_keys = {
-            row[2]
-            for row in connection.execute(
-                "PRAGMA foreign_key_list(game_state_operations)"
-            )
+            row[2] for row in connection.execute("PRAGMA foreign_key_list(game_state_operations)")
         }
         snapshot_indexes = _unique_indexes(connection, "game_state_snapshots")
         operation_indexes = _unique_indexes(connection, "game_state_operations")
@@ -69,7 +60,7 @@ def test_game_state_migration_creates_snapshot_and_operation_tables(
         ).fetchone()[0]
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
-    assert revision == ("0012",)
+    assert revision == ("0014",)
     assert snapshot_columns == {
         "row_id": ("VARCHAR(36)", 1),
         "profile_id": ("VARCHAR(128)", 1),

@@ -18,6 +18,7 @@ from app.event_models import (
 from app.event_service import EventService
 from app.identity import AuthenticatedDevice
 from app.middleware import REQUEST_ID_HEADER
+from app.relationship_service import RelationshipService
 from app.settings import Settings, get_settings
 
 router = APIRouter(prefix="/api/v1", tags=["Events"])
@@ -29,6 +30,7 @@ def _service(session: DatabaseSession, settings: Settings) -> EventService:
         SqlAlchemyEventRepository(session),
         event_retention_days=settings.game_event_retention_days,
         audit_retention_days=settings.audit_retention_days,
+        relationship_service=RelationshipService(session),
     )
 
 

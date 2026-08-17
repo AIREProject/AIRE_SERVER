@@ -38,6 +38,7 @@ from app.db.models import (
     SourceRetentionReferenceModel,
 )
 from app.db.source_repository import SOURCE_EVENT, SOURCE_MESSAGE, SourceRepository, SourceScope
+from app.relationship_service import RelationshipService
 
 if TYPE_CHECKING:
     from app.brain.transcript import TranscriptStore
@@ -230,9 +231,7 @@ class LegacyMemoryMaintenance:
             actual_rows = await self._rows_for_player(session, path.stem)
             matches = scan.status == "valid" and scan.expected_rows == actual_rows
             status = (
-                "verified"
-                if matches
-                else ("mismatch" if scan.status == "valid" else scan.status)
+                "verified" if matches else ("mismatch" if scan.status == "valid" else scan.status)
             )
             error_code = None if matches else (scan.error_code or "RowMismatch")
             report = await self._upsert_report(
@@ -335,9 +334,7 @@ class LegacyMemoryMaintenance:
                         "quarantine_missing" if actual_hash is None else "quarantine_modified"
                     )
                     report.error_code = (
-                        "QuarantineMissing"
-                        if actual_hash is None
-                        else "QuarantineHashMismatch"
+                        "QuarantineMissing" if actual_hash is None else "QuarantineHashMismatch"
                     )
                     report.updated_at = now
                     changed += 1
@@ -488,6 +485,7 @@ class RetentionService:
         message_count = event_count = 0
         async with self._database.session_factory() as session:
             source_repository = SourceRepository(session)
+            affected_scopes: set[SourceScope] = set()
             message_result = await session.execute(
                 select(MessageModel).where(
                     MessageModel.storage_class == "Transient",
@@ -513,6 +511,9 @@ class RetentionService:
                     message.row_id,
                     now=now,
                     commit=False,
+                )
+                affected_scopes.add(
+                    SourceScope(message.profile_id, message.save_slot_row_id, message.companion_id)
                 )
                 message_count += 1
 
@@ -544,7 +545,13 @@ class RetentionService:
                     now=now,
                     commit=False,
                 )
+                affected_scopes.add(
+                    SourceScope(event.profile_id, event.save_slot_row_id, event.companion_id)
+                )
                 event_count += 1
+            relationship = RelationshipService(session)
+            for scope in affected_scopes:
+                await relationship.refresh(scope, reason="SourceInvalidated")
             await session.commit()
         return message_count, event_count
 
@@ -555,6 +562,7 @@ class RetentionService:
             links = tuple((await session.execute(select(MemorySourceModel))).scalars())
             source_repository = SourceRepository(session)
             affected: set[str] = set()
+            affected_scopes: set[SourceScope] = set()
             for link in links:
                 source = await session.get(
                     MessageModel if link.source_type == SOURCE_MESSAGE else GameEventModel,
@@ -569,6 +577,9 @@ class RetentionService:
                 memory.archived_at = now
                 memory.archived_reason = "SourcePurged"
                 affected.add(memory.memory_id)
+                affected_scopes.add(
+                    SourceScope(memory.profile_id, memory.save_slot_row_id, memory.companion_id)
+                )
             for memory_id in affected:
                 memory = await session.get(MemoryModel, memory_id)
                 if memory is None:
@@ -578,26 +589,34 @@ class RetentionService:
                     select(MemorySourceModel).where(MemorySourceModel.memory_id == memory_id)
                 )
                 for link in result.scalars():
-                    if await session.get(
-                        MessageModel if link.source_type == SOURCE_MESSAGE else GameEventModel,
-                        link.source_id,
-                    ) is not None:
+                    if (
+                        await session.get(
+                            MessageModel if link.source_type == SOURCE_MESSAGE else GameEventModel,
+                            link.source_id,
+                        )
+                        is not None
+                    ):
                         await source_repository.release(
-                            link.source_type, link.source_id, memory_id,
-                            scope=scope, now=now, commit=False,
+                            link.source_type,
+                            link.source_id,
+                            memory_id,
+                            scope=scope,
+                            now=now,
+                            commit=False,
                         )
                     await source_repository.mark_tombstone(
                         link.source_type, link.source_id, now=now, commit=False
                     )
+            relationship = RelationshipService(session)
+            for scope in affected_scopes:
+                await relationship.refresh(scope, reason="SourceInvalidated")
             await session.commit()
 
     async def _purge_expired_audit(self, now: datetime) -> int:
         deleted = 0
         async with self._database.session_factory() as session:
             for model in (CommandResultModel, ChatOperationModel):
-                result = await session.execute(
-                    select(model).where(model.audit_expires_at <= now)
-                )
+                result = await session.execute(select(model).where(model.audit_expires_at <= now))
                 for row in result.scalars():
                     await session.delete(row)
                     deleted += 1
@@ -606,10 +625,7 @@ class RetentionService:
                 select(CommandCandidateModel).where(
                     CommandCandidateModel.audit_expires_at <= now,
                     ~select(CommandResultModel.row_id)
-                    .where(
-                        CommandResultModel.candidate_row_id
-                        == CommandCandidateModel.row_id
-                    )
+                    .where(CommandResultModel.candidate_row_id == CommandCandidateModel.row_id)
                     .exists(),
                 )
             )

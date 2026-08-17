@@ -77,6 +77,7 @@ from app.models import (
 )
 from app.offline_task_models import CreateOfflineTaskRequest, OfflineTaskType
 from app.offline_task_service import OfflineTaskService
+from app.relationship_service import RelationshipPresentationStore
 from app.settings import Settings
 from app.source_memory_store import SourceBackedMemoryStore
 
@@ -163,6 +164,7 @@ class CompanionService:
                 # 중단했다. T02는 검증된 source-backed 기억만 별도 읽기 경로로 연결한다.
                 long_term=None,
                 source_memory=SourceBackedMemoryStore(database),
+                relationship_presentation=RelationshipPresentationStore(database),
                 transcript=transcript,
                 embedder=selected_embedding.provider,
                 embedding_model=selected_embedding.model_version,
@@ -249,9 +251,7 @@ class CompanionService:
                 try:
                     async with asyncio.timeout(self._ai_timeout_seconds):
                         if hasattr(self._brain, "prepare_response"):
-                            prepared = await self._brain.prepare_response(
-                                turn, history=history
-                            )
+                            prepared = await self._brain.prepare_response(turn, history=history)
                             reply = prepared.reply
                         else:
                             reply = await self._brain.respond(turn)
@@ -453,11 +453,7 @@ class CompanionService:
     @staticmethod
     def _gather_task_plan(action: CompanionAction) -> dict[str, object]:
         resource = action.parameters.get("resource")
-        item_id = (
-            _GATHER_ITEM_IDS.get(ResourceId(resource))
-            if isinstance(resource, str)
-            else None
-        )
+        item_id = _GATHER_ITEM_IDS.get(ResourceId(resource)) if isinstance(resource, str) else None
         if item_id is None:
             raise AIServiceInvalidOutputError
         quantity = action.parameters.get("quantity")
@@ -603,9 +599,7 @@ def _conversation_key(
     return protector.hash_value("conversation-key", scope)
 
 
-def _player_key(
-    protector: CredentialProtector, *, profile_id: str, save_slot_id: str
-) -> str:
+def _player_key(protector: CredentialProtector, *, profile_id: str, save_slot_id: str) -> str:
     """마코가 사람을 식별할 불투명 키를 만든다.
 
     `_conversation_key` 와 달리 프로필·세이브슬롯만이 스코프다 — 장기기억은 세션과

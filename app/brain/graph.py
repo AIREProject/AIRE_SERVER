@@ -169,23 +169,18 @@ def _request_query_mode(
         return RequestQueryMode.CONVERSATION
     if intent in (TopIntent.ENEMY, TopIntent.LORE):
         return RequestQueryMode.INFORMATION_QUESTION
-    if (
-        intent is TopIntent.UNKNOWN
-        and GENERAL_QUESTION_PATTERN.search(text.strip()) is not None
-    ):
+    if intent is TopIntent.UNKNOWN and GENERAL_QUESTION_PATTERN.search(text.strip()) is not None:
         return RequestQueryMode.UNSUPPORTED_FACT
     return None
 
 
 def _inventory_fact(inventory: InventoryFacts) -> str:
-    items = ", ".join(
-        f"{item.item_id} {item.count}개" for item in inventory.item_totals
-    ) or "아이템 없음"
-    suffix = ", 일부 종류 생략" if inventory.truncated else ""
-    return (
-        f"인벤토리 {inventory.container_id}: 빈 슬롯 {inventory.free_slots}, "
-        f"{items}{suffix}"
+    items = (
+        ", ".join(f"{item.item_id} {item.count}개" for item in inventory.item_totals)
+        or "아이템 없음"
     )
+    suffix = ", 일부 종류 생략" if inventory.truncated else ""
+    return f"인벤토리 {inventory.container_id}: 빈 슬롯 {inventory.free_slots}, {items}{suffix}"
 
 
 def _describe_world_context(context: WorldContextFacts) -> tuple[str, ...]:
@@ -202,8 +197,7 @@ def _describe_world_context(context: WorldContextFacts) -> tuple[str, ...]:
     threat = context.threat
     if threat is not None and threat.present:
         facts.append(
-            f"주변 위협은 {threat.count}개이며 가장 가까운 종류는 "
-            f"{threat.nearest_kind}다"
+            f"주변 위협은 {threat.count}개이며 가장 가까운 종류는 {threat.nearest_kind}다"
             if threat.nearest_kind is not None
             else f"주변 위협은 {threat.count}개다"
         )
@@ -219,16 +213,12 @@ def _describe_world_context(context: WorldContextFacts) -> tuple[str, ...]:
         facts.append("주변에 확인된 자원이 없다")
 
     if context.available_workstations:
-        facts.append(
-            f"사용 가능한 작업대는 {', '.join(context.available_workstations)}다"
-        )
+        facts.append(f"사용 가능한 작업대는 {', '.join(context.available_workstations)}다")
     else:
         facts.append("사용 가능한 작업대가 없다")
 
     if context.current_work is not None:
-        facts.append(
-            f"현재 작업은 {context.current_work.type}/{context.current_work.state}다"
-        )
+        facts.append(f"현재 작업은 {context.current_work.type}/{context.current_work.state}다")
     else:
         facts.append("현재 진행 중인 작업이 없다")
 
@@ -323,6 +313,7 @@ def build_companion_graph(
                 history=state.get("history", ()),
                 memories=state.get("long_term", ()),
                 situation=describe(state["turn"].game_time),
+                relationship_state=state["turn"].relationship_state,
                 command_candidate_present=command_candidate_present,
             ),
         )
@@ -347,9 +338,8 @@ def build_companion_graph(
         assert pending is not None  # route_by_entry 가 있을 때만 이 노드로 온다
         # 질문은 되물은 자원의 답으로 해석하지 않는다. 그렇지 않으면
         # "무엇을 캘까?" → "나무를 어떻게 캐?"가 Game 후보로 승격된다.
-        if (
-            state["turn"].surface is Surface.GAME
-            and CommandIntentParser.is_gather_question(state["text"])
+        if state["turn"].surface is Surface.GAME and CommandIntentParser.is_gather_question(
+            state["text"]
         ):
             return {"pending_answered": False}
         slot = await llm.resolve_pending(state["text"], pending)
@@ -366,9 +356,7 @@ def build_companion_graph(
         # 제작법 질문은 기존 recipe facts-only 경로에 남긴다. 명시적인 allowlist 제작
         # 요청만 provider의 분류 결과와 무관하게 command 경로로 올린다.
         craft_requested = recipes.is_craft_request(state["text"])
-        recipe_query = recipes.query_for(
-            state["text"], recent_target=state.get("recipe_reference")
-        )
+        recipe_query = recipes.query_for(state["text"], recent_target=state.get("recipe_reference"))
         if craft_requested:
             intent = TopIntent.COMMAND
             recipe_query = None
@@ -376,9 +364,8 @@ def build_companion_graph(
             # Provider가 질문을 명령으로 잘못 분류해도 검증된 제작법 사실은 행동으로
             # 승격하지 않는다.
             intent = TopIntent.RECIPE
-        if (
-            state["turn"].surface is Surface.GAME
-            and CommandIntentParser.is_gather_question(state["text"])
+        if state["turn"].surface is Surface.GAME and CommandIntentParser.is_gather_question(
+            state["text"]
         ):
             # Provider가 채집 방법·가능 여부 질문을 command로 잘못 분류해도
             # Game GatherResource 후보 경계로 들어오지 못하게 한다.
@@ -441,9 +428,7 @@ def build_companion_graph(
             return await decline(state)
 
         return {
-            "display_text": await say(
-                state, scene, fallback, command_candidate_present=True
-            ),
+            "display_text": await say(state, scene, fallback, command_candidate_present=True),
             "action": CompanionAction(type=action_type),
         }
 

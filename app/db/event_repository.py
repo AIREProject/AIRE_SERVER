@@ -91,9 +91,10 @@ class SqlAlchemyEventRepository:
         )
         return result.scalar_one_or_none()
 
-    async def persist_event(self, values: dict[str, Any]) -> None:
+    async def persist_event(self, values: dict[str, Any]) -> GameEventModel:
         event_row_id = str(uuid4())
-        self._session.add(GameEventModel(row_id=event_row_id, **values))
+        event = GameEventModel(row_id=event_row_id, **values)
+        self._session.add(event)
         self._session.add(
             SourceOutboxModel(
                 source_type="Event",
@@ -106,6 +107,10 @@ class SqlAlchemyEventRepository:
                 completed_at=None,
             )
         )
+        await self._session.flush()
+        return event
+
+    async def commit(self) -> None:
         await self._session.commit()
 
     async def persist_result(self, values: dict[str, Any]) -> None:
