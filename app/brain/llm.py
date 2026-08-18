@@ -130,7 +130,7 @@ async def _without_provider_observation[T](awaitable: Awaitable[T]) -> T:
 
 
 _TOP_ROUTER_PROMPT = """사용자의 한국어 발화를 다음 의도 중 정확히 하나로 분류한다.
-- command: 따라오기, 대기, 작업 중지·취소, 자원 채집 요청, 적 공격, 플레이어 곁으로 복귀
+- command: 따라오기, 대기, 작업 중지·취소, 자원 채집·아이템 제작 요청, 적 공격, 플레이어 곁으로 복귀
 - recipe: 아이템 제작법이나 재료 질문. 적을 상대하는 방법은 enemy다.
 - enemy: 적의 약점, 공략법, 상대하는 방법을 **묻는 질문**. 공격하라는 명령 자체는 command다.
 - lore: 장소의 역사, 유래, 세계관 질문
@@ -219,6 +219,8 @@ _DIALOGUE_PROMPT_TEMPLATE = """[prompt_version] {prompt_version}
 삼지 않으며, 이미 한 말을 그대로 되풀이하지 않는다. 무엇을 말할지는 [지시]가 정한다.
 [기억]은 예전 대화에서 알게 된 것이라 확정 사실이 아니다. 게임 정보나 수치의 근거로 삼지
 않으며, 지금 말과 자연스럽게 이어질 때만 스치듯 쓰고 억지로 꺼내지 않는다.
+플레이어가 자신의 취향이나 과거에 대해 무엇을 기억하는지 직접 물었고 [기억]이 있으면,
+그 기억의 내용으로 먼저 답한다. [기억]에 없는 내용을 기억한다고 지어내지 않는다.
 Command Candidate가 없으면 행동을 수락하거나 실행하겠다고 약속하지 않는다.
 추측을 사실처럼 말하거나, 기억을 확정 게임 사실로 승격하거나, 과도한 애착·독점·영원한 약속을
 표현하지 않는다. 되묻지 않는다(단, 지시가 되물으라고 하면 예외). 이모지와 따옴표를 쓰지 않는다.
@@ -371,9 +373,7 @@ def _dialogue_user_message(spec: DialogueSpec) -> str:
     return "\n".join(lines)
 
 
-def _recipe_resolver_input(
-    text: str, options: tuple[RecipeSelectionOption, ...]
-) -> str:
+def _recipe_resolver_input(text: str, options: tuple[RecipeSelectionOption, ...]) -> str:
     candidates = "\n".join(
         f"- {option.recipe_id} | {option.result_name} | 별칭: {', '.join(option.aliases)}"
         for option in options

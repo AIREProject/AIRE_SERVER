@@ -28,7 +28,9 @@ from app.errors import (
     GameStateVersionConflictError,
     IdempotencyRecordExpiredError,
     IdentityScopeMismatchError,
+    InsufficientCraftingMaterialsError,
     InvalidPairingCodeError,
+    InventorySnapshotRequiredError,
     MemoryNotFoundError,
     OfflineTaskInvalidRequestError,
     OfflineTaskNotFoundError,
@@ -146,6 +148,18 @@ APPLICATION_ERROR_MAP: dict[type[Exception], tuple[int, ErrorCode, str, bool]] =
         400,
         ErrorCode.OFFLINE_TASK_INVALID_REQUEST,
         "The offline task request is invalid.",
+        False,
+    ),
+    InventorySnapshotRequiredError: (
+        409,
+        ErrorCode.INVENTORY_SNAPSHOT_REQUIRED,
+        "Sync the game inventory before creating a crafting task.",
+        False,
+    ),
+    InsufficientCraftingMaterialsError: (
+        409,
+        ErrorCode.INSUFFICIENT_CRAFTING_MATERIALS,
+        "The server inventory does not contain enough crafting materials.",
         False,
     ),
     UnknownCompanionError: (

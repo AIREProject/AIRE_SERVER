@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 
 from app.brain.memory import MemoryClassification
@@ -23,7 +24,8 @@ class _Classifier:
         return MemoryClassification(decision="Preference", importance=7)
 
 
-async def test_worker_stores_canonical_player_text_and_acknowledges() -> None:
+@pytest.mark.parametrize("source_mode", ["RealWorld", "GameWorld"])
+async def test_worker_stores_canonical_player_text_and_acknowledges(source_mode: str) -> None:
     database = await make_database(make_settings())
     now = datetime.now(UTC)
     profile_id = "profile-worker"
@@ -66,7 +68,7 @@ async def test_worker_stores_canonical_player_text_and_acknowledges() -> None:
                 request_id="request-worker",
                 sequence=1,
                 speaker="player",
-                source_mode="RealWorld",
+                source_mode=source_mode,
                 content="나는 비 오는 날을 좋아해",
                 content_digest="a" * 64,
                 time_context={"source": "RealWorld"},

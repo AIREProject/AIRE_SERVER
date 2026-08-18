@@ -111,7 +111,7 @@ class MemoryWorker:
             if (
                 not isinstance(message, MessageModel)
                 or message.speaker != "player"
-                or message.source_mode not in {"RealWorld", "LegacyUnknown"}
+                or message.source_mode not in {"RealWorld", "GameWorld", "LegacyUnknown"}
                 or message.content is None
             ):
                 return None

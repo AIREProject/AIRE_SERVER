@@ -47,9 +47,7 @@ class EpisodicMemoryStore(LongTermStore):
             try:
                 rows = await repository.list_for_player(player_key)
                 memories = tuple(
-                    memory
-                    for row in rows
-                    if (memory := self._memory(row)) is not None
+                    memory for row in rows if (memory := self._memory(row)) is not None
                 )
                 picked = rank(
                     memories,

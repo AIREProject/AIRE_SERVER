@@ -45,8 +45,7 @@ class RequestContextMiddleware:
         supplied_request_id = headers.get(REQUEST_ID_HEADER)
         request_id = (
             supplied_request_id
-            if supplied_request_id is not None
-            and REQUEST_ID_PATTERN.fullmatch(supplied_request_id)
+            if supplied_request_id is not None and REQUEST_ID_PATTERN.fullmatch(supplied_request_id)
             else str(uuid4())
         )
         token = request_id_context.set(request_id)

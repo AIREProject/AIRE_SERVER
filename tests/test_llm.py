@@ -134,9 +134,7 @@ async def test_local_provider_uses_chat_completions() -> None:
     client = MagicMock()
     client.chat.completions.create = AsyncMock(
         return_value=SimpleNamespace(
-            choices=[
-                SimpleNamespace(message=SimpleNamespace(content='{"text":"반가워!"}'))
-            ]
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"text":"반가워!"}'))]
         )
     )
 
@@ -294,6 +292,10 @@ async def test_mock_provider_classifies_top_intent(text: str, expected: TopInten
         ("돌 캐줘", CommandLabel.GATHER_RESOURCE),
         ("저것 좀 캐 줘", CommandLabel.GATHER_RESOURCE),
         ("철광석을 캐 줘", CommandLabel.GATHER_RESOURCE),
+        ("나무 30개만 캐놔줘", CommandLabel.GATHER_RESOURCE),
+        ("나무 30개 캐 놓아줘", CommandLabel.GATHER_RESOURCE),
+        ("나무 30개 캐둬", CommandLabel.GATHER_RESOURCE),
+        ("나무 30개 모아놔줘", CommandLabel.GATHER_RESOURCE),
         ("참호병 공격해", CommandLabel.ATTACK),
         ("공격해", CommandLabel.ATTACK),
         ("싸워", CommandLabel.ATTACK),
@@ -523,9 +525,7 @@ async def test_dialogue_system_prompt_switches_with_the_surface() -> None:
     client.chat.completions.create = AsyncMock(
         return_value=SimpleNamespace(
             choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content='{"text":"응, 나 여기 있어."}')
-                )
+                SimpleNamespace(message=SimpleNamespace(content='{"text":"응, 나 여기 있어."}'))
             ]
         )
     )

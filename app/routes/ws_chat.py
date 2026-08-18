@@ -62,8 +62,8 @@ _FRAME_SPECS: dict[str, _FrameSpec] = {
     "chat": _FrameSpec(
         request_model=ChatRequest,
         response_type="chat_response",
-        call=lambda companion, request, identity, session, protector: (
-            companion.create_response(request, identity, session, protector)
+        call=lambda companion, request, identity, session, protector: companion.create_response(
+            request, identity, session, protector
         ),
     ),
     "situation": _FrameSpec(

@@ -120,11 +120,7 @@ class MemoryCandidateService:
             )
             active_memories = tuple(result.scalars())
             memory = next(
-                (
-                    item
-                    for item in active_memories
-                    if item.normalized_text == normalized
-                ),
+                (item for item in active_memories if item.normalized_text == normalized),
                 None,
             )
             if memory is None and any(
@@ -246,14 +242,14 @@ class MemoryCandidateService:
         normalized: str,
     ) -> None:
         if candidate.memory_type in _MESSAGE_ONLY_TYPES:
-            is_direct_realworld_player = (
+            is_direct_player_message = (
                 isinstance(source, MessageModel)
                 and source.speaker == "player"
-                and source.source_mode in {"RealWorld", "LegacyUnknown"}
+                and source.source_mode in {"RealWorld", "GameWorld", "LegacyUnknown"}
             )
-            if not is_direct_realworld_player:
+            if not is_direct_player_message:
                 raise MemoryCandidateRejectedError(
-                    "Memory type requires a direct RealWorld player message."
+                    "Memory type requires a direct player message."
                 )
         elif candidate.memory_type in _EVENT_ONLY_TYPES:
             if not isinstance(source, GameEventModel):

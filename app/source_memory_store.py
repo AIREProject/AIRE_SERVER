@@ -8,6 +8,7 @@ tasks so a failed recall can never change what the system believes about a playe
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -36,6 +37,19 @@ _TYPE_ORDER = {
     "RelationshipEvidence": 3,
     "Episode": 4,
 }
+_EXPLICIT_RECALL_PATTERN = re.compile(
+    r"(?:기억(?:해|나|하고|나는|하는)|알고\s*있|내가\s*(?:뭘|뭐|무엇을?)\s*"
+    r"(?:좋아|싫어|선호)|내가.{0,20}(?:좋아|싫어|선호).{0,10}(?:뭐|무엇|기억|알)|"
+    r"내\s*(?:취향|선호)|나에\s*대해)",
+    re.IGNORECASE,
+)
+_PUNCTUATION_PATTERN = re.compile(r"[^\w\s]", flags=re.UNICODE)
+_PARTICLE_SUFFIX = re.compile(
+    r"(?:이랑|하고|에게|에서|처럼|보다|부터|까지|마다|라도|으로|한테|"
+    r"을|를|은|는|이|가|도|만|와|과|랑|로|의|에)$"
+)
+_TOKEN_STOPWORDS = frozenset({"나는", "내가", "나를", "마코", "그리고", "하지만"})
+_TOKEN_STEM_STOPWORDS = frozenset({"나", "내", "너"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +76,19 @@ class RecalledMemory:
 
 
 def _tokens(text: str) -> tuple[str, ...]:
-    return tuple(token for token in text.casefold().replace(".", " ").split() if len(token) >= 2)
+    normalized = " ".join(_PUNCTUATION_PATTERN.sub(" ", text.casefold()).split())
+    tokens: list[str] = []
+    for token in normalized.split():
+        stem = _PARTICLE_SUFFIX.sub("", token)
+        if (
+            not stem
+            or token in _TOKEN_STOPWORDS
+            or stem in _TOKEN_STEM_STOPWORDS
+            or stem in tokens
+        ):
+            continue
+        tokens.append(stem)
+    return tuple(tokens)
 
 
 def _normalize_embedding(values: Sequence[float] | None) -> tuple[float, ...] | None:
@@ -100,9 +126,10 @@ def _semantic_similarity(
 def _decayed_strength(memory: SourceBackedMemory, now: datetime) -> float:
     reference = memory.recalled_at or memory.occurred_at
     age_days = max((now - _utc(reference)).total_seconds(), 0.0) / 86_400.0
-    return memory.importance * 0.3 * math.pow(0.5, age_days / _HALF_LIFE_DAYS) + min(
-        memory.recall_count, MAX_RECALL_BONUS
-    ) * 0.5
+    return (
+        memory.importance * 0.3 * math.pow(0.5, age_days / _HALF_LIFE_DAYS)
+        + min(memory.recall_count, MAX_RECALL_BONUS) * 0.5
+    )
 
 
 class SourceBackedMemoryStore:
@@ -126,11 +153,16 @@ class SourceBackedMemoryStore:
         memories = await self._active_memories(scope)
         normalized_embedding = _normalize_embedding(query_embedding)
         query_tokens = set(_tokens(query))
+        explicit_recall = _EXPLICIT_RECALL_PATTERN.search(query) is not None
         ranked: list[tuple[float, SourceBackedMemory]] = []
         for memory in memories:
             keyword_hits = len(query_tokens.intersection(_tokens(memory.text)))
             semantic = _semantic_similarity(memory, normalized_embedding, embedding_model)
-            if keyword_hits == 0 and (semantic is None or semantic < MIN_SEMANTIC_RELEVANCE):
+            if (
+                keyword_hits == 0
+                and not explicit_recall
+                and (semantic is None or semantic < MIN_SEMANTIC_RELEVANCE)
+            ):
                 continue
             mode_bonus = (
                 0.25 if source_mode is not None and source_mode in memory.source_modes else 0.0

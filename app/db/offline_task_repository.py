@@ -7,6 +7,7 @@ from sqlalchemy import CursorResult, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
+    GameStateSnapshotModel,
     ItemModel,
     OfflineTaskModel,
     OfflineTaskPolicyModel,
@@ -30,6 +31,24 @@ class SqlAlchemyOfflineTaskRepository:
 
     async def find_slot_by_row_id(self, row_id: str) -> SaveSlotModel | None:
         return await self._session.get(SaveSlotModel, row_id)
+
+    async def lock_game_state(
+        self,
+        *,
+        profile_id: str,
+        save_slot_row_id: str,
+        companion_id: str,
+    ) -> GameStateSnapshotModel | None:
+        result = await self._session.execute(
+            select(GameStateSnapshotModel)
+            .where(
+                GameStateSnapshotModel.profile_id == profile_id,
+                GameStateSnapshotModel.save_slot_row_id == save_slot_row_id,
+                GameStateSnapshotModel.companion_id == companion_id,
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
 
     async def get_or_create_slot(self, *, profile_id: str, save_slot_id: str) -> SaveSlotModel:
         return await SaveSlotRepository(self._session).get_or_create(
@@ -98,9 +117,7 @@ class SqlAlchemyOfflineTaskRepository:
         )
         return list(result.scalars())
 
-    async def get_owned_task(
-        self, *, task_id: str, profile_id: str
-    ) -> OfflineTaskModel | None:
+    async def get_owned_task(self, *, task_id: str, profile_id: str) -> OfflineTaskModel | None:
         result = await self._session.execute(
             select(OfflineTaskModel).where(
                 OfflineTaskModel.task_id == task_id,

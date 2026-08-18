@@ -25,17 +25,13 @@ class SqlAlchemyGameStateRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get_or_create_slot(
-        self, *, profile_id: str, save_slot_id: str
-    ) -> SaveSlotModel:
+    async def get_or_create_slot(self, *, profile_id: str, save_slot_id: str) -> SaveSlotModel:
         return await SaveSlotRepository(self._session).get_or_create(
             profile_id=profile_id,
             save_slot_id=save_slot_id,
         )
 
-    async def find_slot(
-        self, *, profile_id: str, save_slot_id: str
-    ) -> SaveSlotModel | None:
+    async def find_slot(self, *, profile_id: str, save_slot_id: str) -> SaveSlotModel | None:
         result = await self._session.execute(
             select(SaveSlotModel).where(
                 SaveSlotModel.profile_id == profile_id,
@@ -83,9 +79,7 @@ class SqlAlchemyGameStateRepository:
         if not unique_ids:
             return {}
         result = await self._session.execute(
-            select(ItemModel.item_id, ItemModel.item_type).where(
-                ItemModel.item_id.in_(unique_ids)
-            )
+            select(ItemModel.item_id, ItemModel.item_type).where(ItemModel.item_id.in_(unique_ids))
         )
         return dict(result.tuples().all())
 
@@ -118,8 +112,7 @@ class SqlAlchemyGameStateRepository:
                     update(GameStateSnapshotModel)
                     .where(
                         GameStateSnapshotModel.row_id == expected_snapshot.row_id,
-                        GameStateSnapshotModel.state_version
-                        == expected_snapshot.state_version,
+                        GameStateSnapshotModel.state_version == expected_snapshot.state_version,
                     )
                     .values(**snapshot_values)
                 ),

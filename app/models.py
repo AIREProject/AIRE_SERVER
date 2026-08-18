@@ -92,9 +92,7 @@ class CommandCandidate(StrictModel):
                 or type(self.parameters.get("quantity")) is not int
                 or self.parameters.get("quantity") != 1
             ):
-                raise ValueError(
-                    "CraftItem parameters must be recipe_id=recipe-11 and quantity=1."
-                )
+                raise ValueError("CraftItem parameters must be recipe_id=recipe-11 and quantity=1.")
         return self
 
 
@@ -139,14 +137,9 @@ class ChatRequest(StrictModel):
         if self.surface is Surface.MOBILE and self.game_context is not None:
             raise ValueError("Mobile chat must not contain a game context.")
         expected_time_source = (
-            TimeSource.GAME_WORLD
-            if self.surface is Surface.GAME
-            else TimeSource.REAL_WORLD
+            TimeSource.GAME_WORLD if self.surface is Surface.GAME else TimeSource.REAL_WORLD
         )
-        if (
-            self.time_context is not None
-            and self.time_context.source is not expected_time_source
-        ):
+        if self.time_context is not None and self.time_context.source is not expected_time_source:
             raise ValueError("Time context source does not match the chat surface.")
         if len(self.allowed_commands) != len(set(self.allowed_commands)):
             raise ValueError("Allowed commands must be unique.")

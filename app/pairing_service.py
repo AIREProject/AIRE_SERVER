@@ -64,18 +64,14 @@ class PairingService:
         profile_id = f"profile-{uuid4()}"
         await self._repository.create_profile(profile_id, now)
         await self._repository.flush()
-        device = await self._new_device(
-            profile_id, DeviceRole.GAME_CLIENT, request.request_id, now
-        )
+        device = await self._new_device(profile_id, DeviceRole.GAME_CLIENT, request.request_id, now)
         try:
             await self._repository.commit()
         except DeviceWriteConflictError as error:
             # 여기 도달 가능한 충돌은 creation_request_id 유니크 위반뿐이다 — 각 호출의
             # game_registration_key(= 새 profile-<uuid4>)는 구조적으로 유일하기 때문이다.
             await self._repository.rollback()
-            existing = await self._repository.find_device_by_creation_request(
-                request.request_id
-            )
+            existing = await self._repository.find_device_by_creation_request(request.request_id)
             if existing is not None:
                 if existing.role != DeviceRole.GAME_CLIENT.value:
                     raise DuplicateRequestError from error
@@ -120,13 +116,9 @@ class PairingService:
         return self._pairing_code_response(request.request_id, model)
 
     async def pair_device(self, request: PairDeviceRequest) -> DeviceTokenResponse:
-        retried = await self._repository.find_pairing_code_by_redemption_request(
-            request.request_id
-        )
+        retried = await self._repository.find_pairing_code_by_redemption_request(request.request_id)
         if retried is not None:
-            if not self._protector.verify(
-                "pairing-code", request.pairing_code, retried.code_hash
-            ):
+            if not self._protector.verify("pairing-code", request.pairing_code, retried.code_hash):
                 raise InvalidPairingCodeError
             if retried.paired_device_id is None:
                 raise InvalidPairingCodeError
@@ -225,9 +217,7 @@ class PairingService:
             await self._repository.commit()
         return DeviceRevocationResponse(request_id=request_id, device_id=device_id)
 
-    async def _match_pairing_code(
-        self, raw_code: str, now: datetime
-    ) -> PairingCodeModel | None:
+    async def _match_pairing_code(self, raw_code: str, now: datetime) -> PairingCodeModel | None:
         """제시된 코드와 후보들을 HMAC 으로 대조한다.
 
         후보는 만료 후 TTL 만큼의 유예 안에 있는 것들뿐이다(`list_recent_pairing_codes`).
@@ -315,9 +305,7 @@ class PairingService:
                 else None
             ),
             revoked_at=(
-                PairingService._as_utc(device.revoked_at)
-                if device.revoked_at is not None
-                else None
+                PairingService._as_utc(device.revoked_at) if device.revoked_at is not None else None
             ),
         )
 

@@ -73,7 +73,7 @@ def test_source_backed_memory_migrations_upgrade_from_fresh_and_0010(
         memory_columns = {row[1] for row in connection.execute("PRAGMA table_info(memories)")}
 
     assert TABLES <= tables
-    assert revision == ("0015",)
+    assert revision == ("0016",)
     assert {"recalled_at", "recall_count", "embedding", "embedding_model"} <= memory_columns
     assert "uq_messages_conversation_sequence" in message_sql
     assert "Transient" in message_sql and "MemorySource" in message_sql

@@ -3,6 +3,8 @@
 from datetime import datetime
 from enum import StrEnum
 
+from pydantic import Field
+
 from app.models import StableId, StrictModel
 
 
@@ -29,7 +31,7 @@ class CreateOfflineTaskRequest(StrictModel):
     task_type: OfflineTaskType
     item_id: StableId | None = None
     # 채팅으로 자동 시작된(경과시간으로 진행량을 역산하는) 작업에서만 채워진다.
-    quantity: int | None = None
+    quantity: int | None = Field(default=None, ge=1, le=50)
 
 
 class OfflineTaskView(StrictModel):

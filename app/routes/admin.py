@@ -113,9 +113,7 @@ def _devices_service(session: DatabaseSession) -> AdminCrudService[AdminDeviceRe
 
 
 @router.post("/devices", response_model=AdminDeviceResponse)
-async def create_device(
-    body: DeviceCreateRequest, session: DatabaseSession
-) -> AdminDeviceResponse:
+async def create_device(body: DeviceCreateRequest, session: DatabaseSession) -> AdminDeviceResponse:
     return await _devices_service(session).create_resource(body)
 
 
@@ -320,16 +318,12 @@ async def list_recipes(
     return await _recipes_service(session).list_resources(limit=limit, offset=offset)
 
 
-@router.get(
-    "/recipes/{recipe_id}", response_model=RecipeResponse, response_model_by_alias=False
-)
+@router.get("/recipes/{recipe_id}", response_model=RecipeResponse, response_model_by_alias=False)
 async def get_recipe(recipe_id: str, session: DatabaseSession) -> RecipeResponse:
     return await _recipes_service(session).get_resource(recipe_id)
 
 
-@router.patch(
-    "/recipes/{recipe_id}", response_model=RecipeResponse, response_model_by_alias=False
-)
+@router.patch("/recipes/{recipe_id}", response_model=RecipeResponse, response_model_by_alias=False)
 async def update_recipe(
     recipe_id: str, body: RecipeUpdateRequest, session: DatabaseSession
 ) -> RecipeResponse:
@@ -479,9 +473,7 @@ async def create_locations_bulk(
     return BulkCreateResponse(created=created)
 
 
-@router.get(
-    "/locations", response_model=list[LocationResponse], response_model_by_alias=False
-)
+@router.get("/locations", response_model=list[LocationResponse], response_model_by_alias=False)
 async def list_locations(
     session: DatabaseSession, limit: Limit = 50, offset: Offset = 0
 ) -> list[LocationResponse]:

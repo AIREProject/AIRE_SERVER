@@ -206,11 +206,7 @@ def strength(memory: LongTermMemory, *, now: datetime) -> float:
 
     reference = memory.recalled_at or memory.created_at
     age_days = max((now - reference).total_seconds(), 0.0) / 86_400.0
-    decayed = (
-        memory.importance
-        * _IMPORTANCE_WEIGHT
-        * float(0.5 ** (age_days / HALF_LIFE_DAYS))
-    )
+    decayed = memory.importance * _IMPORTANCE_WEIGHT * float(0.5 ** (age_days / HALF_LIFE_DAYS))
     return decayed + min(memory.recall_count, MAX_RECALL_BONUS) * _RECALL_BONUS_WEIGHT
 
 
@@ -461,8 +457,10 @@ def _score(
     """
 
     hits = sum(1 for keyword in memory.keywords if keyword in normalized_query)
-    return hits * 2 + strength(memory, now=now) + _semantic_bonus(
-        memory, query_embedding, embedding_model=embedding_model
+    return (
+        hits * 2
+        + strength(memory, now=now)
+        + _semantic_bonus(memory, query_embedding, embedding_model=embedding_model)
     )
 
 
@@ -724,9 +722,7 @@ class FileLongTermStore:
         """
 
         updated = {
-            memory.text: replace(
-                memory, recalled_at=now, recall_count=memory.recall_count + 1
-            )
+            memory.text: replace(memory, recalled_at=now, recall_count=memory.recall_count + 1)
             for memory in picked
         }
         self._cache_put(player_key, tuple(updated.get(m.text, m) for m in memories))

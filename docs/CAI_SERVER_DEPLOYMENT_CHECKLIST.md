@@ -177,6 +177,12 @@ uv run python -m scripts.evaluate_live_memory_classifier
 
 ## 8. Readiness와 공개 계약 확인
 
+`0016`부터 Web 제작 예약이 서버 Game State Inventory를 차감합니다. 배포 전에 반드시
+`alembic upgrade head`를 실행하고 `/openapi.json`에서 `Command.CraftItem`과
+`X-Base-State-Version`을 확인합니다. 기존 Game State Snapshot이 없는 사용자는 게임에서
+Inventory를 한 번 동기화하기 전까지 Web 제작이 `InventorySnapshotRequired`로 거절되는 것이
+정상입니다. 재료 부족은 `InsufficientCraftingMaterials`이며 Task나 부분 차감이 생기면 안 됩니다.
+
 ```bash
 curl -fsS http://127.0.0.1:8000/health
 curl -fsS http://127.0.0.1:8000/ready

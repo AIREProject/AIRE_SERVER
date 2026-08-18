@@ -86,6 +86,14 @@ class OfflineTaskInvalidRequestError(RuntimeError):
     pass
 
 
+class InventorySnapshotRequiredError(RuntimeError):
+    pass
+
+
+class InsufficientCraftingMaterialsError(RuntimeError):
+    pass
+
+
 class UnknownCompanionError(RuntimeError):
     pass
 
@@ -154,6 +162,8 @@ class ErrorCode(StrEnum):
     OFFLINE_TASK_NOT_FOUND = "OfflineTaskNotFound"
     OFFLINE_TASK_TRANSITION = "OfflineTaskTransitionNotAllowed"
     OFFLINE_TASK_INVALID_REQUEST = "OfflineTaskInvalidRequest"
+    INVENTORY_SNAPSHOT_REQUIRED = "InventorySnapshotRequired"
+    INSUFFICIENT_CRAFTING_MATERIALS = "InsufficientCraftingMaterials"
     UNKNOWN_COMPANION = "UnknownCompanion"
     GAME_STATE_NOT_FOUND = "GameStateNotFound"
     GAME_STATE_VERSION_CONFLICT = "GameStateVersionConflict"

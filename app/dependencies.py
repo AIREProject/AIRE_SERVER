@@ -132,9 +132,7 @@ async def _ensure_open_gate_identity(
                     token_hash="0" * 64,
                     creation_request_id=f"OPEN_GATE_{identity.role.value}",
                     game_registration_key=(
-                        identity.profile_id
-                        if identity.role is DeviceRole.GAME_CLIENT
-                        else None
+                        identity.profile_id if identity.role is DeviceRole.GAME_CLIENT else None
                     ),
                     created_at=now,
                     last_used_at=now,
@@ -202,9 +200,7 @@ def get_admin_token(
 
     supplied = _require_admin_credentials(credentials)
     configured = (
-        settings.admin_api_token.get_secret_value()
-        if settings.admin_api_token is not None
-        else ""
+        settings.admin_api_token.get_secret_value() if settings.admin_api_token is not None else ""
     )
     if not configured:
         raise AdminAuthenticationUnavailableError("Admin authentication is not configured.")

@@ -28,9 +28,7 @@ ENEMY_PATTERN = re.compile(
     rf"(?:{_ENEMY_ALIASES}).*{_ENEMY_ACTION}|{_ENEMY_ACTION}.*(?:{_ENEMY_ALIASES})",
     re.IGNORECASE,
 )
-LORE_PATTERN = re.compile(
-    r"(?:마을|지역|여기).*(?:역사|유래|어떤 곳|무슨 곳)|(?:역사|유래|세계관)"
-)
+LORE_PATTERN = re.compile(r"(?:마을|지역|여기).*(?:역사|유래|어떤 곳|무슨 곳)|(?:역사|유래|세계관)")
 CONVERSATION_PATTERN = re.compile(
     r"(?:안녕|반가워|고마워|감사|잘 지냈|어때|"
     r"좋아해|좋아하|싫어해|싫어하|선호해|선호하|"
@@ -56,11 +54,10 @@ class CommandIntentParser:
         r"(?:이제 |작업 |하던 거 )?(?:멈춰|그만|중지해)(?: 줘| 주세요)?"
         r"|됐어|취소|나중에 하자"
     )
-    _RETURN = re.compile(
-        r"(?:내 (?:옆|곁)으로 )?(?:돌아와|이리 와)(?: 줘| 주세요| 줄래)?$"
-    )
+    _RETURN = re.compile(r"(?:내 (?:옆|곁)으로 )?(?:돌아와|이리 와)(?: 줘| 주세요| 줄래)?$")
     _GATHER_VERB = re.compile(
-        r"(?:모아|캐|채집해|가져와)(?:\s*(?:줘|주세요|줄래))?$"
+        r"(?:모아|캐|채집해|가져와)(?:\s*(?:놔|놓아|둬|두어))?"
+        r"(?:\s*(?:줘|주세요|줄래|쇼))?$"
     )
     # "잡"/"처치"/"상대"/"어떻게"는 _ENEMY_ACTION 이 이미 쓰는 단어라, 여기 섞으면
     # "참호병 어떻게 잡아?" 같은 질문이 공격 명령으로 오분류된다.
@@ -83,14 +80,13 @@ class CommandIntentParser:
         r"(?:어떻게|방법|(?:캐|모으|채집|가져)(?:는|하는)?\s*법|"
         r"가능|할\s*수|뭘|무엇|뭐|왜|어디)"
     )
-    _GATHER_QUESTION_ENDING = re.compile(
-        r"(?:할까|될까|가능할까|할까요|될까요|인가요|나요|니)$"
-    )
-    _GATHER_REQUEST_SUFFIX = re.compile(r"(?:줘|주세요|줄래)$")
+    _GATHER_QUESTION_ENDING = re.compile(r"(?:할까|될까|가능할까|할까요|될까요|인가요|나요|니)$")
+    _GATHER_REQUEST_SUFFIX = re.compile(r"(?:줘|주세요|줄래|쇼)$")
     _GATHER_REFERENCE = re.compile(r"(?:캐|채집|모으|모아|가져|자원)")
     _AMBIGUOUS_REFERENCE = re.compile(r"(?:저것|이것|그것|무언가|뭔가|자원)")
     _BARE_GATHER = re.compile(
-        r"(?:좀 )?(?:모아|캐|채집해|가져와)(?:\s*(?:줘|주세요|줄래))?"
+        r"(?:좀 )?(?:모아|캐|채집해|가져와)(?:\s*(?:놔|놓아|둬|두어))?"
+        r"(?:\s*(?:줘|주세요|줄래|쇼))?"
     )
 
     _resources = ResourceRepository()
@@ -123,9 +119,7 @@ class CommandIntentParser:
             return ResourceSlot.UNSPECIFIED, quantity
         if resources:
             return ResourceSlot(resources[0].value), quantity
-        if cls._AMBIGUOUS_REFERENCE.search(normalized) or cls._BARE_GATHER.fullmatch(
-            normalized
-        ):
+        if cls._AMBIGUOUS_REFERENCE.search(normalized) or cls._BARE_GATHER.fullmatch(normalized):
             return ResourceSlot.UNSPECIFIED, quantity
         # 채집 동사는 있는데 아는 자원이 없으면 지원하지 않는 자원을 말한 것이다.
         return ResourceSlot.OTHER, quantity
@@ -167,7 +161,7 @@ class CommandIntentParser:
             return False
         # 한국어의 공손한 요청형은 물음표를 붙여도 명령이다("캐줄래?"). 반면
         # 동사만 남은 "캐?"는 방법/가능 질문으로 취급해 Game 후보를 막는다.
-        punctuation_question = "?" in text or "\uFF1F" in text
+        punctuation_question = "?" in text or "\uff1f" in text
         if punctuation_question and cls._GATHER_REQUEST_SUFFIX.search(normalized):
             punctuation_question = False
         return bool(
@@ -189,9 +183,7 @@ class CommandIntentParser:
         return cls._ATTACK_VERB.search(cls.normalize(text)) is not None
 
     @classmethod
-    def corroborate(
-        cls, text: str, proposed: CommandClassification
-    ) -> CommandClassification:
+    def corroborate(cls, text: str, proposed: CommandClassification) -> CommandClassification:
         """LLM Command를 사용자 원문의 명시적 행동 요청과 대조한다.
 
         Provider는 명령 계열만 제안한다. 실제 label과 Gather 슬롯·수량은 원문에 같은 계열의
@@ -214,10 +206,7 @@ class CommandIntentParser:
                 quantity=None,
             )
         if cls.is_gather_command(text):
-            if (
-                proposed.command is not CommandLabel.GATHER_RESOURCE
-                or cls.is_gather_question(text)
-            ):
+            if proposed.command is not CommandLabel.GATHER_RESOURCE or cls.is_gather_question(text):
                 return rejected
             resource, quantity = cls.resolve_gather(text)
             return CommandClassification(

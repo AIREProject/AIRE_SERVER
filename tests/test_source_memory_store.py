@@ -144,6 +144,35 @@ async def test_purged_source_and_unrelated_query_fail_closed() -> None:
     assert await store.recall(scope, query="레시피", source_mode="RealWorld") == ()
 
 
+async def test_explicit_memory_question_recalls_preferences_without_embeddings() -> None:
+    database = await make_database(make_settings())
+    await _memory(database, memory_id="memory-wood", text="나는 나무가 너무좋아")
+
+    recalled = await SourceBackedMemoryStore(database).recall(
+        SourceScope("profile-a", "slot-a", "mako"),
+        query="내가 뭘 좋아하는지 기억해?",
+        source_mode="RealWorld",
+    )
+
+    assert [(item.trace_id, item.text) for item in recalled] == [
+        ("M0", "나는 나무가 너무좋아")
+    ]
+
+    second = await SourceBackedMemoryStore(database).recall(
+        SourceScope("profile-a", "slot-a", "mako"),
+        query="내가 좋아하는 게 뭐야?",
+        source_mode="RealWorld",
+    )
+    assert [item.text for item in second] == ["나는 나무가 너무좋아"]
+
+    relevant = await SourceBackedMemoryStore(database).recall(
+        SourceScope("profile-a", "slot-a", "mako"),
+        query="나무 좋아해?",
+        source_mode="RealWorld",
+    )
+    assert [item.text for item in relevant] == ["나는 나무가 너무좋아"]
+
+
 async def test_prompt_memory_budget_never_exceeds_three_entries_or_360_characters() -> None:
     database = await make_database(make_settings())
     for index in range(4):

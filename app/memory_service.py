@@ -59,9 +59,7 @@ class MemoryService:
             self._session.add(correction)
         await self._session.commit()
         if correction is None:
-            correction = (await self._latest_corrections((memory.memory_id,))).get(
-                memory.memory_id
-            )
+            correction = (await self._latest_corrections((memory.memory_id,))).get(memory.memory_id)
         sources = await self._sources((memory.memory_id,))
         return self._view(memory, save_slot_id, correction, sources[memory.memory_id])
 

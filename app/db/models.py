@@ -415,6 +415,14 @@ class OfflineTaskModel(Base):
     quantity: Mapped[int | None] = mapped_column(Integer)
     result_quantity: Mapped[int | None] = mapped_column(Integer)
     seconds_per_item: Mapped[float | None] = mapped_column()
+    reserved_item_id: Mapped[str | None] = mapped_column(
+        ForeignKey("items.item_id"),
+        index=True,
+    )
+    reserved_quantity: Mapped[int | None] = mapped_column(Integer)
+    reserved_mako_quantity: Mapped[int | None] = mapped_column(Integer)
+    reserved_storage_quantity: Mapped[int | None] = mapped_column(Integer)
+    inventory_state_version: Mapped[int | None] = mapped_column(Integer)
 
 
 class GameStateSnapshotModel(Base):

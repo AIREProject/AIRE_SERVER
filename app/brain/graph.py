@@ -94,8 +94,9 @@ class CompanionState(TypedDict):
     pending: NotRequired[PendingSlot | None]
     # PendingSlot과 의미가 다른, 직전 Recipe 질의의 검증된 단일 대상.
     recipe_reference: NotRequired[RecipeTarget | None]
-    # 최근에 오간 말. **대사 생성에만** 쓴다 — 분류 노드는 읽지 않는다. 기록이 분류에 끼면
-    # 세 턴 전 "따라와" 가 지금 명령을 다시 쏘는 길이 열린다.
+    # 최근에 오간 말은 원칙적으로 대사 생성에만 쓴다. 단, 직전 companion 발화가 직접
+    # 질문이고 현재 발화가 짧은 비명령 답변이면 conversation으로만 복구한다. 과거 발화로
+    # Command를 만들거나 슬롯을 채우지는 않는다.
     history: NotRequired[tuple[ConversationTurn, ...]]
     # 지난 세션들에서 회수한 기억. 브레인이 그래프를 부르기 전에 골라 넣는다. `history` 와
     # 같은 규칙이 그대로 적용된다 — **대사 생성에만** 쓰고 분류 노드는 읽지 않는다.
@@ -111,6 +112,7 @@ class CompanionState(TypedDict):
     quantity: NotRequired[int | None]
     craft_requested: NotRequired[bool]
     craft_recipe_id: NotRequired[str | None]
+    craft_quantity: NotRequired[int | None]
     # 출력 누산기 (터미널 노드가 채움)
     display_text: NotRequired[str]
     action: NotRequired[CompanionAction | None]
@@ -133,6 +135,7 @@ class CompanionUpdate(TypedDict, total=False):
     quantity: int | None
     craft_requested: bool
     craft_recipe_id: str | None
+    craft_quantity: int | None
     display_text: str
     action: CompanionAction | None
     next_pending: PendingSlot | None
@@ -274,6 +277,28 @@ def selected_route(state: CompanionState) -> str:
     return route_by_command(state) if top_route == "command_classify" else top_route
 
 
+def _is_contextual_conversation_reply(text: str, history: tuple[ConversationTurn, ...]) -> bool:
+    """직전 직접 질문에 대한 짧은 답만 대화로 복구한다.
+
+    현재 원문 자체가 행동 요청이면 무조건 False다. 따라서 오래된 질문이나 명령이 현재
+    턴의 행동을 다시 발생시키는 통로가 되지 않는다.
+    """
+
+    normalized = CommandIntentParser.normalize(text)
+    if not normalized or len(normalized) > 40:
+        return False
+    if (
+        CommandIntentParser.classify_simple_command(text) is not None
+        or CommandIntentParser.is_gather_command(text)
+        or CommandIntentParser.is_attack_command(text)
+    ):
+        return False
+    if not history or history[-1].speaker != "companion":
+        return False
+    companion_text = history[-1].text
+    return "?" in companion_text or "\uff1f" in companion_text
+
+
 def build_companion_graph(
     llm: LLMProvider,
     recipes: RecipeRepository,
@@ -362,7 +387,15 @@ def build_companion_graph(
         intent = await llm.classify_top(state["text"], clarification_pending=False)
         # 제작법 질문은 기존 recipe facts-only 경로에 남긴다. 명시적인 allowlist 제작
         # 요청만 provider의 분류 결과와 무관하게 command 경로로 올린다.
-        craft_requested = recipes.is_craft_request(state["text"])
+        craft_requested = recipes.looks_like_craft_request(state["text"])
+        mobile_craft = (
+            recipes.mobile_craft_request_for(state["text"])
+            if state["turn"].surface is Surface.MOBILE
+            else None
+        )
+        if craft_requested and state["turn"].surface is Surface.MOBILE and mobile_craft is None:
+            selection = await llm.resolve_recipe(state["text"], recipes.selection_options())
+            mobile_craft = recipes.mobile_craft_request_from_selection(state["text"], selection)
         recipe_query = recipes.query_for(state["text"], recent_target=state.get("recipe_reference"))
         if craft_requested:
             intent = TopIntent.COMMAND
@@ -371,6 +404,10 @@ def build_companion_graph(
             # Provider가 질문을 명령으로 잘못 분류해도 검증된 제작법 사실은 행동으로
             # 승격하지 않는다.
             intent = TopIntent.RECIPE
+        elif intent is TopIntent.UNKNOWN and _is_contextual_conversation_reply(
+            state["text"], state.get("history", ())
+        ):
+            intent = TopIntent.CONVERSATION
         if state["turn"].surface is Surface.GAME and CommandIntentParser.is_gather_question(
             state["text"]
         ):
@@ -381,9 +418,7 @@ def build_companion_graph(
         if intent is TopIntent.RECIPE and recipes.should_resolve_natural_language(
             state["text"], recipe_query
         ):
-            selection = await llm.resolve_recipe(
-                state["text"], recipes.selection_options()
-            )
+            selection = await llm.resolve_recipe(state["text"], recipes.selection_options())
             resolved_query = recipes.query_from_selection(selection)
             if resolved_query is not None:
                 recipe_query = resolved_query
@@ -398,25 +433,49 @@ def build_companion_graph(
             "top_intent": intent,
             "query_mode": query_mode,
             "recipe_query": recipe_query,
+            "craft_requested": craft_requested,
+            "craft_recipe_id": mobile_craft.recipe_id if mobile_craft is not None else None,
+            "craft_quantity": mobile_craft.quantity if mobile_craft is not None else None,
         }
 
     async def command_classify_node(state: CompanionState) -> CompanionUpdate:
         proposed = await llm.classify_command(state["text"])
         classification = CommandIntentParser.corroborate(state["text"], proposed)
-        craft_requested = recipes.is_craft_request(state["text"])
+        craft_requested = state.get("craft_requested", recipes.is_craft_request(state["text"]))
+        craft_recipe_id = state.get("craft_recipe_id")
+        craft_quantity = state.get("craft_quantity")
+        if state["turn"].surface is Surface.GAME:
+            craft_recipe_id = recipes.craft_recipe_id_for(state["text"])
         return {
             "command_label": classification.command,
             "resource": classification.resource,
             "quantity": classification.quantity,
             "craft_requested": craft_requested,
-            "craft_recipe_id": recipes.craft_recipe_id_for(state["text"]),
+            "craft_recipe_id": craft_recipe_id,
+            "craft_quantity": craft_quantity,
         }
 
     async def craft_node(state: CompanionState) -> CompanionUpdate:
-        """allowlist된 철검 제작 요청을 고정 Recipe 계약으로 변환한다."""
+        """창구별 allowlist 제작 요청을 stable Recipe 계약으로 변환한다."""
 
         turn = state["turn"]
         recipe_id = state.get("craft_recipe_id")
+        quantity = state.get("craft_quantity")
+        if turn.surface is Surface.MOBILE:
+            if (
+                not state.get("craft_requested")
+                or recipe_id != "recipe-1"
+                or quantity is None
+                or CommandType.CRAFT_ITEM not in turn.allowed_actions
+            ):
+                return await decline(state)
+            return {
+                "display_text": f"좋아. 엉성한 붕대 {quantity}개 제작을 예약할게.",
+                "action": CompanionAction(
+                    type=CommandType.CRAFT_ITEM,
+                    parameters={"recipe_id": recipe_id, "quantity": quantity},
+                ),
+            }
         if (
             not state.get("craft_requested")
             or recipe_id != "recipe-11"

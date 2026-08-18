@@ -212,16 +212,17 @@ Header는 `Authorization: Bearer AIRE_WEB`을 사용하고 다음 field를 바�
     "period": "Afternoon"
   },
   "recent_event_ids": [],
-  "allowed_commands": ["Command.GatherResource"]
+  "allowed_commands": ["Command.GatherResource", "Command.CraftItem"]
 }
 ```
 
 Mobile은 `game_context`를 생략하거나 `null`로 보낸다. `{}` 및 임의 자유 형식 object는
 허용하지 않는다. `surface=game`에서는 `game_context`가 반드시 위 Context v1이어야 한다.
-Mobile Web은 Offline Gathering 변환을 위해 `Command.GatherResource` 하나만 광고한다. 검증된
-채집 요청은 UE Command 후보를 반환하지 않고 `offline_task_id`가 있는 `InProgress` Task 한
-건으로 저장한다. `나무30개`처럼 자원과 수량을 붙여 쓴 입력도 wood 30으로 해석하며, Task 전체
-상태는 `GET /api/v1/tasks`에서 확인한다.
+Mobile Web은 Offline Gathering/Crafting 변환을 위해 `Command.GatherResource`와
+`Command.CraftItem`을 광고한다. 검증된 요청은 UE Command 후보를 반환하지 않고
+`offline_task_id`가 있는 `InProgress` Task 한 건으로 저장한다. `나무30개 캐놔줘`,
+`캐 놓아줘`, `캐둬`, `모아놔줘`는 같은 채집 요청으로 정규화한다. 제작은 현재 검증된
+`recipe-1` 엉성한 붕대와 수량 1~50만 허용하고 제작법 질문은 Task로 바꾸지 않는다.
 
 현재 `TimeContext`는 `GameWorld`와 `RealWorld` 모두 `day/hour/period` 구조를 사용합니다.
 `observed_at`, `timezone`, `interaction_mode`는 계약 field가 아닙니다.
@@ -326,8 +327,9 @@ memory는 허용하지 않으며, Archived memory는 검색·목록·상세에 �
 canonical Message/Event 원문은 변경하지 않습니다.
 
 각 `MemoryView.sources[]`는 내부 ID나 원문 없이 `source_type`, `source_mode`, `occurred_at`만
-제공합니다. `LegacyUnknown` Message는 공개 응답에서 `Legacy` source로 표시됩니다. 최신 정정문은
-목록·검색뿐 아니라 실제 Prompt 회상에도 동일하게 사용됩니다.
+제공합니다. 직접 발화는 Chat surface에 따라 `Message + RealWorld` 또는
+`Message + GameWorld`로 구분하며, `LegacyUnknown` Message는 공개 응답에서 `Legacy` source로
+표시됩니다. 최신 정정문은 목록·검색뿐 아니라 실제 Prompt 회상에도 동일하게 사용됩니다.
 
 `DELETE /api/v1/memories/{memory_id}?reason={reason}`와
 `POST /api/v1/memories/reset`은 memory를 `Archived`로 전이합니다. 이는 legal erasure가 아니라
@@ -440,6 +442,13 @@ Task만 `Pending`으로 시작해 GameClient의 `/start`를 기다립니다.
 
 나무 재료의 canonical Item ID는 `PlantStem` 하나입니다. `Branch`는 migration 0015에서
 기존 Task·Recipe·Game State 참조와 함께 `PlantStem`으로 병합되며 새 요청에는 허용하지 않습니다.
+
+`Crafting/ShoddyBandage`는 최신 Game State의 MAKO → Shared Storage 순서로 결과 1개당
+`PlantStem` 2개를 Task 생성과 같은 transaction에서 예약 차감합니다. Snapshot이 없으면
+`409 InventorySnapshotRequired`, 수량이 부족하면 `409 InsufficientCraftingMaterials`이며
+Task와 차감 모두 생기지 않습니다. 같은 `request_id` 재전송은 기존 Task를 반환하고 다시
+차감하지 않습니다. `Pending/InProgress` 제작 Task 삭제는 예약했던 각 컨테이너 수량을 같은
+transaction에서 환불합니다.
 
 ### 6.3 목록
 
@@ -614,6 +623,9 @@ PUT은 `(profile, save_slot, companion, operation_id)`와 원문 body hash를 �
    Snapshot은 바뀌지 않습니다. JSON 의미가 같아도 bytes가 다르면 다른 body입니다.
 3. 새 operation은 현재 값보다 큰 `state_version`만 허용합니다. 같거나 낮으면
    `409 GameStateVersionConflict`이며 부분 저장이나 last-write-wins를 하지 않습니다.
+4. 서버가 제작 예약·환불로 Snapshot을 변경한 뒤의 GameClient PUT은 GET으로 확인한 현재
+   version을 `X-Base-State-Version`에 보내야 합니다. 헤더가 없거나 현재 version과 다르면
+   `409 GameStateVersionConflict`로 서버 차감을 되살리는 stale overwrite를 막습니다.
 
 strict field, schema/content version, Inventory bounds, Item/Weapon 의미 검증 실패는
 `400 InvalidRequest`이며 저장 상태를 바꾸지 않습니다.

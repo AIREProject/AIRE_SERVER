@@ -34,7 +34,12 @@ from app.brain.memory import (
 )
 from app.brain.recipes import RecipeRepository, RecipeSelection, RecipeSelectionOption
 from app.brain.resources import MAX_GATHER_QUANTITY, ResourceRepository
-from app.brain.store import MAX_ASK_COUNT, InMemoryConversationStore, PendingSlot
+from app.brain.store import (
+    MAX_ASK_COUNT,
+    ConversationTurn,
+    InMemoryConversationStore,
+    PendingSlot,
+)
 from app.gamedata.dataset import ITEMS
 from app.models import CommandType, Surface, TimeContext, TimeSource
 
@@ -52,9 +57,7 @@ def make_turn(
         conversation_key=conversation_key,
         surface=surface,
         game_time=game_time,
-        allowed_actions=(
-            frozenset(CommandType) if allowed_actions is None else allowed_actions
-        ),
+        allowed_actions=(frozenset(CommandType) if allowed_actions is None else allowed_actions),
     )
 
 
@@ -187,6 +190,10 @@ async def test_every_terminal_node_fills_display_text(text: str) -> None:
         # 수량을 말했을 때만 수량이 흐른다.
         ("나무 20개 캐 줘", {"resource": "wood", "quantity": 20}),
         ("나무30개 캐줘", {"resource": "wood", "quantity": 30}),
+        ("나무 30개만 캐놔줘", {"resource": "wood", "quantity": 30}),
+        ("나무 30개 캐 놓아줘", {"resource": "wood", "quantity": 30}),
+        ("나무 30개 캐둬", {"resource": "wood", "quantity": 30}),
+        ("나무 30개 모아놔줘", {"resource": "wood", "quantity": 30}),
         ("바위 3개 캐 줘", {"resource": "stone", "quantity": 3}),
         # 수량 미명시는 실패가 아니다. 키를 비워 게임이 기본량을 정하게 한다.
         ("나무를 모아 줘", {"resource": "wood"}),
@@ -239,6 +246,87 @@ async def test_provider_cannot_turn_general_conversation_into_a_command(
     assert final.get("action") is None
 
 
+async def test_short_answer_to_companion_question_stays_in_conversation() -> None:
+    text = "팔"
+    final = await make_graph().ainvoke(
+        {
+            "turn": make_turn(text, surface=Surface.MOBILE),
+            "text": text,
+            "history": (
+                ConversationTurn(speaker="player", text="나 잘렸어"),
+                ConversationTurn(
+                    speaker="companion",
+                    text="어디가 어떻게 잘린 거야? 상태를 좀 더 자세히 말해줘.",
+                ),
+            ),
+        }
+    )
+
+    assert final["top_intent"] is TopIntent.CONVERSATION
+    assert final.get("action") is None
+    assert final["display_text"] != SURFACE_PROFILES[Surface.MOBILE].unsupported.text
+
+
+async def test_mobile_shoddy_bandage_request_emits_offline_craft_action() -> None:
+    text = "엉성한붕대 3개 만들어놔줘"
+    final = await make_graph().ainvoke(
+        {
+            "turn": make_turn(
+                text,
+                frozenset({CommandType.CRAFT_ITEM}),
+                surface=Surface.MOBILE,
+            ),
+            "text": text,
+        }
+    )
+
+    assert final["display_text"] == "좋아. 엉성한 붕대 3개 제작을 예약할게."
+    assert final["action"] is not None
+    assert final["action"].type is CommandType.CRAFT_ITEM
+    assert final["action"].parameters == {"recipe_id": "recipe-1", "quantity": 3}
+
+
+async def test_natural_language_bandage_alias_uses_validated_recipe_for_craft() -> None:
+    provider = NaturalRecipeProvider(
+        RecipeSelection(decision="match", candidate_recipe_ids=("recipe-1",), confidence=95)
+    )
+    text = "엉붕 만들어줘"
+    final = await make_graph(provider).ainvoke(
+        {
+            "turn": make_turn(
+                text,
+                frozenset({CommandType.CRAFT_ITEM}),
+                surface=Surface.MOBILE,
+            ),
+            "text": text,
+        }
+    )
+
+    assert provider.recipe_inputs == [text]
+    assert final["action"] is not None
+    assert final["action"].type is CommandType.CRAFT_ITEM
+    assert final["action"].parameters == {"recipe_id": "recipe-1", "quantity": 1}
+
+
+async def test_natural_language_craft_rejects_an_unverified_recipe_selection() -> None:
+    provider = NaturalRecipeProvider(
+        RecipeSelection(decision="match", candidate_recipe_ids=("recipe-999",), confidence=100)
+    )
+    text = "엉붕 만들어줘"
+    final = await make_graph(provider).ainvoke(
+        {
+            "turn": make_turn(
+                text,
+                frozenset({CommandType.CRAFT_ITEM}),
+                surface=Surface.MOBILE,
+            ),
+            "text": text,
+        }
+    )
+
+    assert final.get("action") is None
+
+
 async def test_provider_command_family_must_match_the_user_utterance() -> None:
     provider = ForcedCommandProvider(
         CommandClassification(
@@ -268,7 +356,14 @@ async def test_provider_cannot_answer_a_pending_resource_with_unrelated_text() -
 
 @pytest.mark.parametrize(
     "text",
-    ["나무를 모아 줘", "나무 좀 캐 줘", "장작 모아줘", "나무 캐줄래?", "나무 캐 줘?"],
+    [
+        "나무를 모아 줘",
+        "나무 좀 캐 줘",
+        "장작 모아줘",
+        "나무 캐줄래?",
+        "나무 캐 줘?",
+        "나무 캐쇼",
+    ],
 )
 async def test_game_gather_emits_canonical_wood_parameters(text: str) -> None:
     final = await make_graph().ainvoke(
@@ -636,9 +731,7 @@ class NaturalRecipeProvider(RecordingProvider):
 
 async def test_dialogue_candidate_flag_matches_the_emitted_action() -> None:
     accepted_provider = RecordingProvider()
-    accepted = await say(
-        CompanionBrain(accepted_provider), "따라와", key="candidate-accepted"
-    )
+    accepted = await say(CompanionBrain(accepted_provider), "따라와", key="candidate-accepted")
 
     assert accepted.action is not None
     assert accepted_provider.dialogue_specs[-1].command_candidate_present is True
@@ -692,9 +785,7 @@ async def test_recipe_list_detail_and_compare_bypass_dialogue_generation() -> No
 
 async def test_natural_language_recipe_uses_only_the_validated_repository_fact() -> None:
     llm = NaturalRecipeProvider(
-        RecipeSelection(
-            decision="match", candidate_recipe_ids=("recipe-1",), confidence=95
-        )
+        RecipeSelection(decision="match", candidate_recipe_ids=("recipe-1",), confidence=95)
     )
     reply = await say(
         CompanionBrain(llm),
@@ -712,9 +803,7 @@ async def test_natural_language_recipe_uses_only_the_validated_repository_fact()
 
 async def test_exact_recipe_alias_bypasses_natural_language_resolution() -> None:
     llm = NaturalRecipeProvider(
-        RecipeSelection(
-            decision="match", candidate_recipe_ids=("recipe-4",), confidence=100
-        )
+        RecipeSelection(decision="match", candidate_recipe_ids=("recipe-4",), confidence=100)
     )
     reply = await say(
         CompanionBrain(llm),
@@ -730,9 +819,7 @@ async def test_exact_recipe_alias_bypasses_natural_language_resolution() -> None
 
 async def test_natural_language_recipe_rejects_an_invented_recipe_id() -> None:
     llm = NaturalRecipeProvider(
-        RecipeSelection(
-            decision="match", candidate_recipe_ids=("recipe-999",), confidence=100
-        )
+        RecipeSelection(decision="match", candidate_recipe_ids=("recipe-999",), confidence=100)
     )
     reply = await say(
         CompanionBrain(llm),
@@ -740,9 +827,7 @@ async def test_natural_language_recipe_rejects_an_invented_recipe_id() -> None:
         key="recipe-invented-id",
     )
 
-    assert reply.text == (
-        "확인된 제작법에 없는 대상이야. 이름이나 Recipe ID를 다시 확인해 줘."
-    )
+    assert reply.text == ("확인된 제작법에 없는 대상이야. 이름이나 Recipe ID를 다시 확인해 줘.")
     assert reply.action is None
     assert reply.provenance is not None
     assert reply.provenance.repository_match is False
@@ -756,9 +841,7 @@ async def test_ambiguous_and_unknown_recipe_use_distinct_fixed_responses() -> No
     unknown = await say(brain, "전설검 레시피 알려줘", key="recipe-unknown")
 
     assert ambiguous.text == "어떤 제작법을 말하는지 대상 하나만 알려 줘."
-    assert unknown.text == (
-        "확인된 제작법에 없는 대상이야. 이름이나 Recipe ID를 다시 확인해 줘."
-    )
+    assert unknown.text == ("확인된 제작법에 없는 대상이야. 이름이나 Recipe ID를 다시 확인해 줘.")
     assert ambiguous.action is None
     assert unknown.action is None
     assert llm.dialogue_specs == []
@@ -769,9 +852,7 @@ async def test_game_time_reaches_dialogue_but_not_classifiers() -> None:
     brain = CompanionBrain(llm)
     game_time = TimeContext(source=TimeSource.GAME_WORLD, day=7, hour=23, period="Night")
 
-    await brain.respond(
-        make_turn("안녕, 마코", game_time=game_time)
-    )
+    await brain.respond(make_turn("안녕, 마코", game_time=game_time))
 
     assert llm.classify_inputs == ["안녕, 마코"]
     assert llm.dialogue_specs[-1].situation == ("지금은 게임 세계 기준 7일차 밤, 23시다.",)

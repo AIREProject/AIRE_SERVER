@@ -26,6 +26,7 @@ _WORKBENCH_NAMES = {
 # UObject 경로를 Command parameter로 흘리지 않고, UE가 로컬 Recipe로 다시 매핑할 ID만
 # 반환한다.
 _CRAFT_RECIPE_ID = "recipe-11"
+_MOBILE_CRAFT_RECIPE_ID = "recipe-1"
 _CRAFT_RESULT_ITEM_IDS = frozenset(("Sword_Iron", "IronSword"))
 _CRAFT_RESULT_ALIASES = ("철검", "철 검", "쇠검", "Sword_Iron", "IronSword")
 _CRAFT_VERB_PATTERN = re.compile(r"(?:만들|제작|craft|forge)", re.IGNORECASE)
@@ -35,9 +36,7 @@ _CRAFT_FACT_PATTERN = re.compile(
     r"\bcrafting\b)",
     re.IGNORECASE,
 )
-_CRAFT_QUANTITY_PATTERN = re.compile(
-    r"(?<![\d.,-])(\d[\d,]*)\s*(?:개|자루)", re.IGNORECASE
-)
+_CRAFT_QUANTITY_PATTERN = re.compile(r"(?<![\d.,-])(\d[\d,]*)\s*(?:개|자루)", re.IGNORECASE)
 _CRAFT_MALFORMED_QUANTITY_PATTERN = re.compile(
     r"(?<!\w)(?:[+-]?\d[\d.,/]*|한|하나|두|세|네|다섯|여섯|일곱|여덟|아홉|열)"
     r"\s*(?:개|자루)",
@@ -128,6 +127,14 @@ class RecipeSelectionOption:
     aliases: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CraftRequest:
+    """사용자 원문에서 검증된 stable Recipe와 제작 수량."""
+
+    recipe_id: str
+    quantity: int
+
+
 class RecipeSelection(BaseModel):
     """자연어 해석 결과. Recipe 내용은 없고 allowlist ID와 확신도만 담는다."""
 
@@ -149,9 +156,7 @@ class RecipeSelection(BaseModel):
         return self
 
 
-NO_RECIPE_SELECTION = RecipeSelection(
-    decision="no_match", candidate_recipe_ids=(), confidence=0
-)
+NO_RECIPE_SELECTION = RecipeSelection(decision="no_match", candidate_recipe_ids=(), confidence=0)
 
 _RECIPE_MATCH_CONFIDENCE = 80
 _RECIPE_AMBIGUOUS_CONFIDENCE = 60
@@ -189,8 +194,7 @@ class RecipeRepository:
     def __init__(self, dataset: GameDataSet = DATASET) -> None:
         self._items: dict[str, Item] = {item.item_id: item for item in dataset.items}
         self._craft_recipe_available = any(
-            recipe.recipe_id == _CRAFT_RECIPE_ID
-            and recipe.result_item_id in _CRAFT_RESULT_ITEM_IDS
+            recipe.recipe_id == _CRAFT_RECIPE_ID and recipe.result_item_id in _CRAFT_RESULT_ITEM_IDS
             for recipe in dataset.recipes
         )
         result_items: dict[str, Item] = {
@@ -201,9 +205,7 @@ class RecipeRepository:
         }
         self._result_items = result_items
         self._recipes_by_result: dict[str, tuple[Recipe, ...]] = {
-            item_id: tuple(
-                recipe for recipe in dataset.recipes if recipe.result_item_id == item_id
-            )
+            item_id: tuple(recipe for recipe in dataset.recipes if recipe.result_item_id == item_id)
             for item_id in result_items
         }
         self._smelting_by_result: dict[str, tuple[SmeltingRecipe, ...]] = {
@@ -266,8 +268,7 @@ class RecipeRepository:
             return None
         result_id = target.result_item_id
         descriptions = [
-            self._describe_recipe(recipe)
-            for recipe in self._recipes_by_result.get(result_id, ())
+            self._describe_recipe(recipe) for recipe in self._recipes_by_result.get(result_id, ())
         ]
         descriptions.extend(
             self._describe_smelting(recipe)
@@ -284,12 +285,9 @@ class RecipeRepository:
             if query.targets:
                 return None
             targets = tuple(
-                self._targets_by_result[result_id]
-                for result_id in sorted(self._targets_by_result)
+                self._targets_by_result[result_id] for result_id in sorted(self._targets_by_result)
             )
-            names = tuple(
-                self._result_items[target.result_item_id].name_ko for target in targets
-            )
+            names = tuple(self._result_items[target.result_item_id].name_ko for target in targets)
             if not names:
                 return None
             return RecipeFactResult(
@@ -392,9 +390,7 @@ class RecipeRepository:
 
         return self._selection_options
 
-    def should_resolve_natural_language(
-        self, query: str, parsed: RecipeQuery | None
-    ) -> bool:
+    def should_resolve_natural_language(self, query: str, parsed: RecipeQuery | None) -> bool:
         """정확 매칭 뒤 LLM 후보 선택을 시도해도 되는 상세 질문인지 판정한다."""
 
         if parsed is not None and parsed.mode not in {
@@ -478,9 +474,7 @@ class RecipeRepository:
                 return None
             if assigned_quantity != 1:
                 return None
-        recipe_tokens = {
-            token.casefold() for token in _CRAFT_RECIPE_TOKEN_PATTERN.findall(query)
-        }
+        recipe_tokens = {token.casefold() for token in _CRAFT_RECIPE_TOKEN_PATTERN.findall(query)}
         if recipe_tokens and recipe_tokens != {_CRAFT_RECIPE_ID}:
             return None
         if _CRAFT_BARE_NUMBER_PATTERN.search(query) is not None:
@@ -496,14 +490,80 @@ class RecipeRepository:
             return None
         return _CRAFT_RECIPE_ID
 
-    def is_craft_request(self, query: str) -> bool:
-        """제작 의도처럼 보이는 발화를 분리해 malformed 요청도 안전하게 거절한다."""
+    def mobile_craft_request_for(self, query: str) -> CraftRequest | None:
+        """모바일에서 지원하는 엉성한 붕대 제작 요청만 구조화한다.
+
+        Recipe 질문은 ``is_craft_request`` 단계에서 제외되고, 수량은 원문의 온전한
+        숫자 하나만 허용한다. LLM이 Recipe ID나 수량을 보충할 수 없다.
+        """
+
+        if not self.is_craft_request(query):
+            return None
+        if self._craft_result_ids_in(query) != {"ShoddyBandage"}:
+            return None
+
+        return self._mobile_craft_request(query)
+
+    def mobile_craft_request_from_selection(
+        self, query: str, selection: RecipeSelection
+    ) -> CraftRequest | None:
+        """LLM이 고른 allowlist Recipe를 모바일 제작 요청으로 검증한다."""
+
+        resolved = self.query_from_selection(selection)
+        if (
+            not self.looks_like_craft_request(query)
+            or resolved is None
+            or resolved.mode is not RecipeQueryMode.DETAIL
+            or len(resolved.targets) != 1
+            or _MOBILE_CRAFT_RECIPE_ID not in resolved.targets[0].recipe_ids
+        ):
+            return None
+        return self._mobile_craft_request(query)
+
+    def _mobile_craft_request(self, query: str) -> CraftRequest | None:
+        """검증된 recipe-1 대상에 적용할 원문 수량 계약을 확인한다."""
+
+        quantities = [
+            int(value.replace(",", "")) for value in _CRAFT_QUANTITY_PATTERN.findall(query)
+        ]
+        if len(quantities) > 1:
+            return None
+        quantity = quantities[0] if quantities else 1
+        if not 1 <= quantity <= 50:
+            return None
+        if _CRAFT_WORD_QUANTITY_PATTERN.search(query) is not None:
+            return None
+        if _CRAFT_MALFORMED_QUANTITY_PATTERN.search(query) is not None and not quantities:
+            return None
+        assigned_quantities = _CRAFT_QUANTITY_ASSIGNMENT_PATTERN.findall(query)
+        if assigned_quantities:
+            if len(assigned_quantities) != 1:
+                return None
+            try:
+                assigned = int(assigned_quantities[0])
+            except ValueError:
+                return None
+            if assigned != quantity:
+                return None
+        recipe_tokens = {token.casefold() for token in _CRAFT_RECIPE_TOKEN_PATTERN.findall(query)}
+        if recipe_tokens and recipe_tokens != {_MOBILE_CRAFT_RECIPE_ID}:
+            return None
+        if _CRAFT_BARE_NUMBER_PATTERN.search(query) is not None:
+            return None
+        return CraftRequest(recipe_id=_MOBILE_CRAFT_RECIPE_ID, quantity=quantity)
+
+    def looks_like_craft_request(self, query: str) -> bool:
+        """대상 해석 전에도 제작 행동 요청임을 판정한다."""
 
         return (
             _CRAFT_VERB_PATTERN.search(query) is not None
             and _CRAFT_FACT_PATTERN.search(query) is None
-            and bool(self._craft_result_ids_in(query))
         )
+
+    def is_craft_request(self, query: str) -> bool:
+        """제작 의도처럼 보이는 발화를 분리해 malformed 요청도 안전하게 거절한다."""
+
+        return self.looks_like_craft_request(query) and bool(self._craft_result_ids_in(query))
 
     def _craft_result_ids_in(self, query: str) -> set[str]:
         matched_result_ids = {
@@ -517,11 +577,7 @@ class RecipeRepository:
 
     @staticmethod
     def _fact_ids_for(targets: Iterable[RecipeTarget]) -> tuple[str, ...]:
-        return tuple(
-            f"recipe:{recipe_id}"
-            for target in targets
-            for recipe_id in target.recipe_ids
-        )
+        return tuple(f"recipe:{recipe_id}" for target in targets for recipe_id in target.recipe_ids)
 
     def _describe_recipe(self, recipe: Recipe) -> str:
         result = self._result_items[recipe.result_item_id]
@@ -533,10 +589,7 @@ class RecipeRepository:
         result_amount = f" {recipe.result_amount}개" if recipe.result_amount != 1 else ""
         duration = f" {_duration_text(recipe.duration_seconds)} 만에"
         result_label = f"{result.name_ko}{result_amount}"
-        return (
-            f"{topic(result_label)} {ingredients}로 "
-            f"{station}에서{duration} 만들 수 있어."
-        )
+        return f"{topic(result_label)} {ingredients}로 {station}에서{duration} 만들 수 있어."
 
     def _describe_smelting(self, recipe: SmeltingRecipe) -> str:
         result = self._result_items[recipe.result_item_id]

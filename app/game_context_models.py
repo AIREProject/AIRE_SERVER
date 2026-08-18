@@ -81,9 +81,7 @@ class GameContextV1(StrictModel):
     schema_version: Literal[1]
     location_id: StableId | None
     threat: ThreatContext
-    nearby_resources: list[NearbyResourceContext] = Field(
-        max_length=MAX_NEARBY_RESOURCE_TYPES
-    )
+    nearby_resources: list[NearbyResourceContext] = Field(max_length=MAX_NEARBY_RESOURCE_TYPES)
     available_workstations: list[StableId] = Field(max_length=MAX_AVAILABLE_WORKSTATIONS)
     current_work: CurrentWorkContext | None
     inventories: list[InventoryContext] = Field(max_length=2)

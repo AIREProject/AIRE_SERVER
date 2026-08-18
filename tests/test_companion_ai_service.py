@@ -7,6 +7,7 @@ MockLLMProvider 로 결정론적으로 라우팅·대사가 재현되므로 외�
 
 import asyncio
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -16,11 +17,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.brain import CompanionBrain
 from app.brain.dialogue import DialogueSpec
+from app.brain.intent import TopIntent
 from app.brain.llm import MockLLMProvider
 from app.credentials import CredentialProtector
 from app.db.canonical_repository import CanonicalChatRepository
 from app.db.connection import Database
-from app.db.models import ChatOperationModel, ItemModel, MessageModel, OfflineTaskModel
+from app.db.models import (
+    ChatOperationModel,
+    GameStateSnapshotModel,
+    ItemModel,
+    MessageModel,
+    OfflineTaskModel,
+)
+from app.db.save_slot_repository import SaveSlotRepository
 from app.errors import AIServiceUnavailableError
 from app.identity import AuthenticatedDevice, DeviceRole
 from app.models import (
@@ -57,6 +66,21 @@ class RecordingProvider(MockLLMProvider):
 
     async def generate_dialogue(self, spec: DialogueSpec) -> str:
         self.dialogue_specs.append(spec)
+        return await super().generate_dialogue(spec)
+
+
+class InjuryConversationProvider(MockLLMProvider):
+    async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
+        del clarification_pending
+        return TopIntent.CONVERSATION if text == "나 잘렸어" else TopIntent.UNKNOWN
+
+    async def generate_dialogue(self, spec: DialogueSpec) -> str:
+        if spec.user_text == "나 잘렸어":
+            return "어디가 어떻게 잘린 거야? 상태를 좀 더 자세히 말해줘."
+        if spec.user_text == "팔":
+            assert spec.history[-2].text == "나 잘렸어"
+            assert "어디가 어떻게 잘린 거야?" in spec.history[-1].text
+            return "팔을 다친 거구나. 출혈이 심하면 바로 응급 도움을 요청해."
         return await super().generate_dialogue(spec)
 
 
@@ -127,6 +151,35 @@ async def respond(
 ) -> ChatResponse:
     request = make_request(user_message, **overrides)
     return await service.create_response(request, identity, session, PROTECTOR)
+
+
+async def test_same_mobile_chat_uses_short_term_context_for_a_short_answer(
+    identity: AuthenticatedDevice, session: AsyncSession
+) -> None:
+    service = make_service(llm=InjuryConversationProvider())
+
+    first = await respond(
+        service,
+        identity,
+        session,
+        "나 잘렸어",
+        surface=Surface.MOBILE,
+        request_id="injury-1",
+        message_id="injury-message-1",
+    )
+    second = await respond(
+        service,
+        identity,
+        session,
+        "팔",
+        surface=Surface.MOBILE,
+        request_id="injury-2",
+        message_id="injury-message-2",
+    )
+
+    assert first.display_text.startswith("어디가 어떻게 잘린 거야?")
+    assert second.display_text.startswith("팔을 다친 거구나.")
+    assert second.command_candidates == []
 
 
 @pytest.mark.parametrize(
@@ -271,6 +324,99 @@ async def _seed_plant_stem_item(database: Database) -> None:
         await db_session.commit()
 
 
+async def _seed_shoddy_bandage_item(database: Database) -> None:
+    async with database.session_factory() as db_session:
+        db_session.add(
+            ItemModel(
+                item_id="ShoddyBandage",
+                item_type="Consumable",
+                name_ko="엉성한 붕대",
+                aliases=["엉성한 붕대"],
+                description="제작 결과.",
+            )
+        )
+        await db_session.commit()
+
+
+async def _seed_mobile_craft_inventory(database: Database, identity: AuthenticatedDevice) -> None:
+    now = datetime.now(UTC)
+    payload = {
+        "schema_version": 1,
+        "content_version": 1,
+        "operation_id": "seed-mobile-craft",
+        "state_version": 1,
+        "world_session_id": "world-mobile-craft",
+        "captured_at": now.isoformat(),
+        "save_slot_id": "slot-1",
+        "companion_id": "mako",
+        "inventory": {
+            "player": {
+                "capacity": 30,
+                "revision": 0,
+                "stacks": [],
+                "equipment": {"equipped_item_id": None},
+            },
+            "containers": [
+                {
+                    "container_id": "AIRE.Inventory.MAKO",
+                    "capacity": 20,
+                    "revision": 1,
+                    "stacks": [{"slot_index": 0, "item_id": "PlantStem", "count": 10}],
+                    "equipment": {"equipped_item_id": None},
+                },
+                {
+                    "container_id": "AIRE.Inventory.SharedStorage",
+                    "capacity": 50,
+                    "revision": 1,
+                    "stacks": [],
+                    "equipment": {"equipped_item_id": None},
+                },
+            ],
+        },
+    }
+    async with database.session_factory() as db_session:
+        db_session.add_all(
+            [
+                ItemModel(
+                    item_id="PlantStem",
+                    item_type="Material",
+                    name_ko="나무",
+                    aliases=["나무"],
+                    description="제작 재료.",
+                ),
+                ItemModel(
+                    item_id="ShoddyBandage",
+                    item_type="Consumable",
+                    name_ko="엉성한 붕대",
+                    aliases=["엉성한 붕대"],
+                    description="제작 결과.",
+                ),
+            ]
+        )
+        await db_session.flush()
+        slot = await SaveSlotRepository(db_session).get_or_create(
+            profile_id=identity.profile_id, save_slot_id="slot-1"
+        )
+        db_session.add(
+            GameStateSnapshotModel(
+                row_id="game-state-mobile-craft",
+                profile_id=identity.profile_id,
+                save_slot_row_id=slot.row_id,
+                companion_id="mako",
+                schema_version=1,
+                content_version=1,
+                operation_id="seed-mobile-craft",
+                state_version=1,
+                world_session_id="world-mobile-craft",
+                captured_at=now,
+                last_synced_at=now,
+                payload=payload,
+                payload_size_bytes=1,
+            )
+        )
+        await db_session.commit()
+
+
 async def test_mobile_gather_creates_offline_task(
     database: Database, session: AsyncSession
 ) -> None:
@@ -313,6 +459,68 @@ async def test_mobile_gather_creates_offline_task(
     assert rows[0].status == "InProgress"
     # 수량 미지정 요청은 상한치(MAX_GATHER_QUANTITY)를 요청 수량으로 삼는다.
     assert rows[0].quantity == 50
+
+
+async def test_mobile_bandage_chat_reserves_materials_and_creates_crafting_task(
+    database: Database, session: AsyncSession
+) -> None:
+    identity, _token = await make_authenticated_device(
+        database, PROTECTOR, role=DeviceRole.WEB_CLIENT
+    )
+    await _seed_mobile_craft_inventory(database, identity)
+
+    result = await respond(
+        make_service(),
+        identity,
+        session,
+        "엉성한붕대 3개 만들어놔줘",
+        allowed_commands=[CommandType.GATHER_RESOURCE, CommandType.CRAFT_ITEM],
+        surface=Surface.MOBILE,
+    )
+
+    assert result.command_candidates == []
+    assert result.offline_task_id is not None
+    assert result.display_text == "좋아. 엉성한 붕대 3개 제작을 예약할게."
+    async with database.session_factory() as check_session:
+        task = await check_session.get(OfflineTaskModel, result.offline_task_id)
+        snapshot = await check_session.get(GameStateSnapshotModel, "game-state-mobile-craft")
+    assert task is not None
+    assert task.task_type == "Crafting"
+    assert task.item_id == "ShoddyBandage"
+    assert task.quantity == 3
+    assert task.seconds_per_item == 10.0
+    assert task.reserved_quantity == 6
+    assert snapshot is not None
+    assert snapshot.state_version == 2
+    assert snapshot.payload["inventory"]["containers"][0]["stacks"][0]["count"] == 4
+
+
+async def test_mobile_bandage_chat_explains_when_inventory_has_not_synced(
+    database: Database, session: AsyncSession
+) -> None:
+    await _seed_plant_stem_item(database)
+    await _seed_shoddy_bandage_item(database)
+    identity, _token = await make_authenticated_device(
+        database, PROTECTOR, role=DeviceRole.WEB_CLIENT
+    )
+
+    result = await respond(
+        make_service(),
+        identity,
+        session,
+        "엉성한 붕대 2개 만들어 줘",
+        allowed_commands=[CommandType.GATHER_RESOURCE, CommandType.CRAFT_ITEM],
+        surface=Surface.MOBILE,
+    )
+
+    assert result.offline_task_id is None
+    assert result.command_candidates == []
+    assert result.display_text == (
+        "게임 인벤토리를 아직 동기화하지 못했어. 게임에 한 번 접속한 뒤 다시 부탁해 줘."
+    )
+    async with database.session_factory() as check_session:
+        tasks = (await check_session.execute(select(OfflineTaskModel))).scalars().all()
+    assert tasks == []
 
 
 async def test_mobile_gather_with_quantity_stores_requested_amount(

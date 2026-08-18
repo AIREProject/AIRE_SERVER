@@ -1,5 +1,7 @@
 """모바일 작업 지시와 게임 클라이언트 상태 전이 API 검증."""
 
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -130,6 +132,85 @@ def _headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _put_inventory_snapshot(
+    client: TestClient,
+    token: str,
+    *,
+    operation_id: str = "task-inventory-1",
+    state_version: int = 1,
+    mako_wood: int = 3,
+    storage_wood: int = 4,
+    base_state_version: int | None = None,
+) -> Any:
+    body = {
+        "schema_version": 1,
+        "content_version": 1,
+        "operation_id": operation_id,
+        "state_version": state_version,
+        "world_session_id": "task-world-1",
+        "captured_at": "2026-08-18T03:00:00Z",
+        "save_slot_id": "slot-a",
+        "companion_id": "mako",
+        "inventory": {
+            "player": {
+                "capacity": 30,
+                "revision": 0,
+                "stacks": [],
+                "equipment": {"equipped_item_id": None},
+            },
+            "containers": [
+                {
+                    "container_id": "AIRE.Inventory.MAKO",
+                    "capacity": 20,
+                    "revision": 1,
+                    "stacks": (
+                        [{"slot_index": 0, "item_id": "PlantStem", "count": mako_wood}]
+                        if mako_wood
+                        else []
+                    ),
+                    "equipment": {"equipped_item_id": None},
+                },
+                {
+                    "container_id": "AIRE.Inventory.SharedStorage",
+                    "capacity": 50,
+                    "revision": 1,
+                    "stacks": (
+                        [
+                            {
+                                "slot_index": 0,
+                                "item_id": "PlantStem",
+                                "count": storage_wood,
+                            }
+                        ]
+                        if storage_wood
+                        else []
+                    ),
+                    "equipment": {"equipped_item_id": None},
+                },
+            ],
+        },
+    }
+    raw = json.dumps(body, separators=(",", ":")).encode()
+    headers: dict[str, str] = {
+        **_headers(token),
+        "Content-Type": "application/json",
+        "X-Request-ID": operation_id,
+        "X-Content-SHA256": hashlib.sha256(raw).hexdigest(),
+    }
+    if base_state_version is not None:
+        headers["X-Base-State-Version"] = str(base_state_version)
+    return client.put("/api/v1/game-state", headers=headers, content=raw)
+
+
+def _wood_counts(snapshot: dict[str, Any]) -> dict[str, int]:
+    return {
+        container["container_id"]: sum(
+            stack["count"] for stack in container["stacks"] if stack["item_id"] == "PlantStem"
+        )
+        for container in snapshot["inventory"]["containers"]
+    }
+
+
 async def _force_task_state(
     database: Any,
     task_id: str,
@@ -217,6 +298,195 @@ def test_task_creation_is_idempotent_for_same_scope(task_clients: Any) -> None:
     assert first.status_code == 200
     assert second.status_code == 200
     assert second.json()["task"]["task_id"] == first.json()["task"]["task_id"]
+
+
+def test_web_crafting_reserves_server_inventory_idempotently_and_refunds_on_cancel(
+    task_clients: Any,
+) -> None:
+    client = task_clients["client"]
+    game_token = task_clients["game_token"]
+    web_headers = _headers(task_clients["web_token"])
+    assert _put_inventory_snapshot(client, game_token).status_code == 200
+    body = {
+        "request_id": "craft-reservation-1",
+        "save_slot_id": "slot-a",
+        "task_type": "Crafting",
+        "item_id": "ShoddyBandage",
+        "quantity": 3,
+    }
+
+    first = client.post("/api/v1/tasks", headers=web_headers, json=body)
+    replay = client.post("/api/v1/tasks", headers=web_headers, json=body)
+    after_reserve = client.get(
+        "/api/v1/game-state",
+        headers=_headers(game_token),
+        params={"save_slot_id": "slot-a", "companion_id": "mako"},
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert replay.json()["task"]["task_id"] == first.json()["task"]["task_id"]
+    assert after_reserve.status_code == 200
+    assert after_reserve.json()["state_version"] == 2
+    assert _wood_counts(after_reserve.json()) == {
+        "AIRE.Inventory.MAKO": 0,
+        "AIRE.Inventory.SharedStorage": 1,
+    }
+
+    deleted = client.delete(f"/api/v1/tasks/{first.json()['task']['task_id']}", headers=web_headers)
+    after_refund = client.get(
+        "/api/v1/game-state",
+        headers=_headers(game_token),
+        params={"save_slot_id": "slot-a", "companion_id": "mako"},
+    )
+
+    assert deleted.status_code == 204
+    assert after_refund.json()["state_version"] == 3
+    assert _wood_counts(after_refund.json()) == {
+        "AIRE.Inventory.MAKO": 3,
+        "AIRE.Inventory.SharedStorage": 4,
+    }
+
+
+def test_web_crafting_requires_synced_inventory_and_enough_materials(
+    task_clients: Any,
+) -> None:
+    client = task_clients["client"]
+    web_headers = _headers(task_clients["web_token"])
+    missing = client.post(
+        "/api/v1/tasks",
+        headers=web_headers,
+        json={
+            "request_id": "craft-no-snapshot",
+            "save_slot_id": "slot-missing",
+            "task_type": "Crafting",
+            "item_id": "ShoddyBandage",
+            "quantity": 1,
+        },
+    )
+    assert (
+        _put_inventory_snapshot(
+            client,
+            task_clients["game_token"],
+            operation_id="task-inventory-low",
+            mako_wood=1,
+            storage_wood=0,
+        ).status_code
+        == 200
+    )
+    insufficient = client.post(
+        "/api/v1/tasks",
+        headers=web_headers,
+        json={
+            "request_id": "craft-insufficient",
+            "save_slot_id": "slot-a",
+            "task_type": "Crafting",
+            "item_id": "ShoddyBandage",
+            "quantity": 1,
+        },
+    )
+
+    assert missing.status_code == 409
+    assert missing.json()["error"]["code"] == "InventorySnapshotRequired"
+    assert insufficient.status_code == 409
+    assert insufficient.json()["error"]["code"] == "InsufficientCraftingMaterials"
+
+
+def test_game_state_upload_must_rebase_after_server_crafting_change(
+    task_clients: Any,
+) -> None:
+    client = task_clients["client"]
+    game_token = task_clients["game_token"]
+    assert _put_inventory_snapshot(client, game_token).status_code == 200
+    created = client.post(
+        "/api/v1/tasks",
+        headers=_headers(task_clients["web_token"]),
+        json={
+            "request_id": "craft-rebase",
+            "save_slot_id": "slot-a",
+            "task_type": "Crafting",
+            "item_id": "ShoddyBandage",
+            "quantity": 1,
+        },
+    )
+    assert created.status_code == 200
+
+    stale_overwrite = _put_inventory_snapshot(
+        client,
+        game_token,
+        operation_id="stale-after-craft",
+        state_version=3,
+    )
+    rebased = _put_inventory_snapshot(
+        client,
+        game_token,
+        operation_id="rebased-after-craft",
+        state_version=3,
+        mako_wood=1,
+        storage_wood=4,
+        base_state_version=2,
+    )
+
+    assert stale_overwrite.status_code == 409
+    assert stale_overwrite.json()["error"]["code"] == "GameStateVersionConflict"
+    assert rebased.status_code == 200
+
+
+async def test_crafting_keeps_full_reservation_until_every_requested_unit_is_ready(
+    task_clients: Any,
+) -> None:
+    client = task_clients["client"]
+    assert (
+        _put_inventory_snapshot(
+            client,
+            task_clients["game_token"],
+            mako_wood=6,
+            storage_wood=0,
+        ).status_code
+        == 200
+    )
+    created = client.post(
+        "/api/v1/tasks",
+        headers=_headers(task_clients["web_token"]),
+        json={
+            "request_id": "craft-all-or-wait",
+            "save_slot_id": "slot-a",
+            "task_type": "Crafting",
+            "item_id": "ShoddyBandage",
+            "quantity": 3,
+        },
+    )
+    task_id = created.json()["task"]["task_id"]
+    await _force_task_state(
+        task_clients["database"],
+        task_id,
+        status="InProgress",
+        quantity=3,
+        started_at=datetime.now(UTC) - timedelta(seconds=15),
+    )
+
+    partial = client.post(
+        f"/api/v1/tasks/{task_id}/complete",
+        headers=_headers(task_clients["game_token"]),
+    )
+    assert partial.status_code == 200
+    assert partial.json()["task"]["status"] == "InProgress"
+    assert partial.json()["task"]["progress_quantity"] == 1
+    assert partial.json()["task"]["result_quantity"] is None
+
+    await _force_task_state(
+        task_clients["database"],
+        task_id,
+        status="InProgress",
+        quantity=3,
+        started_at=datetime.now(UTC) - timedelta(seconds=31),
+    )
+    completed = client.post(
+        f"/api/v1/tasks/{task_id}/complete",
+        headers=_headers(task_clients["game_token"]),
+    )
+    assert completed.status_code == 200
+    assert completed.json()["task"]["status"] == "Completed"
+    assert completed.json()["task"]["result_quantity"] == 3
 
 
 async def test_quantity_task_starts_immediately_and_reports_live_progress(

@@ -488,9 +488,7 @@ class RetentionService:
             legacy_memory_directory = settings.long_term_memory_dir
             legacy_quarantine_directory = settings.legacy_memory_quarantine_dir
             legacy_quarantine_days = settings.legacy_memory_quarantine_days
-            legacy_transcript_quarantine_directory = (
-                settings.legacy_transcript_quarantine_dir
-            )
+            legacy_transcript_quarantine_directory = settings.legacy_transcript_quarantine_dir
         self._message_days = {
             "player": user_message_retention_days,
             "companion": companion_message_retention_days,

@@ -1,3 +1,5 @@
+import pytest
+
 from app.brain.command_intent import RECIPE_PATTERN
 from app.brain.intent import RecipeQueryMode
 from app.brain.recipes import (
@@ -163,19 +165,13 @@ def test_natural_language_selection_is_promoted_only_after_id_and_confidence_val
     repository = RecipeRepository()
 
     resolved = repository.query_from_selection(
-        RecipeSelection(
-            decision="match", candidate_recipe_ids=("recipe-1",), confidence=92
-        )
+        RecipeSelection(decision="match", candidate_recipe_ids=("recipe-1",), confidence=92)
     )
     low_confidence = repository.query_from_selection(
-        RecipeSelection(
-            decision="match", candidate_recipe_ids=("recipe-1",), confidence=79
-        )
+        RecipeSelection(decision="match", candidate_recipe_ids=("recipe-1",), confidence=79)
     )
     invented = repository.query_from_selection(
-        RecipeSelection(
-            decision="match", candidate_recipe_ids=("recipe-999",), confidence=100
-        )
+        RecipeSelection(decision="match", candidate_recipe_ids=("recipe-999",), confidence=100)
     )
 
     assert resolved is not None and resolved.mode is RecipeQueryMode.DETAIL
@@ -220,6 +216,37 @@ def test_explicit_craft_request_is_not_a_recipe_query() -> None:
     assert repository.query_for("철검 하나 만들어") is None
 
 
+@pytest.mark.parametrize(
+    ("text", "quantity"),
+    [
+        ("엉성한 붕대 만들어 줘", 1),
+        ("엉성한붕대 3개 만들어놔줘", 3),
+        ("붕대 10개 제작해 둬", 10),
+    ],
+)
+def test_mobile_bandage_craft_request_uses_verified_recipe_and_quantity(
+    text: str, quantity: int
+) -> None:
+    request = RecipeRepository().mobile_craft_request_for(text)
+
+    assert request is not None
+    assert request.recipe_id == "recipe-1"
+    assert request.quantity == quantity
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "엉성한 붕대 레시피 알려줘",
+        "엉성한 붕대 어떻게 만들어?",
+        "엉성한 붕대 51개 만들어 줘",
+        "돌도끼 3개 만들어 줘",
+    ],
+)
+def test_mobile_bandage_craft_rejects_questions_limits_and_other_recipes(text: str) -> None:
+    assert RecipeRepository().mobile_craft_request_for(text) is None
+
+
 def test_list_known_returns_every_unique_crafting_and_smelting_result_once() -> None:
     repository = RecipeRepository()
     query = repository.query_for("레시피 알고 있는 거 있어?")
@@ -257,15 +284,21 @@ def test_compare_returns_only_two_canonical_target_facts() -> None:
     assert "돌곡괭이" in result.text
     assert result.fact_ids == ("recipe:recipe-3", "recipe:recipe-4")
 
-    assert repository.result_for_query(
-        RecipeQuery(RecipeQueryMode.COMPARE, query.targets[:1])
-    ) is None
-    assert repository.result_for_query(
-        RecipeQuery(RecipeQueryMode.COMPARE, (*query.targets, query.targets[0]))
-    ) is None
-    assert repository.result_for_query(
-        RecipeQuery(
-            RecipeQueryMode.COMPARE,
-            (query.targets[0], RecipeTarget("Pickaxe_Stone", ("recipe-999",))),
+    assert (
+        repository.result_for_query(RecipeQuery(RecipeQueryMode.COMPARE, query.targets[:1])) is None
+    )
+    assert (
+        repository.result_for_query(
+            RecipeQuery(RecipeQueryMode.COMPARE, (*query.targets, query.targets[0]))
         )
-    ) is None
+        is None
+    )
+    assert (
+        repository.result_for_query(
+            RecipeQuery(
+                RecipeQueryMode.COMPARE,
+                (query.targets[0], RecipeTarget("Pickaxe_Stone", ("recipe-999",))),
+            )
+        )
+        is None
+    )

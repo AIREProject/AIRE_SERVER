@@ -180,9 +180,7 @@ class FileTranscriptStore:
                 last = await asyncio.to_thread(_last_seq, self._path(conversation_key))
             at = datetime.now(UTC)
             records = [
-                _TranscriptRecord(
-                    seq=last + offset, speaker=turn.speaker, text=turn.text, at=at
-                )
+                _TranscriptRecord(seq=last + offset, speaker=turn.speaker, text=turn.text, at=at)
                 for offset, turn in enumerate(turns, start=1)
             ]
             await asyncio.to_thread(_append_file, self._path(conversation_key), records)

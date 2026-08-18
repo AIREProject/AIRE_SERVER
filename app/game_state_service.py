@@ -33,6 +33,7 @@ class GameStateService:
         *,
         body_hash: str,
         payload_size_bytes: int,
+        base_state_version: int | None = None,
     ) -> GameStateResponse:
         if identity.role is not DeviceRole.GAME_CLIENT:
             raise DeviceRoleNotAllowedError
@@ -65,6 +66,12 @@ class GameStateService:
                 save_slot_row_id=save_slot_row_id,
                 companion_id=request.companion_id,
             )
+            if (
+                latest is not None
+                and latest.operation_id.startswith(("craft-reserve-", "craft-refund-"))
+                and base_state_version != latest.state_version
+            ):
+                raise GameStateVersionConflictError
             if latest is not None and request.state_version <= latest.state_version:
                 raise GameStateVersionConflictError
 
@@ -161,8 +168,7 @@ class GameStateService:
                 message="Weapon stacks must contain exactly one item.",
             )
         if any(
-            item_id is not None and item_types[item_id] != "Weapon"
-            for item_id in equipment_ids
+            item_id is not None and item_types[item_id] != "Weapon" for item_id in equipment_ids
         ):
             raise APIError(
                 status_code=400,

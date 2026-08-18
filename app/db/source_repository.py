@@ -354,11 +354,7 @@ class SourceRepository:
     ) -> bool:
         moment = _utc(now)
         row = await self._session.get(SourceOutboxModel, claim.source_seq)
-        if (
-            row is None
-            or row.state != OUTBOX_CLAIMED
-            or row.lease_token != claim.lease_token
-        ):
+        if row is None or row.state != OUTBOX_CLAIMED or row.lease_token != claim.lease_token:
             await self._session.rollback()
             return False
         row.state = OUTBOX_COMPLETED

@@ -286,9 +286,7 @@ class CanonicalChatRepository:
         metadata["display_text"] = message.content
         return ChatResponse.model_validate(metadata)
 
-    def offline_task_plan(
-        self, operation: ChatOperationModel
-    ) -> dict[str, object] | None:
+    def offline_task_plan(self, operation: ChatOperationModel) -> dict[str, object] | None:
         if operation.response_metadata is None:
             return None
         plan = operation.response_metadata.get("_offline_task_plan")
@@ -351,13 +349,9 @@ class CanonicalChatRepository:
         await self._session.flush()
         return conversation
 
-    async def _conversation_for_operation(
-        self, operation: ChatOperationModel
-    ) -> ConversationModel:
+    async def _conversation_for_operation(self, operation: ChatOperationModel) -> ConversationModel:
         input_message = await self._message(operation.input_message_id)
-        conversation = await self._session.get(
-            ConversationModel, input_message.conversation_row_id
-        )
+        conversation = await self._session.get(ConversationModel, input_message.conversation_row_id)
         if conversation is None:
             raise RuntimeError("Canonical conversation is missing.")
         return conversation

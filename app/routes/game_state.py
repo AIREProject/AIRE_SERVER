@@ -38,6 +38,10 @@ async def put_game_state(
         ),
     ],
     x_content_sha256: Annotated[str, Header(alias="X-Content-SHA256")],
+    x_base_state_version: Annotated[
+        int | None,
+        Header(alias="X-Base-State-Version", ge=1),
+    ] = None,
 ) -> GameStateResponse:
     raw_body = await request.body()
     actual_hash = hashlib.sha256(raw_body).hexdigest()
@@ -58,6 +62,7 @@ async def put_game_state(
         identity,
         body_hash=actual_hash,
         payload_size_bytes=len(raw_body),
+        base_state_version=x_base_state_version,
     )
 
 

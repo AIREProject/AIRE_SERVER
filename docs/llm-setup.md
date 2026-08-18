@@ -123,7 +123,7 @@ Embedding server가 `dimensions` 인자를 지원하지 않으면 dimensions 값
 기본 흐름은 다음과 같습니다.
 
 ```text
-인증된 player Message
+인증된 RealWorld 또는 GameWorld player Message
 → leased source outbox
 → LLM이 기억 유형·중요도만 분류
 → canonical Message 원문을 Memory에 저장
@@ -151,9 +151,13 @@ TRANSCRIPT_RETENTION_DAYS=1
 - LLM 출력은 저장 text로 사용하지 않고 `decision`과 `importance`만 사용합니다.
 - Recipe·Command·현재 게임 상태·companion 발화는 Message 기억으로 저장하지 않습니다.
 - 기억은 profile + save-slot + companion scope에서 UE/Web에 공유됩니다.
+- 인게임 직접 발화는 `Message + GameWorld`, 모바일 직접 발화는 `Message + RealWorld` 출처로
+  저장됩니다.
 - Web 정정 후에는 최신 정정문만 검색과 Prompt 회상에 사용됩니다.
 - delete/reset된 기억과 source가 삭제된 기억은 Prompt에 들어가지 않습니다.
 - 기억은 확정 게임 사실이 아니라 대화 참고 정보로만 Prompt에 들어갑니다.
+- Embedding이 없어도 사용자가 자신의 취향·과거 기억을 명시적으로 물으면 Active 기억을
+  중요도·고정·최근성 순으로 제한해 Prompt에 전달합니다.
 
 ## 7. 연결 확인
 

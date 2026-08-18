@@ -61,6 +61,8 @@ from app.errors import (
     AIServiceUnavailableError,
     DuplicateRequestError,
     IdempotencyRecordExpiredError,
+    InsufficientCraftingMaterialsError,
+    InventorySnapshotRequiredError,
     UnknownCompanionError,
 )
 from app.game_context_models import GameContextV1
@@ -227,6 +229,7 @@ class CompanionService:
                 return replay
 
             prepared = None
+            task_created = False
             response = await repository.build_response(start.operation)
             if response is None:
                 history = await repository.history_before(start.input_message)
@@ -266,14 +269,41 @@ class CompanionService:
                 if (
                     identity.role is DeviceRole.WEB_CLIENT
                     and reply.action is not None
-                    and reply.action.type is CommandType.GATHER_RESOURCE
+                    and reply.action.type in {CommandType.GATHER_RESOURCE, CommandType.CRAFT_ITEM}
                 ):
                     offline_task_id = f"task-{uuid4()}"
-                    offline_task_plan = self._gather_task_plan(reply.action)
+                    offline_task_plan = self._offline_task_plan(reply.action)
                     candidates: list[CommandCandidate] = []
                 else:
                     candidates = self._candidates(request, reply)
                 self._assert_within_allowlist(request, candidates)
+                display_text = reply.text
+                if offline_task_id is not None and offline_task_plan is not None:
+                    try:
+                        await self._create_offline_task(
+                            request,
+                            identity,
+                            session,
+                            offline_task_plan,
+                            task_id=offline_task_id,
+                        )
+                        task_created = True
+                    except InventorySnapshotRequiredError:
+                        display_text = (
+                            "게임 인벤토리를 아직 동기화하지 못했어. "
+                            "게임에 한 번 접속한 뒤 다시 부탁해 줘."
+                        )
+                        offline_task_id = None
+                        offline_task_plan = None
+                        prepared = None
+                    except InsufficientCraftingMaterialsError:
+                        display_text = (
+                            "지금 서버에 저장된 나무가 부족해서 제작을 시작하지 못했어. "
+                            "엉성한 붕대 하나에 나무 2개가 필요해."
+                        )
+                        offline_task_id = None
+                        offline_task_plan = None
+                        prepared = None
                 response = ChatResponse(
                     request_id=request.request_id,
                     message_id=start.operation.input_message_id,
@@ -281,7 +311,7 @@ class CompanionService:
                     save_slot_id=request.save_slot_id,
                     companion_id=request.companion_id,
                     response_id=f"response-{uuid4()}",
-                    display_text=reply.text,
+                    display_text=display_text,
                     command_candidates=candidates,
                     offline_task_id=offline_task_id,
                     ai_metadata=self._metadata,
@@ -298,11 +328,11 @@ class CompanionService:
                     started_at=started_at,
                 )
 
-            if response.offline_task_id is not None:
+            if response.offline_task_id is not None and not task_created:
                 offline_task_plan = repository.offline_task_plan(start.operation)
                 if offline_task_plan is None:
                     raise AIServiceInvalidOutputError
-                await self._create_gather_task(
+                await self._create_offline_task(
                     request,
                     identity,
                     session,
@@ -415,7 +445,7 @@ class CompanionService:
             )
         )
 
-    async def _create_gather_task(
+    async def _create_offline_task(
         self,
         request: ChatRequest,
         identity: AuthenticatedDevice,
@@ -424,7 +454,7 @@ class CompanionService:
         *,
         task_id: str,
     ) -> str:
-        """채집 액션을 Offline_Task(Gathering) 로 등록하고 새 task_id 를 돌려준다.
+        """검증된 모바일 액션을 Offline Task로 등록하고 새 task_id를 돌려준다.
 
         `request.request_id` 를 그대로 작업 생성 요청의 request_id 로 재사용한다 —
         `OfflineTaskService.create` 는 (profile_id, save_slot_id, request_id) 로 이미
@@ -433,12 +463,21 @@ class CompanionService:
 
         item_id = plan.get("item_id")
         quantity = plan.get("quantity")
-        if not isinstance(item_id, str) or not isinstance(quantity, int):
+        task_type_value = plan.get("task_type")
+        if (
+            not isinstance(item_id, str)
+            or not isinstance(quantity, int)
+            or not isinstance(task_type_value, str)
+        ):
             raise AIServiceInvalidOutputError
+        try:
+            task_type = OfflineTaskType(task_type_value)
+        except ValueError as error:
+            raise AIServiceInvalidOutputError from error
         create_request = CreateOfflineTaskRequest(
             request_id=request.request_id,
             save_slot_id=request.save_slot_id,
-            task_type=OfflineTaskType.GATHERING,
+            task_type=task_type,
             item_id=item_id,
             quantity=quantity,
         )
@@ -452,15 +491,33 @@ class CompanionService:
         return result.task.task_id
 
     @staticmethod
-    def _gather_task_plan(action: CompanionAction) -> dict[str, object]:
-        resource = action.parameters.get("resource")
-        item_id = _GATHER_ITEM_IDS.get(ResourceId(resource)) if isinstance(resource, str) else None
-        if item_id is None:
-            raise AIServiceInvalidOutputError
-        quantity = action.parameters.get("quantity")
-        if not isinstance(quantity, int):
-            quantity = MAX_GATHER_QUANTITY
-        return {"item_id": item_id, "quantity": quantity}
+    def _offline_task_plan(action: CompanionAction) -> dict[str, object]:
+        if action.type is CommandType.GATHER_RESOURCE:
+            resource = action.parameters.get("resource")
+            item_id = (
+                _GATHER_ITEM_IDS.get(ResourceId(resource)) if isinstance(resource, str) else None
+            )
+            if item_id is None:
+                raise AIServiceInvalidOutputError
+            quantity = action.parameters.get("quantity")
+            if not isinstance(quantity, int):
+                quantity = MAX_GATHER_QUANTITY
+            return {
+                "task_type": OfflineTaskType.GATHERING.value,
+                "item_id": item_id,
+                "quantity": quantity,
+            }
+        if action.type is CommandType.CRAFT_ITEM:
+            recipe_id = action.parameters.get("recipe_id")
+            quantity = action.parameters.get("quantity")
+            if recipe_id != "recipe-1" or type(quantity) is not int or not 1 <= quantity <= 50:
+                raise AIServiceInvalidOutputError
+            return {
+                "task_type": OfflineTaskType.CRAFTING.value,
+                "item_id": "ShoddyBandage",
+                "quantity": quantity,
+            }
+        raise AIServiceInvalidOutputError
 
     async def aclose(self) -> None:
         """앱 종료 시 두뇌가 보유한 HTTP 클라이언트 등을 정리한다."""

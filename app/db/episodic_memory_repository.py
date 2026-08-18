@@ -29,9 +29,7 @@ class SqlAlchemyEpisodicMemoryRepository:
         await self._session.execute(
             delete(EpisodicMemoryModel).where(EpisodicMemoryModel.player_key == player_key)
         )
-        self._session.add_all(
-            [self._model(player_key, memory) for memory in memories]
-        )
+        self._session.add_all([self._model(player_key, memory) for memory in memories])
 
     async def record_recall(
         self,
