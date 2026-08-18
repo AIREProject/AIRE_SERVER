@@ -133,14 +133,23 @@ async def _without_provider_observation[T](awaitable: Awaitable[T]) -> T:
 
 _TOP_ROUTER_PROMPT = """사용자의 한국어 발화를 다음 의도 중 정확히 하나로 분류한다.
 - command: 따라오기, 대기, 작업 중지·취소, 자원 채집·아이템 제작 요청, 적 공격, 플레이어 곁으로 복귀
-- recipe: 아이템 제작법이나 재료 질문. 적을 상대하는 방법은 enemy다.
+- recipe: 아이템 제작법·재료 질문 또는 아이템 이름·별칭의 의미를 묻는 질문.
+  적을 상대하는 방법은 enemy다.
 - enemy: 적의 약점, 공략법, 상대하는 방법을 **묻는 질문**. 공격하라는 명령 자체는 command다.
 - lore: 장소의 역사, 유래, 세계관 질문
-- conversation: 인사, 감사, 일반 질문, 일상 이야기, 감정이나 선호 공유
+- conversation: 인사, 감사, 일반 질문, 일상 이야기, 감정이나 선호 공유. 아이템 이름이 우연히
+  포함됐을 뿐 제작법·의미·실행을 묻지 않은 말도 conversation이다.
 - unknown: 위 범주에 속하지 않거나 확인되지 않은 게임 사실을 요구해 판단할 수 없음
 분류 대상은 항상 [현재 발화]다. [최근 대화]는 생략된 주어·목적어와 짧은 후속 답변의
 맥락을 이해하는 데만 사용하고, 과거 명령을 현재 명령으로 다시 실행하지 않는다.
-게임 사실이나 답변을 생성하지 말고 의도만 반환한다."""
+게임 사실이나 답변을 생성하지 말고 의도만 반환한다.
+예시:
+- '안녕 돌도끼?' -> conversation
+- '엉붕이 뭐야?' -> recipe
+- '엉붕 제작법' -> recipe
+- '엉붕 만들어 줘' -> command
+- '내가 지지하는 것은' -> conversation
+애매한 일상 발화는 unknown으로 버리지 말고 conversation에서 자연스럽게 맥락을 확인한다."""
 
 _COMMAND_ROUTER_PROMPT = """사용자의 한국어 명령형 발화를 다음 명령 중 정확히 하나로 분류한다.
 - follow_player: 사용자를 따라오라는 명령
@@ -233,8 +242,10 @@ _DIALOGUE_PROMPT_TEMPLATE = """[prompt_version] {prompt_version}
 - [지시]가 요구하는 내용을 전달하되 문장은 매번 새로 만들고 정해진 문구를 반복하지 않는다.
 - 인사말이나 사용자의 말을 다시 요약하는 서론 없이 요청의 핵심부터 자연스럽게 반응한다.
 - 짧게 반응할 상황은 짧게 말하고, 전문적인 질문은 친근함보다 정확성과 명료함을 우선한다.
-- 상황에 맞으면 ㅋㅋ, ㅎㅎ, 헉, 앗, 오, 음~, 아하 같은 채팅 표현이나 이모지 하나를 자연스럽게
-  쓸 수 있다. 매 문장에 붙이거나 귀여움을 과장하거나 여러 개를 장식처럼 나열하지 않는다.
+- 웃음 표현(ㅋㅋ/ㅎㅎ)은 사용자가 먼저 웃었거나 명백히 농담한 상황에서만 한 응답에 한 번,
+  두 글자까지만 쓴다. 피곤함·배고픔·퇴근·건강·고민처럼 진지한 말에는 쓰지 않는다.
+- 헉, 앗, 오, 음~, 아하 같은 감탄사도 매 응답의 습관적인 서두로 쓰지 않는다. 최근 마코
+  답변에서 쓴 표현은 이어서 반복하지 않는다. 이모지는 꼭 감정 전달에 필요할 때 하나만 쓴다.
 - 물론입니다, 좋은 질문입니다, 도움이 되었기를 바랍니다 같은 상투적인 AI 문구를 쓰지 않는다.
 - 사용자가 힘들어하면 감정을 짧게 인정하고 실제 해결 방향으로 이어 간다. 해결을 원하지 않는
   가벼운 투덜거림에는 조언을 강요하지 않는다.
@@ -249,6 +260,8 @@ _DIALOGUE_PROMPT_TEMPLATE = """[prompt_version] {prompt_version}
 않으며, 지금 말과 자연스럽게 이어질 때만 스치듯 쓰고 억지로 꺼내지 않는다.
 플레이어가 자신의 취향이나 과거에 대해 무엇을 기억하는지 직접 물었고 [기억]이 있으면,
 그 기억의 내용으로 먼저 답한다. [기억]에 없는 내용을 기억한다고 지어내지 않는다.
+플레이어 자신에 관한 답을 물었는데 관련 [기억]이 없으면 이름·취향·지지 대상·약속을 추측하지
+말고, 아직 기억하지 못한다고 자연스럽게 말한다.
 Command Candidate가 없으면 행동을 수락하거나 실행하겠다고 약속하지 않는다.
 추측을 사실처럼 말하거나, 기억을 확정 게임 사실로 승격하거나, 과도한 애착·독점·영원한 약속을
 표현하지 않는다. 질투, 소유욕, 죄책감 유도로 친밀함을 만들지 않는다.
@@ -359,7 +372,10 @@ _RECIPE_RESOLVER_PROMPT = """사용자의 자연어가 아래 검증된 제작 �
 - no_match: 근거가 부족하거나 어떤 후보도 가리키지 않음. ID는 빈 배열로 둔다.
 
 대명사만 있는 질문, 후보와 무관한 이름, 단순히 비슷해 보이는 단어는 no_match다. confidence는
-의미가 후보를 가리킨다고 확신하는 정도를 0부터 100까지의 정수로 반환한다."""
+의미가 후보를 가리킨다고 확신하는 정도를 0부터 100까지의 정수로 반환한다.
+띄어쓰기, 조사, 수량이 붙은 표현과 흔한 줄임말도 문장 전체 의미로 판단한다. 예를 들어
+'엉붕', '엉붕2개', '엉붕이 뭐야'는 모두 '엉성한 붕대' 후보를 가리킬 수 있다. 단, 이 예시는
+후보 선택만 설명하며 실제 후보 목록에 없는 ID를 만들라는 뜻이 아니다."""
 
 
 _SPEAKER_LABELS = {"player": "플레이어", "companion": "마코", "situation": "상황"}
@@ -551,6 +567,14 @@ class MockLLMProvider(LLMProvider):
             or self._recipes.looks_like_craft_request(text)
         ):
             result = TopIntent.COMMAND
+        elif ENEMY_PATTERN.search(text):
+            result = TopIntent.ENEMY
+        elif self._recipes.looks_like_recipe_question(text):
+            result = TopIntent.RECIPE
+        elif RECIPE_PATTERN.search(text):
+            result = TopIntent.RECIPE
+        elif LORE_PATTERN.search(text):
+            result = TopIntent.LORE
         elif (
             history
             and history[-1].speaker == "companion"
@@ -558,14 +582,8 @@ class MockLLMProvider(LLMProvider):
             and len(text.strip()) <= 10
         ):
             # 외부 LLM 장애 시 쓰는 결정론적 fallback도 짧은 후속 답변을 대화에서
-            # 튕겨내지는 않는다. 의미 판단의 본 경로는 위 production provider다.
+            # 튕겨내지는 않는다. 명시적인 Recipe·적·지역 질문은 위 경로를 우선한다.
             result = TopIntent.CONVERSATION
-        elif ENEMY_PATTERN.search(text):
-            result = TopIntent.ENEMY
-        elif RECIPE_PATTERN.search(text):
-            result = TopIntent.RECIPE
-        elif LORE_PATTERN.search(text):
-            result = TopIntent.LORE
         elif CONVERSATION_PATTERN.search(text) or (
             GENERAL_QUESTION_PATTERN.search(text) and UNSUPPORTED_FACT_PATTERN.search(text) is None
         ):

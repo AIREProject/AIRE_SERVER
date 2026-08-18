@@ -44,6 +44,12 @@ _PARTICLE_SUFFIX = re.compile(
 )
 _TOKEN_STOPWORDS = frozenset({"나는", "내가", "나를", "마코", "그리고", "하지만"})
 _TOKEN_STEM_STOPWORDS = frozenset({"나", "내", "너"})
+_EXPLICIT_MEMORY_TYPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("Promise", re.compile(r"(?:약속|하기로\s*한|하겠다고\s*한)")),
+    ("Preference", re.compile(r"(?:취향|선호|좋아하는|싫어하는)")),
+    ("ProfileFact", re.compile(r"(?:내\s*(?:이름|정보|프로필)|나에\s*대해)")),
+    ("Episode", re.compile(r"(?:전에\s*(?:있었던|겪었던)|지난\s*일|추억)")),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +104,16 @@ def _lexical_hits(query_tokens: set[str], memory_text: str) -> int:
             or (len(memory_token) >= 2 and memory_token in query_token)
             for memory_token in memory_tokens
         )
+    )
+
+
+def _explicit_memory_types(query: str) -> frozenset[str]:
+    """사용자가 기억 종류를 직접 지칭한 경우에만 어휘 불일치를 보완한다."""
+
+    return frozenset(
+        memory_type
+        for memory_type, pattern in _EXPLICIT_MEMORY_TYPE_PATTERNS
+        if pattern.search(query) is not None
     )
 
 
@@ -163,20 +179,31 @@ class SourceBackedMemoryStore:
         memories = await self._active_memories(scope)
         normalized_embedding = _normalize_embedding(query_embedding)
         query_tokens = set(_tokens(query))
+        explicit_types = _explicit_memory_types(query)
         ranked: list[tuple[float, SourceBackedMemory]] = []
         for memory in memories:
             keyword_hits = _lexical_hits(query_tokens, memory.text)
             semantic = _semantic_similarity(memory, normalized_embedding, embedding_model)
-            # 모든 Active 기억은 bounded 후보가 될 수 있다. 관련성의 최종 판단은 대사 LLM이
-            # memory_references로 선언하고 sanitizer가 실제 후보 ID에 대조한다. 키워드와
-            # embedding은 후보를 제거하는 gate가 아니라 순위를 올리는 신호다.
+            type_match = memory.memory_type in explicit_types
+            # LLM은 주어진 후보를 자연스럽게 사용할지 판단하지만, 관련 없는 기억을 Prompt에
+            # 넣어 추측의 재료로 만들지는 않는다. 직접 어휘, 검증된 embedding, 명시적인 기억
+            # 종류 중 하나가 맞아야 후보가 된다.
+            if not keyword_hits and not type_match and (
+                semantic is None or semantic < MIN_SEMANTIC_RELEVANCE
+            ):
+                continue
             semantic_score = (
                 semantic if semantic is not None and semantic >= MIN_SEMANTIC_RELEVANCE else 0.0
             )
             mode_bonus = (
                 0.25 if source_mode is not None and source_mode in memory.source_modes else 0.0
             )
-            score = keyword_hits * 10.0 + semantic_score * 5.0 + _decayed_strength(memory, moment)
+            score = (
+                keyword_hits * 10.0
+                + semantic_score * 5.0
+                + (8.0 if type_match else 0.0)
+                + _decayed_strength(memory, moment)
+            )
             score += mode_bonus + (0.5 if memory.pinned else 0.0)
             ranked.append((score, memory))
         ranked.sort(

@@ -28,6 +28,7 @@ async def _memory(
     pinned: bool = False,
     deleted_source: bool = False,
     importance: int = 6,
+    memory_type: str = "Preference",
 ) -> None:
     async with database.session_factory() as session:  # type: ignore[attr-defined]
         if await session.get(ProfileModel, profile_id) is None:
@@ -86,7 +87,7 @@ async def _memory(
                 profile_id=profile_id,
                 save_slot_row_id=slot_id,
                 companion_id=companion_id,
-                memory_type="Preference",
+                memory_type=memory_type,
                 text=text,
                 normalized_text=text.casefold(),
                 importance=importance,
@@ -132,7 +133,6 @@ async def test_recall_is_scoped_relevant_and_keeps_only_trace_ids_in_prompt_text
 
     assert [(item.trace_id, item.text) for item in recalled] == [
         ("M0", "나는 밤이 무서워"),
-        ("M1", "나는 돌을 좋아해"),
     ]
     assert recalled[0].memory_id == "memory-night"
 
@@ -174,6 +174,38 @@ async def test_explicit_memory_question_recalls_preferences_without_embeddings()
         source_mode="RealWorld",
     )
     assert [item.text for item in relevant] == ["나는 나무가 너무좋아"]
+
+
+async def test_explicit_promise_question_recalls_only_promise_memories() -> None:
+    database = await make_database(make_settings())
+    await _memory(
+        database,
+        memory_id="memory-promise",
+        text="나는 다시 대통령이 되고싶어",
+        memory_type="Promise",
+    )
+    await _memory(database, memory_id="memory-name", text="제이름은 대통령 윤 석열입니다")
+
+    recalled = await SourceBackedMemoryStore(database).recall(
+        SourceScope("profile-a", "slot-a", "mako"),
+        query="약속 기억",
+        source_mode="RealWorld",
+    )
+
+    assert [item.memory_id for item in recalled] == ["memory-promise"]
+
+
+async def test_unrelated_personal_question_does_not_offer_a_name_memory() -> None:
+    database = await make_database(make_settings())
+    await _memory(database, memory_id="memory-name", text="제이름은 대통령 윤 석열입니다")
+
+    recalled = await SourceBackedMemoryStore(database).recall(
+        SourceScope("profile-a", "slot-a", "mako"),
+        query="내가 지지하는 것은",
+        source_mode="RealWorld",
+    )
+
+    assert recalled == ()
 
 
 async def test_attached_name_word_ranks_the_profile_memory_first() -> None:

@@ -19,6 +19,7 @@ class RecipeQueryMode(StrEnum):
 
     LIST_KNOWN = "list_known"
     DETAIL = "detail"
+    ITEM_INFO = "item_info"
     COMPARE = "compare"
     AMBIGUOUS = "ambiguous"
     UNKNOWN_RECIPE = "unknown_recipe"

@@ -139,6 +139,18 @@ class ForcedPendingProvider(MockLLMProvider):
         return ResourceSlot.WOOD
 
 
+class ForcedRecipeTopProvider(MockLLMProvider):
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
+        del text, clarification_pending, history
+        return TopIntent.RECIPE
+
+
 @pytest.mark.parametrize(
     ("intent", "destination"),
     [
@@ -300,6 +312,63 @@ async def test_mobile_shoddy_bandage_request_emits_offline_craft_action() -> Non
     assert final["action"] is not None
     assert final["action"].type is CommandType.CRAFT_ITEM
     assert final["action"].parameters == {"recipe_id": "recipe-1", "quantity": 3}
+
+
+async def test_attached_bandage_alias_and_quantity_emit_offline_craft_action() -> None:
+    text = "엉붕2개만 만들어줘"
+    provider = NaturalRecipeProvider(
+        RecipeSelection(decision="match", candidate_recipe_ids=("recipe-1",), confidence=95)
+    )
+    final = await make_graph(provider).ainvoke(
+        {
+            "turn": make_turn(
+                text,
+                frozenset({CommandType.CRAFT_ITEM}),
+                surface=Surface.MOBILE,
+            ),
+            "text": text,
+        }
+    )
+
+    assert final["display_text"] == "좋아. 엉성한 붕대 2개 제작을 예약할게."
+    assert final["action"] is not None
+    assert final["action"].parameters == {"recipe_id": "recipe-1", "quantity": 2}
+
+
+async def test_item_name_in_greeting_does_not_force_the_recipe_route() -> None:
+    text = "안녕 돌도끼?"
+    final = await make_graph().ainvoke(
+        {"turn": make_turn(text, surface=Surface.MOBILE), "text": text}
+    )
+
+    assert final["top_intent"] is TopIntent.CONVERSATION
+    assert final["display_text"] == SURFACE_PROFILES[Surface.MOBILE].greeting
+    assert final.get("repository_match") is not True
+
+
+async def test_item_greeting_stays_conversation_when_llm_misclassifies_it() -> None:
+    text = "안녕 돌도끼?"
+    final = await make_graph(ForcedRecipeTopProvider()).ainvoke(
+        {"turn": make_turn(text, surface=Surface.MOBILE), "text": text}
+    )
+
+    assert final["top_intent"] is TopIntent.CONVERSATION
+    assert final["display_text"] == SURFACE_PROFILES[Surface.MOBILE].greeting
+
+
+async def test_attached_bandage_alias_item_question_uses_verified_item_info() -> None:
+    text = "엉붕이뭐야"
+    provider = NaturalRecipeProvider(
+        RecipeSelection(decision="match", candidate_recipe_ids=("recipe-1",), confidence=95)
+    )
+    final = await make_graph(provider).ainvoke(
+        {"turn": make_turn(text, surface=Surface.MOBILE), "text": text}
+    )
+
+    assert final["top_intent"] is TopIntent.RECIPE
+    assert final["display_text"] == "그건 엉성한 붕대를 뜻해. 확인된 제작 아이템이야."
+    assert final.get("repository_match") is True
+    assert final.get("action") is None
 
 
 async def test_natural_language_bandage_alias_uses_validated_recipe_for_craft() -> None:
@@ -783,6 +852,20 @@ class NaturalRecipeProvider(RecordingProvider):
         super().__init__()
         self.selection = selection
         self.recipe_inputs: list[str] = []
+
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
+        del clarification_pending, history
+        return (
+            TopIntent.COMMAND
+            if RecipeRepository().looks_like_craft_request(text)
+            else TopIntent.RECIPE
+        )
 
     async def resolve_recipe(
         self, text: str, options: tuple[RecipeSelectionOption, ...]

@@ -77,6 +77,14 @@ _EXPLICIT_UNKNOWN_PATTERN = re.compile(
 # so keep the normal boundary while allowing only an explicit recipe suffix to follow.
 _RECIPE_PARTICLE_PATTERN = r"(?:을|를|은|는|이|가|의|도|만|와|과|랑|이랑|하고)"
 _RECIPE_SUFFIX_PATTERN = r"(?:레시피|제작법|만드는?\s*(?:법|방법))"
+_ALIAS_ATTACHED_CONTINUATION_PATTERN = (
+    r"(?:\d[\d,]*\s*(?:개|자루)|"
+    r"(?:이|가|은|는)?\s*(?:뭐야|뭔데|무엇|뜻|줄임말|만들|제작|레시피|제작법))"
+)
+_ITEM_INFO_PATTERN = re.compile(
+    r"(?:뭐야|뭔데|무엇(?:이야|인가요)?|무슨\s*(?:뜻|아이템)|뜻이야|줄임말)",
+    re.IGNORECASE,
+)
 
 
 def _recipe_alias_pattern(alias: str) -> re.Pattern[str]:
@@ -88,7 +96,8 @@ def _recipe_alias_pattern(alias: str) -> re.Pattern[str]:
     return re.compile(
         rf"(?<!\w){escaped}(?:"
         rf"{_RECIPE_PARTICLE_PATTERN}?(?!\w)|"
-        rf"(?={_RECIPE_SUFFIX_PATTERN}{_RECIPE_PARTICLE_PATTERN}?(?!\w))"
+        rf"(?={_RECIPE_SUFFIX_PATTERN}{_RECIPE_PARTICLE_PATTERN}?(?!\w))|"
+        rf"(?={_ALIAS_ATTACHED_CONTINUATION_PATTERN})"
         rf")",
         re.IGNORECASE,
     )
@@ -204,6 +213,10 @@ class RecipeRepository:
             or any(recipe.result_item_id == item.item_id for recipe in dataset.smelting_recipes)
         }
         self._result_items = result_items
+        aliases_by_result: dict[str, tuple[str, ...]] = {
+            item_id: tuple(dict.fromkeys((*item.aliases, item.name_ko, item.item_id)))
+            for item_id, item in result_items.items()
+        }
         self._recipes_by_result: dict[str, tuple[Recipe, ...]] = {
             item_id: tuple(recipe for recipe in dataset.recipes if recipe.result_item_id == item_id)
             for item_id in result_items
@@ -228,10 +241,6 @@ class RecipeRepository:
             recipe_id.casefold(): target
             for target in self._targets_by_result.values()
             for recipe_id in target.recipe_ids
-        }
-        aliases_by_result: dict[str, tuple[str, ...]] = {
-            item_id: tuple(dict.fromkeys((*item.aliases, item.name_ko, item.item_id)))
-            for item_id, item in result_items.items()
         }
         self._recipe_patterns: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
             (item_id, pattern)
@@ -304,6 +313,17 @@ class RecipeRepository:
                 fact_ids=self._fact_ids_for(query.targets),
             )
 
+        if query.mode is RecipeQueryMode.ITEM_INFO and len(query.targets) == 1:
+            target = query.targets[0]
+            item = self._result_items.get(target.result_item_id)
+            if item is None:
+                return None
+            item_object = f"{item.name_ko}{'을' if has_batchim(item.name_ko) else '를'}"
+            return RecipeFactResult(
+                text=f"그건 {item_object} 뜻해. 확인된 제작 아이템이야.",
+                fact_ids=self._fact_ids_for(query.targets),
+            )
+
         if query.mode is RecipeQueryMode.COMPARE and len(query.targets) == 2:
             if query.targets[0] == query.targets[1]:
                 return None
@@ -371,6 +391,12 @@ class RecipeRepository:
             if len(targets) == 2:
                 return RecipeQuery(RecipeQueryMode.COMPARE, targets)
             return RecipeQuery(RecipeQueryMode.AMBIGUOUS, targets)
+
+        if _ITEM_INFO_PATTERN.search(query) is not None:
+            if len(targets) == 1:
+                return RecipeQuery(RecipeQueryMode.ITEM_INFO, targets)
+            if len(targets) > 1:
+                return RecipeQuery(RecipeQueryMode.AMBIGUOUS, targets)
 
         if len(targets) == 1:
             return RecipeQuery(RecipeQueryMode.DETAIL, targets)
@@ -557,6 +583,28 @@ class RecipeRepository:
         return (
             _CRAFT_VERB_PATTERN.search(query) is not None
             and _CRAFT_FACT_PATTERN.search(query) is None
+        )
+
+    @staticmethod
+    def looks_like_item_info(query: str) -> bool:
+        """아이템의 뜻·정체를 묻는 표현인지 판정한다(대상 선택은 LLM/allowlist가 담당)."""
+
+        return _ITEM_INFO_PATTERN.search(query) is not None
+
+    def looks_like_recipe_question(self, query: str) -> bool:
+        """Mock fallback에서만 쓰는 명시적 Recipe 질문 경계."""
+
+        if self.looks_like_craft_request(query):
+            return False
+        targets = self.targets_in(query)
+        if self.looks_like_item_info(query):
+            return bool(targets)
+        return bool(
+            _STABLE_RECIPE_ID_PATTERN.search(query)
+            or _RECIPE_QUERY_PATTERN.search(query)
+            or _RECIPE_LIST_PATTERN.search(query)
+            or _RECIPE_REFERENCE_PATTERN.search(query)
+            or _RECIPE_COMPARE_PATTERN.search(query)
         )
 
     def is_craft_request(self, query: str) -> bool:

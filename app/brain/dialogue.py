@@ -198,7 +198,7 @@ SURFACE_PROFILES: dict[Surface, SurfaceProfile] = {
             "이 위치에 대해 확인된 이야기가 없다",
         ),
         greeting="오, 왔네! 오늘은 어디부터 가볼까?",
-        thanks="ㅋㅋ 별말을. 같이 한 건데 뭐.",
+        thanks="별말을. 같이 한 건데 뭐.",
         situation="헉, 방금 그거 봤어?",
     ),
     Surface.MOBILE: SurfaceProfile(
@@ -222,8 +222,8 @@ SURFACE_PROFILES: dict[Surface, SurfaceProfile] = {
             "어느 지역 얘기인지 모르겠어. 게임에서 물어봐 줄래?",
             "어느 위치를 말하는지 알 수 없어 확인된 이야기를 찾지 못했다",
         ),
-        greeting="오, 왔네 ㅋㅋ 무슨 일이야?",
-        thanks="ㅎㅎ 별말을. 같이 고민한 건데 뭐.",
+        greeting="왔네! 무슨 일이야?",
+        thanks="별말을. 같이 고민한 건데 뭐.",
         situation="헉, 방금 거기 무슨 일 있었어?",
     ),
 }
@@ -238,6 +238,7 @@ def provider_failure_fallback(spec: DialogueSpec, reason: FallbackReason) -> str
 
 _NUMBER_PATTERN = re.compile(r"\d+")
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+_LAUGHTER_PATTERN = re.compile(r"[ㅋㅎ]{2,}")
 _ANCHOR_PATTERN = re.compile(r"[0-9A-Za-z가-힣]+")
 _COMMAND_ACCEPTANCE_PATTERN = re.compile(
     r"(?:따라갈게|기다릴게|멈출게|공격할게|돌아갈게|가져올게|"
@@ -266,6 +267,23 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
     text = output.text if isinstance(output, DialogueOutput) else output
 
     normalized = _WHITESPACE_PATTERN.sub(" ", text).strip()
+    # 모델이 persona 예시를 말버릇으로 복제하지 못하게 한다. 사용자가 웃음을 먼저 쓴
+    # 턴에만 한 번 허용하고, 그때도 과장된 연속 문자는 두 글자로 줄인다.
+    user_laughed = bool(spec.user_text and _LAUGHTER_PATTERN.search(spec.user_text))
+    if user_laughed:
+        seen_laughter = False
+
+        def normalize_laughter(match: re.Match[str]) -> str:
+            nonlocal seen_laughter
+            if seen_laughter:
+                return ""
+            seen_laughter = True
+            return match.group(0)[0] * 2
+
+        normalized = _LAUGHTER_PATTERN.sub(normalize_laughter, normalized)
+    else:
+        normalized = _LAUGHTER_PATTERN.sub("", normalized)
+    normalized = _WHITESPACE_PATTERN.sub(" ", normalized).strip()
     if not normalized or len(normalized) > 200:
         return None
 

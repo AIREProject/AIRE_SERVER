@@ -606,7 +606,7 @@ async def test_dialogue_system_prompt_switches_with_the_surface() -> None:
         assert "[prompt_version] companion-v5" in prompt
         assert "오랫동안 여러 일을 함께해 온 친근한 동료" in prompt
         assert "존재하지 않는 공동 경험" in prompt
-        assert "이모지 하나를 자연스럽게" in prompt
+        assert "이모지는 꼭 감정 전달에 필요할 때 하나만" in prompt
         assert "이모지와 따옴표를 쓰지 않는다" not in prompt
         assert "현재 단계는 Low" in prompt
         assert "과도한 애착·독점·영원한 약속" in prompt

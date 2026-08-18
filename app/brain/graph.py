@@ -371,15 +371,27 @@ def build_companion_graph(
             clarification_pending=False,
             history=state.get("history", ()),
         )
-        # 제작법 질문은 기존 recipe facts-only 경로에 남긴다. 명시적인 allowlist 제작
-        # 요청만 provider의 분류 결과와 무관하게 command 경로로 올린다.
+        # LLM이 먼저 발화 목적을 판정한다. 검증된 아이템 이름이 포함됐다는 이유만으로
+        # conversation을 recipe로 덮어쓰지 않는다(`안녕 돌도끼?` 경계).
         craft_requested = False
         mobile_craft = None
-        recipe_query = recipes.query_for(state["text"], recent_target=state.get("recipe_reference"))
-        if recipe_query is not None and intent is not TopIntent.COMMAND:
-            # Provider가 질문을 명령으로 잘못 분류해도 검증된 제작법 사실은 행동으로
-            # 승격하지 않는다.
-            intent = TopIntent.RECIPE
+        recipe_query = None
+        if (
+            intent is TopIntent.RECIPE
+            and re.search(r"(?:안녕|반가워|하이)", state["text"]) is not None
+            and not recipes.looks_like_recipe_question(state["text"])
+        ):
+            intent = TopIntent.CONVERSATION
+        if intent is TopIntent.CONVERSATION and recipes.looks_like_item_info(state["text"]):
+            selection = await llm.resolve_recipe(state["text"], recipes.selection_options())
+            resolved_query = recipes.query_from_selection(selection)
+            if resolved_query is not None:
+                intent = TopIntent.RECIPE
+                recipe_query = RecipeQuery(RecipeQueryMode.ITEM_INFO, resolved_query.targets)
+        if intent is TopIntent.RECIPE and recipe_query is None:
+            recipe_query = recipes.query_for(
+                state["text"], recent_target=state.get("recipe_reference")
+            )
         if state["turn"].surface is Surface.GAME and CommandIntentParser.is_gather_question(
             state["text"]
         ):
@@ -393,7 +405,11 @@ def build_companion_graph(
             selection = await llm.resolve_recipe(state["text"], recipes.selection_options())
             resolved_query = recipes.query_from_selection(selection)
             if resolved_query is not None:
-                recipe_query = resolved_query
+                recipe_query = (
+                    RecipeQuery(RecipeQueryMode.ITEM_INFO, resolved_query.targets)
+                    if recipes.looks_like_item_info(state["text"])
+                    else resolved_query
+                )
         if intent is TopIntent.RECIPE and recipe_query is None:
             recipe_query = RecipeQuery(RecipeQueryMode.AMBIGUOUS)
         query_mode: RecipeQueryMode | RequestQueryMode | None = (
@@ -700,7 +716,12 @@ def build_companion_graph(
     async def conversation_node(state: CompanionState) -> CompanionUpdate:
         text = state["text"]
         surface = profile(state)
-        fallback = surface.thanks if "고마" in text or "감사" in text else surface.greeting
+        if "고마" in text or "감사" in text:
+            fallback = surface.thanks
+        elif re.search(r"(?:안녕|반가워|하이)", text) is not None:
+            fallback = surface.greeting
+        else:
+            fallback = "그 말은 내가 제대로 이해했는지 조금 애매해. 한마디만 더 이어서 말해 줄래?"
         return {"display_text": await say(state, "conversation", fallback)}
 
     async def unsupported_node(state: CompanionState) -> CompanionUpdate:

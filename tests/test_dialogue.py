@@ -81,6 +81,22 @@ def test_sanitize_folds_newlines_and_repeated_whitespace() -> None:
     assert sanitize("  여기서\n  기다릴게.  ", spec) == "여기서 기다릴게."
 
 
+def test_sanitize_removes_unprompted_laughter_and_limits_prompted_laughter() -> None:
+    serious = DialogueSpec(
+        scene="conversation",
+        fallback="무슨 일이야?",
+        user_text="벌써 배고파",
+    )
+    joking = DialogueSpec(
+        scene="conversation",
+        fallback="무슨 일이야?",
+        user_text="이거 웃기다 ㅋㅋ",
+    )
+
+    assert sanitize("헉, 벌써? ㅋㅋ 뭐 좀 먹어.", serious) == "헉, 벌써? 뭐 좀 먹어."
+    assert sanitize("ㅋㅋㅋㅋ 맞아 ㅎㅎ 진짜 웃기네.", joking) == "ㅋㅋ 맞아 진짜 웃기네."
+
+
 def test_sanitize_rejects_numbers_not_present_in_facts() -> None:
     spec = DialogueSpec(
         scene="recipe",
