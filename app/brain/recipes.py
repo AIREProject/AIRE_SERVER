@@ -511,8 +511,7 @@ class RecipeRepository:
 
         resolved = self.query_from_selection(selection)
         if (
-            not self.looks_like_craft_request(query)
-            or resolved is None
+            resolved is None
             or resolved.mode is not RecipeQueryMode.DETAIL
             or len(resolved.targets) != 1
             or _MOBILE_CRAFT_RECIPE_ID not in resolved.targets[0].recipe_ids

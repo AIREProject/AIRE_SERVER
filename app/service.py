@@ -527,6 +527,9 @@ class CompanionService:
     async def classify_memory(self, text: str) -> MemoryClassification:
         return await self._brain.classify_memory(text)
 
+    async def embed_memory_text(self, text: str) -> tuple[tuple[float, ...] | None, str | None]:
+        return await self._brain.embed_memory_text(text)
+
     @asynccontextmanager
     async def _chat_lock(self, key: str) -> AsyncIterator[None]:
         lock = self._chat_locks.get(key)

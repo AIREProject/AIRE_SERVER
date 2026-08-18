@@ -76,8 +76,9 @@ Base URL은 일반적으로 `/v1`까지 포함합니다. model name은 Local ser
 
 ## 5. Embedding Provider
 
-장기기억 검색은 LLM provider와 별개로 Embedding provider를 선택합니다. Embedding이 없어도
-키워드와 시간 감쇠 검색으로 동작합니다.
+장기기억 검색은 LLM provider와 별개로 Embedding provider를 선택합니다. Embedding·키워드·
+시간 감쇠는 bounded 후보의 순위를 정하며, 최종 관련성은 대사 LLM의 `memory_references` 선언과
+Backend sanitizer가 검증합니다. Embedding이 없어도 Active 기억 후보를 제한해 전달합니다.
 
 ### Mock Embedding
 
@@ -127,8 +128,9 @@ Embedding server가 `dimensions` 인자를 지원하지 않으면 dimensions 값
 → leased source outbox
 → LLM이 기억 유형·중요도만 분류
 → canonical Message 원문을 Memory에 저장
-→ 이후 scope와 관련성이 맞는 Active 기억 회수
-→ 대사 Prompt의 [기억] 블록에 참고 정보로 전달
+→ 같은 scope의 Active 기억을 키워드·Embedding·중요도·최근성으로 순위화
+→ 최대 3개 후보를 대사 Prompt의 [기억] 블록에 전달
+→ LLM이 실제 사용한 memory index를 선언하고 Backend가 답변 근거를 검증
 ```
 
 주요 설정은 다음과 같습니다.
@@ -156,8 +158,22 @@ TRANSCRIPT_RETENTION_DAYS=1
 - Web 정정 후에는 최신 정정문만 검색과 Prompt 회상에 사용됩니다.
 - delete/reset된 기억과 source가 삭제된 기억은 Prompt에 들어가지 않습니다.
 - 기억은 확정 게임 사실이 아니라 대화 참고 정보로만 Prompt에 들어갑니다.
-- Embedding이 없어도 사용자가 자신의 취향·과거 기억을 명시적으로 물으면 Active 기억을
-  중요도·고정·최근성 순으로 제한해 Prompt에 전달합니다.
+- Embedding이 없어도 Active 기억을 중요도·고정·최근성 순으로 제한해 Prompt에 전달합니다.
+  질문별 하드코딩 category로 기억을 차단하지 않으며, 관련 없는 후보는 LLM이 참조하지 않습니다.
+- Memory worker는 새로 승인하는 canonical 원문에 query와 같은 embedding model을 적용해 저장합니다.
+  이 변경 전에 만들어져 embedding이 비어 있는 기존 Memory는 키워드·bounded 후보 방식으로 계속
+  동작하며, 의미 검색까지 적용하려면 별도 backfill이 필요합니다.
+
+### 마코 대사 Persona
+
+`companion-v5`부터 마코는 오래 알고 지낸 밝고 생동감 있는 동료를 기본 Persona로 사용합니다.
+관계 단계가 낮아도 처음 만난 사람처럼 딱딱하게 말하지 않으며, 단계가 높아질수록 장난과 익숙한
+호흡을 조금 더 자연스럽게 표현합니다. `ㅋㅋ`, `ㅎㅎ`와 이모지는 상황에 맞을 때만 제한적으로
+사용합니다.
+
+친밀함은 사실 경계를 완화하지 않습니다. 공동 경험·취향·습관을 언급하려면 최근 대화나 검증된
+Memory 후보가 있어야 하고, Memory를 실제 답변에 사용하면 `memory_references` 검증을 통과해야
+합니다. Persona는 말투만 바꾸며 Recipe 사실, Command 권한, gameplay 상태를 만들지 않습니다.
 
 ## 7. 연결 확인
 
@@ -179,7 +195,7 @@ TRANSCRIPT_RETENTION_DAYS=1
   "ai_metadata": {
     "provider": "local",
     "model_version": "your-model-name",
-    "prompt_version": "companion-v4"
+    "prompt_version": "companion-v5"
   }
 }
 ```

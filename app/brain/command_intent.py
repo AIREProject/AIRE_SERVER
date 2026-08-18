@@ -184,43 +184,41 @@ class CommandIntentParser:
 
     @classmethod
     def corroborate(cls, text: str, proposed: CommandClassification) -> CommandClassification:
-        """LLM Command를 사용자 원문의 명시적 행동 요청과 대조한다.
-
-        Provider는 명령 계열만 제안한다. 실제 label과 Gather 슬롯·수량은 원문에 같은 계열의
-        요청 근거가 있을 때만 살아남는다. 일반 대화를 Provider가 Command로 오분류해도 여기서
-        UNKNOWN으로 닫히며, 지원 자원과 수량은 LLM 값이 아니라 canonical parser 결과를 쓴다.
-        """
+        """LLM의 의미 분류를 stable Command·원문 수량 계약으로 검증한다."""
 
         rejected = CommandClassification(
             command=CommandLabel.UNKNOWN,
             resource=ResourceSlot.UNSPECIFIED,
             quantity=None,
         )
-        simple = cls.classify_simple_command(text)
-        if simple is not None:
-            if proposed.command is not simple:
-                return rejected
+        if proposed.command in {
+            CommandLabel.FOLLOW_PLAYER,
+            CommandLabel.WAIT,
+            CommandLabel.STOP_CURRENT_TASK,
+            CommandLabel.RETURN_TO_PLAYER,
+            CommandLabel.ATTACK,
+            CommandLabel.CRAFT_ITEM,
+        }:
             return CommandClassification(
-                command=simple,
+                command=proposed.command,
                 resource=ResourceSlot.UNSPECIFIED,
                 quantity=None,
             )
-        if cls.is_gather_command(text):
-            if proposed.command is not CommandLabel.GATHER_RESOURCE or cls.is_gather_question(text):
+        if proposed.command is CommandLabel.GATHER_RESOURCE:
+            if cls.is_gather_question(text):
                 return rejected
-            resource, quantity = cls.resolve_gather(text)
+            matched_resources = cls._resources.find_all(cls.normalize(text))
+            if len(matched_resources) == 1:
+                resource = ResourceSlot(matched_resources[0].value)
+            elif len(matched_resources) > 1:
+                resource = ResourceSlot.UNSPECIFIED
+            else:
+                resource = proposed.resource
+            quantity = cls.resolve_quantity(text)
             return CommandClassification(
                 command=CommandLabel.GATHER_RESOURCE,
                 resource=resource,
                 quantity=quantity,
-            )
-        if cls.is_attack_command(text):
-            if proposed.command is not CommandLabel.ATTACK:
-                return rejected
-            return CommandClassification(
-                command=CommandLabel.ATTACK,
-                resource=ResourceSlot.UNSPECIFIED,
-                quantity=None,
             )
         return rejected
 

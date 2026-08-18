@@ -48,6 +48,7 @@ class CommandLabel(StrEnum):
     WAIT = "wait"
     STOP_CURRENT_TASK = "stop_current_task"
     GATHER_RESOURCE = "gather_resource"
+    CRAFT_ITEM = "craft_item"
     ATTACK = "attack"
     RETURN_TO_PLAYER = "return_to_player"
     UNKNOWN = "unknown"

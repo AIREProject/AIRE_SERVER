@@ -84,7 +84,14 @@ def command_state(label: CommandLabel) -> CompanionState:
 class ExplodingLLMProvider(LLMProvider):
     """분류 단계에서 실패해 그래프 실행 경계를 시험하는 공급자."""
 
-    async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
+        del text, clarification_pending, history
         raise RuntimeError("classification down")
 
     async def classify_command(self, text: str) -> CommandClassification:
@@ -111,8 +118,14 @@ class ForcedCommandProvider(MockLLMProvider):
         super().__init__()
         self._classification = classification
 
-    async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
-        del text, clarification_pending
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
+        del text, clarification_pending, history
         return TopIntent.COMMAND
 
     async def classify_command(self, text: str) -> CommandClassification:
@@ -236,11 +249,14 @@ async def test_gather_emits_action_with_resolved_parameters(
         ),
     ],
 )
-async def test_provider_cannot_turn_general_conversation_into_a_command(
+async def test_llm_semantic_command_is_still_blocked_by_capability_allowlist(
     classification: CommandClassification,
 ) -> None:
     final = await make_graph(ForcedCommandProvider(classification)).ainvoke(
-        {"turn": make_turn("오늘 기분 어때?"), "text": "오늘 기분 어때?"}
+        {
+            "turn": make_turn("오늘 기분 어때?", allowed_actions=frozenset()),
+            "text": "오늘 기분 어때?",
+        }
     )
 
     assert final.get("action") is None
@@ -327,7 +343,7 @@ async def test_natural_language_craft_rejects_an_unverified_recipe_selection() -
     assert final.get("action") is None
 
 
-async def test_provider_command_family_must_match_the_user_utterance() -> None:
+async def test_llm_command_family_is_validated_by_stable_capability() -> None:
     provider = ForcedCommandProvider(
         CommandClassification(
             command=CommandLabel.ATTACK,
@@ -342,7 +358,44 @@ async def test_provider_command_family_must_match_the_user_utterance() -> None:
         }
     )
 
-    assert final.get("action") is None
+    assert final["action"].type is CommandType.ATTACK
+
+
+class MemoryAnswerProvider(MockLLMProvider):
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
+        del text, clarification_pending, history
+        return TopIntent.CONVERSATION
+
+    async def generate_dialogue(self, spec: DialogueSpec) -> DialogueOutput:
+        assert spec.memories == ("[M0] 제이름은 대통령 윤 석열입니다",)
+        return DialogueOutput(
+            text="네 이름은 대통령 윤 석열이야.",
+            purpose="conversation",
+            fact_references=(),
+            memory_references=(0,),
+            situation_references=(),
+            accepts_command=False,
+        )
+
+
+async def test_llm_can_answer_from_a_declared_long_term_memory_candidate() -> None:
+    text = "내 이름은?"
+    final = await make_graph(MemoryAnswerProvider()).ainvoke(
+        {
+            "turn": make_turn(text, surface=Surface.MOBILE),
+            "text": text,
+            "long_term": ("[M0] 제이름은 대통령 윤 석열입니다",),
+        }
+    )
+
+    assert final["display_text"] == "네 이름은 대통령 윤 석열이야."
+    assert final["top_intent"] is TopIntent.CONVERSATION
 
 
 async def test_provider_cannot_answer_a_pending_resource_with_unrelated_text() -> None:
@@ -610,7 +663,7 @@ async def test_changing_the_subject_drops_the_pending_slot() -> None:
     afterwards = await say(brain, "나무")
 
     assert changed.action is None
-    assert "안녕" in changed.text
+    assert changed.text == SURFACE_PROFILES[Surface.GAME].greeting
     assert afterwards.action is None
 
 
@@ -698,9 +751,19 @@ class RecordingProvider(MockLLMProvider):
         self.classify_inputs: list[str] = []
         self.dialogue_specs: list[DialogueSpec] = []
 
-    async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
         self.classify_inputs.append(text)
-        return await super().classify_top(text, clarification_pending=clarification_pending)
+        return await super().classify_top(
+            text,
+            clarification_pending=clarification_pending,
+            history=history,
+        )
 
     async def classify_command(self, text: str) -> CommandClassification:
         self.classify_inputs.append(text)
@@ -869,7 +932,7 @@ async def test_history_accumulates_across_turns() -> None:
     history = llm.dialogue_specs[-1].history
     assert [(t.speaker, t.text) for t in history] == [
         ("player", "안녕, 마코"),
-        ("companion", "안녕! 오늘은 어디부터 둘러볼까?"),
+        ("companion", "오, 왔네! 오늘은 어디부터 가볼까?"),
     ]
 
 

@@ -113,7 +113,7 @@ async def test_local_call_failure_records_mock_fallback_without_error_text(
     assert reply.provenance.final_fallback_reason == reason
     assert all(call.configured_provider == "local" for call in reply.provenance.provider_calls)
     assert all(call.fallback_used for call in reply.provenance.provider_calls)
-    assert reply.text == "안녕! 오늘은 어디부터 둘러볼까?"
+    assert reply.text == "오, 왔네! 오늘은 어디부터 가볼까?"
     assert "secret failure detail" not in repr(reply.provenance)
 
 
@@ -158,7 +158,7 @@ async def test_empty_conversation_output_uses_safe_scene_fallback() -> None:
 
     reply = await CompanionBrain(provider).respond(_turn("안녕, 마코"))
 
-    assert reply.text == "안녕! 오늘은 어디부터 둘러볼까?"
+    assert reply.text == "오, 왔네! 오늘은 어디부터 가볼까?"
     assert reply.provenance is not None
     assert reply.provenance.final_response_source == "mock_fallback"
     assert reply.provenance.final_fallback_reason == "empty_output"
@@ -180,7 +180,7 @@ async def test_sanitizer_rejection_has_a_distinct_final_source() -> None:
 async def test_conversation_sanitizer_rejection_uses_safe_scene_fallback() -> None:
     reply = await CompanionBrain(_InvalidConversationProvider()).respond(_turn("안녕, 마코"))
 
-    assert reply.text == "안녕! 오늘은 어디부터 둘러볼까?"
+    assert reply.text == "오, 왔네! 오늘은 어디부터 가볼까?"
     assert reply.provenance is not None
     assert reply.provenance.final_response_source == "validation_rejection"
     assert reply.provenance.final_fallback_reason == "sanitizer_rejection"

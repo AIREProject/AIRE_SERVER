@@ -130,7 +130,10 @@ async def test_recall_is_scoped_relevant_and_keeps_only_trace_ids_in_prompt_text
         source_mode="RealWorld",
     )
 
-    assert [(item.trace_id, item.text) for item in recalled] == [("M0", "나는 밤이 무서워")]
+    assert [(item.trace_id, item.text) for item in recalled] == [
+        ("M0", "나는 밤이 무서워"),
+        ("M1", "나는 돌을 좋아해"),
+    ]
     assert recalled[0].memory_id == "memory-night"
 
 
@@ -171,6 +174,26 @@ async def test_explicit_memory_question_recalls_preferences_without_embeddings()
         source_mode="RealWorld",
     )
     assert [item.text for item in relevant] == ["나는 나무가 너무좋아"]
+
+
+async def test_attached_name_word_ranks_the_profile_memory_first() -> None:
+    database = await make_database(make_settings())
+    await _memory(
+        database,
+        memory_id="memory-name",
+        text="제이름은 대통령 윤 석열입니다",
+        importance=8,
+    )
+    await _memory(database, memory_id="memory-preference", text="나는 나무가 너무좋아")
+
+    recalled = await SourceBackedMemoryStore(database).recall(
+        SourceScope("profile-a", "slot-a", "mako"),
+        query="내 이름은?",
+        source_mode="RealWorld",
+    )
+
+    assert recalled[0].memory_id == "memory-name"
+    assert recalled[0].text == "제이름은 대통령 윤 석열입니다"
 
 
 async def test_prompt_memory_budget_never_exceeds_three_entries_or_360_characters() -> None:

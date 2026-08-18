@@ -37,12 +37,6 @@ _TYPE_ORDER = {
     "RelationshipEvidence": 3,
     "Episode": 4,
 }
-_EXPLICIT_RECALL_PATTERN = re.compile(
-    r"(?:기억(?:해|나|하고|나는|하는)|알고\s*있|내가\s*(?:뭘|뭐|무엇을?)\s*"
-    r"(?:좋아|싫어|선호)|내가.{0,20}(?:좋아|싫어|선호).{0,10}(?:뭐|무엇|기억|알)|"
-    r"내\s*(?:취향|선호)|나에\s*대해)",
-    re.IGNORECASE,
-)
 _PUNCTUATION_PATTERN = re.compile(r"[^\w\s]", flags=re.UNICODE)
 _PARTICLE_SUFFIX = re.compile(
     r"(?:이랑|하고|에게|에서|처럼|보다|부터|까지|마다|라도|으로|한테|"
@@ -89,6 +83,22 @@ def _tokens(text: str) -> tuple[str, ...]:
             continue
         tokens.append(stem)
     return tuple(tokens)
+
+
+def _lexical_hits(query_tokens: set[str], memory_text: str) -> int:
+    """한국어 붙여쓰기까지 포함해 질의와 기억의 어휘 겹침을 센다."""
+
+    memory_tokens = set(_tokens(memory_text))
+    return sum(
+        1
+        for query_token in query_tokens
+        if any(
+            query_token == memory_token
+            or (len(query_token) >= 2 and query_token in memory_token)
+            or (len(memory_token) >= 2 and memory_token in query_token)
+            for memory_token in memory_tokens
+        )
+    )
 
 
 def _normalize_embedding(values: Sequence[float] | None) -> tuple[float, ...] | None:
@@ -153,21 +163,20 @@ class SourceBackedMemoryStore:
         memories = await self._active_memories(scope)
         normalized_embedding = _normalize_embedding(query_embedding)
         query_tokens = set(_tokens(query))
-        explicit_recall = _EXPLICIT_RECALL_PATTERN.search(query) is not None
         ranked: list[tuple[float, SourceBackedMemory]] = []
         for memory in memories:
-            keyword_hits = len(query_tokens.intersection(_tokens(memory.text)))
+            keyword_hits = _lexical_hits(query_tokens, memory.text)
             semantic = _semantic_similarity(memory, normalized_embedding, embedding_model)
-            if (
-                keyword_hits == 0
-                and not explicit_recall
-                and (semantic is None or semantic < MIN_SEMANTIC_RELEVANCE)
-            ):
-                continue
+            # 모든 Active 기억은 bounded 후보가 될 수 있다. 관련성의 최종 판단은 대사 LLM이
+            # memory_references로 선언하고 sanitizer가 실제 후보 ID에 대조한다. 키워드와
+            # embedding은 후보를 제거하는 gate가 아니라 순위를 올리는 신호다.
+            semantic_score = (
+                semantic if semantic is not None and semantic >= MIN_SEMANTIC_RELEVANCE else 0.0
+            )
             mode_bonus = (
                 0.25 if source_mode is not None and source_mode in memory.source_modes else 0.0
             )
-            score = keyword_hits * 2.0 + (semantic or 0.0) * 2.0 + _decayed_strength(memory, moment)
+            score = keyword_hits * 10.0 + semantic_score * 5.0 + _decayed_strength(memory, moment)
             score += mode_bonus + (0.5 if memory.pinned else 0.0)
             ranked.append((score, memory))
         ranked.sort(

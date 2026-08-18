@@ -446,6 +446,12 @@ class CompanionBrain:
     async def classify_memory(self, text: str) -> MemoryClassification:
         return await self._llm.classify_memory(text)
 
+    async def embed_memory_text(self, text: str) -> tuple[tuple[float, ...] | None, str | None]:
+        """Embed canonical memory text with the same model used for recall queries."""
+
+        embedding = await self._embed_text(text)
+        return embedding, self._embedding_model if embedding is not None else None
+
     async def _recall(
         self,
         memory_scope: MemoryScope | None,

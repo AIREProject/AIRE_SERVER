@@ -19,7 +19,7 @@ from app.models import AIMetadata, ChatRequest, CommandType
 from app.service import CompanionService
 from tests.conftest import make_authenticated_device, make_database, make_settings
 
-METADATA = AIMetadata(provider="mock", model_version="mock-v1", prompt_version="companion-v4")
+METADATA = AIMetadata(provider="mock", model_version="mock-v1", prompt_version="companion-v5")
 PROTECTOR = CredentialProtector(SecretStr("test-only-pepper-not-for-production"))
 
 

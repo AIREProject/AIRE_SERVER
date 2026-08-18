@@ -118,6 +118,7 @@ class MemoryWorker:
             classification = await self._companion.classify_memory(message.content)
             if classification.decision == "Reject":
                 return None
+            embedding, embedding_model = await self._companion.embed_memory_text(message.content)
             return MemoryCandidate(
                 memory_type=classification.decision,
                 text=message.content,
@@ -125,6 +126,8 @@ class MemoryWorker:
                 scope=scope,
                 source_type=SOURCE_MESSAGE,
                 source_id=source_id,
+                embedding=embedding,
+                embedding_model=embedding_model,
             )
         if source_type == SOURCE_EVENT:
             event = source
@@ -134,12 +137,16 @@ class MemoryWorker:
             ):
                 return None
             importance = 9 if event.event_type == "Event.Rescue.Completed" else 7
+            text = render_event_memory(event)
+            embedding, embedding_model = await self._companion.embed_memory_text(text)
             return MemoryCandidate(
                 memory_type="RelationshipEvidence",
-                text=render_event_memory(event),
+                text=text,
                 importance=importance,
                 scope=scope,
                 source_type=SOURCE_EVENT,
                 source_id=source_id,
+                embedding=embedding,
+                embedding_model=embedding_model,
             )
         return None

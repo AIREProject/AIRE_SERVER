@@ -256,7 +256,11 @@ def route_by_top(state: CompanionState) -> TopRoute:
 def route_by_command(state: CompanionState) -> CommandRoute:
     """명령 라벨에 따라 다음 노드를 고른다."""
 
-    if state.get("craft_requested") or state.get("craft_recipe_id") is not None:
+    if (
+        state.get("craft_requested")
+        or state.get("craft_recipe_id") is not None
+        or state.get("command_label") is CommandLabel.CRAFT_ITEM
+    ):
         return "craft"
     label = state["command_label"]
     if label in _COMMANDS:
@@ -275,28 +279,6 @@ def selected_route(state: CompanionState) -> str:
         return "gather"
     top_route = route_by_top(state)
     return route_by_command(state) if top_route == "command_classify" else top_route
-
-
-def _is_contextual_conversation_reply(text: str, history: tuple[ConversationTurn, ...]) -> bool:
-    """직전 직접 질문에 대한 짧은 답만 대화로 복구한다.
-
-    현재 원문 자체가 행동 요청이면 무조건 False다. 따라서 오래된 질문이나 명령이 현재
-    턴의 행동을 다시 발생시키는 통로가 되지 않는다.
-    """
-
-    normalized = CommandIntentParser.normalize(text)
-    if not normalized or len(normalized) > 40:
-        return False
-    if (
-        CommandIntentParser.classify_simple_command(text) is not None
-        or CommandIntentParser.is_gather_command(text)
-        or CommandIntentParser.is_attack_command(text)
-    ):
-        return False
-    if not history or history[-1].speaker != "companion":
-        return False
-    companion_text = history[-1].text
-    return "?" in companion_text or "\uff1f" in companion_text
 
 
 def build_companion_graph(
@@ -384,30 +366,20 @@ def build_companion_graph(
         }
 
     async def classify_top_node(state: CompanionState) -> CompanionUpdate:
-        intent = await llm.classify_top(state["text"], clarification_pending=False)
+        intent = await llm.classify_top(
+            state["text"],
+            clarification_pending=False,
+            history=state.get("history", ()),
+        )
         # 제작법 질문은 기존 recipe facts-only 경로에 남긴다. 명시적인 allowlist 제작
         # 요청만 provider의 분류 결과와 무관하게 command 경로로 올린다.
-        craft_requested = recipes.looks_like_craft_request(state["text"])
-        mobile_craft = (
-            recipes.mobile_craft_request_for(state["text"])
-            if state["turn"].surface is Surface.MOBILE
-            else None
-        )
-        if craft_requested and state["turn"].surface is Surface.MOBILE and mobile_craft is None:
-            selection = await llm.resolve_recipe(state["text"], recipes.selection_options())
-            mobile_craft = recipes.mobile_craft_request_from_selection(state["text"], selection)
+        craft_requested = False
+        mobile_craft = None
         recipe_query = recipes.query_for(state["text"], recent_target=state.get("recipe_reference"))
-        if craft_requested:
-            intent = TopIntent.COMMAND
-            recipe_query = None
-        elif recipe_query is not None:
+        if recipe_query is not None and intent is not TopIntent.COMMAND:
             # Provider가 질문을 명령으로 잘못 분류해도 검증된 제작법 사실은 행동으로
             # 승격하지 않는다.
             intent = TopIntent.RECIPE
-        elif intent is TopIntent.UNKNOWN and _is_contextual_conversation_reply(
-            state["text"], state.get("history", ())
-        ):
-            intent = TopIntent.CONVERSATION
         if state["turn"].surface is Surface.GAME and CommandIntentParser.is_gather_question(
             state["text"]
         ):
@@ -441,10 +413,20 @@ def build_companion_graph(
     async def command_classify_node(state: CompanionState) -> CompanionUpdate:
         proposed = await llm.classify_command(state["text"])
         classification = CommandIntentParser.corroborate(state["text"], proposed)
-        craft_requested = state.get("craft_requested", recipes.is_craft_request(state["text"]))
+        craft_requested = classification.command is CommandLabel.CRAFT_ITEM
         craft_recipe_id = state.get("craft_recipe_id")
         craft_quantity = state.get("craft_quantity")
-        if state["turn"].surface is Surface.GAME:
+        if craft_requested and state["turn"].surface is Surface.MOBILE:
+            mobile_craft = recipes.mobile_craft_request_for(state["text"])
+            if mobile_craft is None:
+                selection = await llm.resolve_recipe(state["text"], recipes.selection_options())
+                mobile_craft = recipes.mobile_craft_request_from_selection(
+                    state["text"], selection
+                )
+            if mobile_craft is not None:
+                craft_recipe_id = mobile_craft.recipe_id
+                craft_quantity = mobile_craft.quantity
+        elif craft_requested and state["turn"].surface is Surface.GAME:
             craft_recipe_id = recipes.craft_recipe_id_for(state["text"])
         return {
             "command_label": classification.command,

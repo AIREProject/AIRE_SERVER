@@ -23,6 +23,12 @@ class _Classifier:
         assert text == "나는 비 오는 날을 좋아해"
         return MemoryClassification(decision="Preference", importance=7)
 
+    async def embed_memory_text(
+        self, text: str
+    ) -> tuple[tuple[float, ...] | None, str | None]:
+        assert text == "나는 비 오는 날을 좋아해"
+        return (0.6, 0.8), "test-embedding-v1"
+
 
 @pytest.mark.parametrize("source_mode", ["RealWorld", "GameWorld"])
 async def test_worker_stores_canonical_player_text_and_acknowledges(source_mode: str) -> None:
@@ -99,4 +105,6 @@ async def test_worker_stores_canonical_player_text_and_acknowledges(source_mode:
     assert memory.text == "나는 비 오는 날을 좋아해"
     assert memory.memory_type == "Preference"
     assert memory.importance == 7
+    assert memory.embedding == [0.6, 0.8]
+    assert memory.embedding_model == "test-embedding-v1"
     assert outbox.state == OUTBOX_COMPLETED

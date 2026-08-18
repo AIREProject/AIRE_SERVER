@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,6 +51,8 @@ class MemoryCandidate:
     source_type: str
     source_id: str
     pinned: bool = False
+    embedding: tuple[float, ...] | None = None
+    embedding_model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +96,15 @@ class MemoryCandidateService:
             raise MemoryCandidateRejectedError("Unsupported memory type.")
         if not 1 <= candidate.importance <= 10:
             raise MemoryCandidateRejectedError("Importance must be between 1 and 10.")
+        if candidate.embedding is None:
+            if candidate.embedding_model is not None:
+                raise MemoryCandidateRejectedError("Embedding model requires an embedding.")
+        elif (
+            not candidate.embedding_model
+            or not candidate.embedding
+            or not all(math.isfinite(value) for value in candidate.embedding)
+        ):
+            raise MemoryCandidateRejectedError("Embedding and model must be valid together.")
 
         normalized = normalize_memory_text(candidate.text)
         if not normalized:
@@ -145,9 +157,16 @@ class MemoryCandidateService:
                     pinned=candidate.pinned,
                     status="Active",
                     created_at=moment,
+                    embedding=(
+                        None if candidate.embedding is None else list(candidate.embedding)
+                    ),
+                    embedding_model=candidate.embedding_model,
                 )
                 session.add(memory)
                 await session.flush()
+            elif memory.embedding is None and candidate.embedding is not None:
+                memory.embedding = list(candidate.embedding)
+                memory.embedding_model = candidate.embedding_model
 
             await sources.promote(
                 candidate.source_type,

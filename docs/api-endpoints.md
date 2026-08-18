@@ -136,7 +136,9 @@ X-Request-ID: chat-game-1
 AX-I02 대사 표시 단계에서는 `allowed_commands`를 빈 배열로 보냅니다. 이후 UE Command
 Gateway가 준비된 명령만 allowlist에 추가합니다.
 
-`Command.GatherResource`의 Game 첫 수직 슬라이스는 명시적인 wood 요청만 후보로 만든다.
+`Command.GatherResource`의 Game 첫 수직 슬라이스는 LLM이 채집 행동으로 판정하고 stable
+resource를 `wood`로 고른 요청만 후보로 만든다. 띄어쓰기·어미·구어체를 정규식 allowlist로
+제한하지 않는다.
 `나무를 모아 줘`처럼 자원만 지정한 요청의 후보 parameters는 정확히 다음과 같으며,
 `quantity` key를 포함하지 않는다.
 
@@ -155,10 +157,11 @@ fresh bounded query로 실제 wood 대상을 다시 검증한다. Mobile surface
 이 strict Game 범위와 별개로 기존 `OfflineTask/Gathering` 계약(wood·stone, 수량 1~50,
 미지정 시 50)을 유지한다.
 
-LLM의 Command label과 resource/quantity는 제안일 뿐이다. Backend는 이동·대기·중지·복귀·
-채집·공격마다 사용자 원문에 같은 행동 계열의 명시적 요청이 있는지 다시 확인한다. Gather
-resource와 quantity는 원문 parser 결과로 덮어쓰며 질문, 복수·손상 수량, Provider label 불일치와
-일반 대화 오분류는 Command 후보로 승격하지 않는다.
+LLM은 최근 대화와 현재 발화를 보고 의도와 Command 계열을 의미적으로 판정한다. Backend는
+정규식으로 같은 문장을 다시 이해하려 하지 않고, 반환된 enum·stable resource·surface별
+`allowed_commands`를 검증한다. Gather 수량은 Provider 값이 아니라 사용자 원문의 유효한 정수만
+사용하며 질문, 복수·손상 수량과 허용되지 않은 Command는 후보로 승격하지 않는다. 따라서 LLM이
+자연어 의미를 담당하고 Backend와 UE Command Gateway가 실행 권한과 gameplay 상태를 담당한다.
 
 `Command.CraftItem`은 AX-I06의 첫 제작 수직 슬라이스다. UE가 이 명령을 allowlist에 넣은
 경우에만 명시적인 `철검`/`Sword_Iron`/`IronSword` 제작 요청이 후보가 된다. 후보 parameters는
@@ -179,8 +182,9 @@ resource와 quantity는 원문 parser 결과로 덮어쓰며 질문, 복수·손
 후보를 만들지 않는다. `game_context`의 위치·위협·작업·인벤토리 사실만으로도 후보를 만들지
 않으며, 후보를 받은 UE Command Gateway가 Recipe·재료·상태·작업대를 최종 검증한다.
 
-Recipe 질문은 먼저 stable ID와 검증 alias를 결정론적으로 찾는다. 대상을 찾지 못한 상세 질문만
-LLM이 서버가 제공한 후보 중 최대 세 개의 Recipe ID와 confidence를 구조화 출력으로 선택한다.
+Recipe 질문은 먼저 stable ID와 검증 alias를 결정론적으로 찾는다. 자연어 대상이나 제작 요청을
+직접 찾지 못하면 LLM이 서버가 제공한 후보 중 최대 세 개의 Recipe ID와 confidence를 구조화
+출력으로 선택한다.
 단일 후보는 confidence 80 이상일 때만 상세 조회로 승격하고, 복수 후보는 60 이상일 때 표시
 이름으로 확인 질문을 돌려준다. 목록·비교·직전 참조 질의는 이 fallback으로 상세 하나로 바꾸지
 않으며, 등록되지 않은 ID와 낮은 confidence는 거부한다.
@@ -190,6 +194,18 @@ LLM이 서버가 제공한 후보 중 최대 세 개의 Recipe ID와 confidence�
 하나를 만들게.`로 고정하고, 같은 응답에 위 `CraftItem` 후보를 반드시 포함한다. 두 대사 경로에는
 Inventory·주변 자원 같은 World Context fact를 섞지 않아 다른 Item을 Recipe 재료처럼 말하거나
 Command 후보가 대사와 분리되는 일을 막는다.
+
+### 4.1.1 자연어 판단과 검증 경계
+
+- 최상위 LLM 분류에는 현재 발화와 최근 대화 최대 6턴이 함께 들어갑니다. 최근 대화는 생략된
+  주어·목적어와 짧은 후속 답변에만 쓰며 과거 Command를 재실행하는 근거가 아닙니다.
+- 분류 category는 실행 API를 고르는 구조화 결과이지, 특정 한국어 문구를 허용하는 하드코딩
+  목록이 아닙니다.
+- Recipe·Command target은 LLM이 Backend가 제시한 stable ID 후보 안에서만 선택합니다.
+- Backend는 선택된 ID, 수량, scope, surface capability를 검증하고 LLM이 만든 임의 ID나 수량은
+  실행 후보로 만들지 않습니다.
+- 대사 LLM이 장기기억을 사용하면 `memory_references`로 후보 인덱스를 선언해야 하며, 답변과
+  해당 기억 사이의 lexical anchor가 없으면 sanitizer가 대사를 거부합니다.
 
 ### 4.2 Mobile 요청
 
@@ -297,7 +313,7 @@ Context는 대사 생성용 facts-only 입력이다. 이를 근거로 Backend가
   "ai_metadata": {
     "provider": "mock",
     "model_version": "mock-v1",
-    "prompt_version": "companion-v4"
+    "prompt_version": "companion-v5"
   }
 }
 ```

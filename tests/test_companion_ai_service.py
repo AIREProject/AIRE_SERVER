@@ -19,6 +19,7 @@ from app.brain import CompanionBrain
 from app.brain.dialogue import DialogueSpec
 from app.brain.intent import TopIntent
 from app.brain.llm import MockLLMProvider
+from app.brain.store import ConversationTurn
 from app.credentials import CredentialProtector
 from app.db.canonical_repository import CanonicalChatRepository
 from app.db.connection import Database
@@ -44,7 +45,7 @@ from app.models import (
 from app.service import CompanionService, _player_key
 from tests.conftest import make_authenticated_device, make_database, make_settings
 
-METADATA = AIMetadata(provider="mock", model_version="mock-v1", prompt_version="companion-v4")
+METADATA = AIMetadata(provider="mock", model_version="mock-v1", prompt_version="companion-v5")
 PROTECTOR = CredentialProtector(SecretStr("test-only-pepper-not-for-production"))
 
 
@@ -70,8 +71,14 @@ class RecordingProvider(MockLLMProvider):
 
 
 class InjuryConversationProvider(MockLLMProvider):
-    async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
-        del clarification_pending
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
+        del clarification_pending, history
         return TopIntent.CONVERSATION if text == "나 잘렸어" else TopIntent.UNKNOWN
 
     async def generate_dialogue(self, spec: DialogueSpec) -> str:
@@ -829,7 +836,7 @@ async def test_metadata_reports_provider(
 
     assert result.ai_metadata.provider == "mock"
     assert result.ai_metadata.model_version == "mock-v1"
-    assert result.ai_metadata.prompt_version == "companion-v4"
+    assert result.ai_metadata.prompt_version == "companion-v5"
 
 
 async def test_aclose_delegates_to_provider() -> None:

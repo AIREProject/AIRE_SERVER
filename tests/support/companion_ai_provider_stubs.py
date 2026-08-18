@@ -16,7 +16,7 @@ from app.brain.memory import (
     SessionSummary,
     SessionSummarySpec,
 )
-from app.brain.store import PendingSlot
+from app.brain.store import ConversationTurn, PendingSlot
 
 ProviderMethod = Literal[
     "classify_top",
@@ -92,8 +92,14 @@ class ScriptedLLMProvider(LLMProvider):
         self._next_step += 1
         return step.result
 
-    async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
-        del text, clarification_pending
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
+        del text, clarification_pending, history
         result = self._take("classify_top", "top")
         if not isinstance(result, str):
             raise AssertionError(f"{self._fixture_id}: classify_top result must be a string")

@@ -24,6 +24,12 @@ from app.settings import Settings
 from tests.conftest import make_settings
 
 
+def test_legacy_prompt_version_is_upgraded_to_the_active_persona() -> None:
+    settings = Settings(_env_file=None, companion_prompt_version="companion-v4")  # type: ignore[arg-type]
+
+    assert settings.companion_prompt_version == "companion-v5"
+
+
 def dialogue_json(
     text: str,
     purpose: DialogueScene,
@@ -359,13 +365,22 @@ async def test_local_provider_parses_structured_top_classification() -> None:
         provider = LocalLLMProvider(local_config())
 
     assert (
-        await provider.classify_top("도끼 만드는 법", clarification_pending=False)
+        await provider.classify_top(
+            "그건 어떻게 만들어?",
+            clarification_pending=False,
+            history=(
+                ConversationTurn(speaker="player", text="돌도끼가 궁금해"),
+                ConversationTurn(speaker="companion", text="제작법을 물어보는 거야?"),
+            ),
+        )
         is TopIntent.RECIPE
     )
     call = client.chat.completions.create.await_args.kwargs
     assert call["temperature"] == 0.0
     assert call["max_tokens"] == 64
     assert call["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert "돌도끼가 궁금해" in call["messages"][1]["content"]
+    assert "[현재 발화]\n그건 어떻게 만들어?" in call["messages"][1]["content"]
     schema = call["response_format"]["json_schema"]["schema"]
     assert schema["$defs"]["TopIntent"]["enum"] == [
         "command",
@@ -425,9 +440,10 @@ async def test_local_provider_parses_structured_command_classification() -> None
     assert schema["$defs"]["CommandLabel"]["enum"] == [
         "follow_player",
         "wait",
-        "stop_current_task",
-        "gather_resource",
-        "attack",
+            "stop_current_task",
+            "gather_resource",
+            "craft_item",
+            "attack",
         "return_to_player",
         "unknown",
     ]
@@ -509,6 +525,47 @@ async def test_local_dialogue_prompt_contains_facts_but_not_fallback() -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_memory_conversation_requires_declared_memory_references() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "text": "네 이름은 대통령 윤 석열이야.",
+                                "memory_references": [0],
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                )
+            ]
+        )
+    )
+
+    with patch("openai.AsyncOpenAI", return_value=client):
+        provider = LocalLLMProvider(local_config())
+
+    result = await provider.generate_dialogue(
+        DialogueSpec(
+            scene="conversation",
+            fallback="안녕! 무슨 일이야?",
+            user_text="내 이름은?",
+            memories=("[M0] 제이름은 대통령 윤 석열입니다",),
+        )
+    )
+
+    assert result.text == "네 이름은 대통령 윤 석열이야."
+    assert result.memory_references == (0,)
+    call = client.chat.completions.create.await_args.kwargs
+    assert call["response_format"]["json_schema"]["name"] == (
+        "memory_conversation_dialogue_output"
+    )
+
+
+@pytest.mark.asyncio
 async def test_mock_returns_the_scene_fallback_verbatim() -> None:
     """규칙으로 흉내 낸 대사가 있으면 창구가 늘 때 그 흉내도 창구마다 갈라진다."""
 
@@ -541,12 +598,16 @@ async def test_dialogue_system_prompt_switches_with_the_surface() -> None:
         messages = client.chat.completions.create.await_args.kwargs["messages"]
         prompts[surface] = messages[0]["content"]
 
-    assert "옆에 서 있고" in prompts[Surface.GAME]
-    assert "휴대폰 채팅으로" in prompts[Surface.MOBILE]
+    assert "바로 옆에서 함께 움직이는 동료" in prompts[Surface.GAME]
+    assert "자연스러운 메신저 대화" in prompts[Surface.MOBILE]
     assert prompts[Surface.GAME] != prompts[Surface.MOBILE]
     # 사실 규칙은 창구와 무관하다. 말투를 바꾸다 가드가 창구마다 달라지면 안 된다.
     for prompt in prompts.values():
-        assert "[prompt_version] companion-v4" in prompt
+        assert "[prompt_version] companion-v5" in prompt
+        assert "오랫동안 여러 일을 함께해 온 친근한 동료" in prompt
+        assert "존재하지 않는 공동 경험" in prompt
+        assert "이모지 하나를 자연스럽게" in prompt
+        assert "이모지와 따옴표를 쓰지 않는다" not in prompt
         assert "현재 단계는 Low" in prompt
         assert "과도한 애착·독점·영원한 약속" in prompt
         assert "Command Candidate가 없으면" in prompt

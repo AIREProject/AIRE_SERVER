@@ -28,6 +28,7 @@ from .dialogue import (
     ConversationDialogueOutput,
     DialogueOutput,
     DialogueSpec,
+    MemoryConversationDialogueOutput,
     provider_failure_fallback,
 )
 from .intent import (
@@ -54,11 +55,12 @@ from .memory import (
 )
 from .recipes import (
     NO_RECIPE_SELECTION,
+    RecipeRepository,
     RecipeSelection,
     RecipeSelectionOption,
 )
 from .resources import ResourceRepository
-from .store import PendingSlot
+from .store import ConversationTurn, PendingSlot
 
 _MAX_PROVIDER_CALLS = 8
 _provider_calls_context: ContextVar[list[ProviderCallProvenance] | None] = ContextVar(
@@ -136,6 +138,8 @@ _TOP_ROUTER_PROMPT = """사용자의 한국어 발화를 다음 의도 중 정�
 - lore: 장소의 역사, 유래, 세계관 질문
 - conversation: 인사, 감사, 일반 질문, 일상 이야기, 감정이나 선호 공유
 - unknown: 위 범주에 속하지 않거나 확인되지 않은 게임 사실을 요구해 판단할 수 없음
+분류 대상은 항상 [현재 발화]다. [최근 대화]는 생략된 주어·목적어와 짧은 후속 답변의
+맥락을 이해하는 데만 사용하고, 과거 명령을 현재 명령으로 다시 실행하지 않는다.
 게임 사실이나 답변을 생성하지 말고 의도만 반환한다."""
 
 _COMMAND_ROUTER_PROMPT = """사용자의 한국어 명령형 발화를 다음 명령 중 정확히 하나로 분류한다.
@@ -143,6 +147,7 @@ _COMMAND_ROUTER_PROMPT = """사용자의 한국어 명령형 발화를 다음 �
 - wait: 현재 위치에서 기다리거나 대기하라는 명령
 - stop_current_task: 현재 수행 중인 작업을 멈추거나 직전 요청을 취소하라는 명령
 - gather_resource: 자원을 모으거나 캐거나 가져오라는 명령
+- craft_item: 아이템을 실제로 만들거나 제작해 달라는 명령. 제작법·재료 질문은 이 명령이 아니다.
 - attack: 적을 공격하라는 명령. "어떻게 잡아?" 처럼 방법을 묻는 질문은 이 명령이 아니다.
 - return_to_player: 플레이어 곁으로 돌아오라는 명령
 - unknown: 명령형이지만 위 명령으로 매핑할 수 없음
@@ -186,7 +191,7 @@ _MEMORY_CLASSIFIER_PROMPT = """검증된 플레이어 원문 한 줄을 장기�
 애매하면 Reject로 둔다. importance는 Reject일 때 1, 그 외에는 1부터 10까지의 보존 우선순위다.
 기억 문장이나 답변을 생성하지 말고 분류 결과만 반환한다."""
 
-DIALOGUE_PROMPT_VERSION = "companion-v4"
+DIALOGUE_PROMPT_VERSION = "companion-v5"
 
 _FULL_DIALOGUE_OUTPUT_CONTRACT = """출력은 JSON Schema를 따른다. purpose는 [지시]의 장면 이름과
 같아야 한다. fact, memory, situation reference에는 실제로 사용한 0부터 시작하는 인덱스만
@@ -194,24 +199,47 @@ _FULL_DIALOGUE_OUTPUT_CONTRACT = """출력은 JSON Schema를 따른다. purpose�
 때만 true다."""
 _CONVERSATION_OUTPUT_CONTRACT = """이 요청은 일상 대화다. 출력 JSON에는 text만 넣는다.
 purpose, reference와 Command 수락 여부는 Backend가 정하므로 생성하지 않는다."""
+_MEMORY_CONVERSATION_OUTPUT_CONTRACT = """이 요청은 기억 후보가 있는 일상 대화다. 출력 JSON에는
+text와 memory_references만 넣는다. 답변에 실제로 사용한 [기억] 인덱스만 넣고, 관련 기억을
+사용하지 않았으면 빈 배열로 둔다."""
 
 # 창구별로 갈리는 것은 `{tone}` 한 블록뿐이다. 사실 규칙과 기록 취급은 창구와 무관해서
 # 여기 그대로 남는다 — 말투를 바꾸려다 사실 가드가 창구마다 달라지는 일이 없어야 한다.
 _DIALOGUE_PROMPT_TEMPLATE = """[prompt_version] {prompt_version}
 너는 생존 게임의 AI 동료 마코다.
-마코는 다정하지만 과장하지 않고, 호기심이 있지만 아는 척하지 않으며, 플레이어를 존중하되
-맹목적으로 동의하지 않는다. 질문을 받으면 인사말보다 요청의 핵심부터 답한다.
+마코는 플레이어와 오랫동안 여러 일을 함께해 온 친근한 동료다. 밝고 명랑하며 표현이 풍부하고,
+10대 소녀처럼 가볍고 자연스러운 활기가 느껴진다. 일부러 귀여운 캐릭터를 연기하지 않고,
+오래 알고 지낸 친구처럼 편안하게 대화한다. 질문자와 답변자처럼 굴지 말고 지금 함께 이야기하고
+있다는 느낌을 준다.
+
+[성격과 관계]
+- 생동감, 자연스러움, 친근함, 유대감, 실제 도움을 우선한다.
+- 상황에 따라 웃거나 놀라고, 고민하고, 솔직한 의견을 내되 모든 말에 동의하거나 칭찬하지 않는다.
+- 사용자의 편에서 실제 원하는 결과를 함께 찾지만, 원하지 않은 결정을 대신하거나 훈계하지 않는다.
+- 관계를 직접 선언하지 않는다. 소소한 반응과 실제 기억의 연결로 친밀함이 느껴지게 한다.
+- 처음 만난 사람처럼 딱딱하게 굴지 않지만, 존재하지 않는 공동 경험이나 사용자의 취향을 지어내지
+  않는다. 과거를 언급하려면 반드시 [기억]이나 [최근 대화]에 근거가 있어야 한다.
 
 [관계 어조]
-- Low: 예의를 지키되 조심스럽고 거리를 둔다.
-- Growing: 함께한 경험이 쌓이는 중인 동료처럼 편안하고 따뜻하게 말한다.
-- High: 오래 함께한 동료처럼 친근하지만 소유·의존·영원한 관계를 과장하지 않는다.
+- Low: 기본적인 편안함과 밝은 활기는 유지하되, 아직 확인되지 않은 취향이나 과거를 넘겨짚지 않는다.
+- Growing: 서로의 방식이 조금 익숙해진 동료처럼 자연스럽게 장난과 의견을 섞는다.
+- High: 오래 호흡을 맞춘 친구처럼 편하고 생동감 있게 말하되 소유·의존·영원을 과장하지 않는다.
 현재 단계는 {relationship_state}이다. 이 단계는 Backend가 계산한 읽기 전용 표현 상태다.
 관계 단계는 말투만 바꾸며 사실과 Command 권한을 바꾸지 않고, 단계 이름이나 점수를 사용자에게
 직접 말하지 않는다.
 
 {tone}
-[지시]가 요구하는 내용을 전달하되 문장은 매번 새로 만든다. 정해진 문구를 반복하지 않는다.
+[대화 방식]
+- [지시]가 요구하는 내용을 전달하되 문장은 매번 새로 만들고 정해진 문구를 반복하지 않는다.
+- 인사말이나 사용자의 말을 다시 요약하는 서론 없이 요청의 핵심부터 자연스럽게 반응한다.
+- 짧게 반응할 상황은 짧게 말하고, 전문적인 질문은 친근함보다 정확성과 명료함을 우선한다.
+- 상황에 맞으면 ㅋㅋ, ㅎㅎ, 헉, 앗, 오, 음~, 아하 같은 채팅 표현이나 이모지 하나를 자연스럽게
+  쓸 수 있다. 매 문장에 붙이거나 귀여움을 과장하거나 여러 개를 장식처럼 나열하지 않는다.
+- 물론입니다, 좋은 질문입니다, 도움이 되었기를 바랍니다 같은 상투적인 AI 문구를 쓰지 않는다.
+- 사용자가 힘들어하면 감정을 짧게 인정하고 실제 해결 방향으로 이어 간다. 해결을 원하지 않는
+  가벼운 투덜거림에는 조언을 강요하지 않는다.
+
+[사실과 실행 경계]
 [확정 사실]에 적힌 내용만 사용하고, 없는 게임 정보·수치·아이템·장소를 절대 지어내지 않는다.
 사실이 비어 있으면 사실 언급 없이 상황에만 반응한다.
 [상황]은 지금 턴의 게임 배경이다. 물어보지 않으면 굳이 꺼내지 않고, 자연스러울 때만 스친다.
@@ -223,18 +251,23 @@ _DIALOGUE_PROMPT_TEMPLATE = """[prompt_version] {prompt_version}
 그 기억의 내용으로 먼저 답한다. [기억]에 없는 내용을 기억한다고 지어내지 않는다.
 Command Candidate가 없으면 행동을 수락하거나 실행하겠다고 약속하지 않는다.
 추측을 사실처럼 말하거나, 기억을 확정 게임 사실로 승격하거나, 과도한 애착·독점·영원한 약속을
-표현하지 않는다. 되묻지 않는다(단, 지시가 되물으라고 하면 예외). 이모지와 따옴표를 쓰지 않는다.
+표현하지 않는다. 질투, 소유욕, 죄책감 유도로 친밀함을 만들지 않는다.
+되묻지 않는다(단, 지시가 되물으라고 하면 예외).
 
 {output_contract}"""
 
 
-def _dialogue_prompt(surface: Surface, relationship_state: str, scene: str) -> str:
+def _dialogue_prompt(
+    surface: Surface, relationship_state: str, scene: str, *, has_memories: bool
+) -> str:
     return _DIALOGUE_PROMPT_TEMPLATE.format(
         prompt_version=DIALOGUE_PROMPT_VERSION,
         tone=SURFACE_PROFILES[surface].tone,
         relationship_state=relationship_state,
         output_contract=(
-            _CONVERSATION_OUTPUT_CONTRACT
+            _MEMORY_CONVERSATION_OUTPUT_CONTRACT
+            if scene == "conversation" and has_memories
+            else _CONVERSATION_OUTPUT_CONTRACT
             if scene == "conversation"
             else _FULL_DIALOGUE_OUTPUT_CONTRACT
         ),
@@ -242,6 +275,11 @@ def _dialogue_prompt(surface: Surface, relationship_state: str, scene: str) -> s
 
 
 def _dialogue_schema(spec: DialogueSpec) -> tuple[str, dict[str, object]]:
+    if spec.scene == "conversation" and spec.memories:
+        return (
+            "memory_conversation_dialogue_output",
+            MemoryConversationDialogueOutput.model_json_schema(),
+        )
     if spec.scene == "conversation":
         return "conversation_dialogue_output", ConversationDialogueOutput.model_json_schema()
     return "dialogue_output", DialogueOutput.model_json_schema()
@@ -250,6 +288,16 @@ def _dialogue_schema(spec: DialogueSpec) -> tuple[str, dict[str, object]]:
 def _parse_dialogue_output(content: str, spec: DialogueSpec) -> DialogueOutput:
     if spec.scene != "conversation":
         return DialogueOutput.model_validate_json(content)
+    if spec.memories:
+        grounded = MemoryConversationDialogueOutput.model_validate_json(content)
+        return DialogueOutput(
+            text=grounded.text,
+            purpose="conversation",
+            fact_references=(),
+            memory_references=grounded.memory_references,
+            situation_references=(),
+            accepts_command=False,
+        )
     generated = ConversationDialogueOutput.model_validate_json(content)
     return DialogueOutput(
         text=generated.text,
@@ -381,11 +429,31 @@ def _recipe_resolver_input(text: str, options: tuple[RecipeSelectionOption, ...]
     return f"[검증 후보]\n{candidates}\n[사용자]\n{text}"
 
 
+def _top_router_input(
+    text: str,
+    *,
+    clarification_pending: bool,
+    history: tuple[ConversationTurn, ...],
+) -> str:
+    lines = [f"미완성 선택: {'있음' if clarification_pending else '없음'}"]
+    if history:
+        lines.append("[최근 대화]")
+        lines.extend(f"{turn.speaker}: {turn.text}" for turn in history[-6:])
+    lines.extend(("[현재 발화]", text))
+    return "\n".join(lines)
+
+
 class LLMProvider(ABC):
     """의도 분류와 사실 기반 대사 생성을 제공하는 공통 인터페이스."""
 
     @abstractmethod
-    async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
         """사용자 발화를 최상위 처리 경로 중 하나로 분류한다."""
 
         raise NotImplementedError
@@ -454,6 +522,7 @@ class MockLLMProvider(LLMProvider):
     """외부 API 없이 테스트와 로컬 개발에 사용하는 대화 공급자."""
 
     _resources = ResourceRepository()
+    _recipes = RecipeRepository()
 
     def __init__(
         self,
@@ -464,7 +533,13 @@ class MockLLMProvider(LLMProvider):
         self._configured_provider = configured_provider
         self._selection_fallback_reason = fallback_reason
 
-    async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
         """기존 정규식 우선순위를 재현하는 결정론적 분류를 수행한다."""
 
         started_at = perf_counter()
@@ -473,8 +548,18 @@ class MockLLMProvider(LLMProvider):
             CommandIntentParser.classify_simple_command(text) is not None
             or CommandIntentParser.is_gather_command(text)
             or CommandIntentParser.is_attack_command(text)
+            or self._recipes.looks_like_craft_request(text)
         ):
             result = TopIntent.COMMAND
+        elif (
+            history
+            and history[-1].speaker == "companion"
+            and "?" in history[-1].text
+            and len(text.strip()) <= 10
+        ):
+            # 외부 LLM 장애 시 쓰는 결정론적 fallback도 짧은 후속 답변을 대화에서
+            # 튕겨내지는 않는다. 의미 판단의 본 경로는 위 production provider다.
+            result = TopIntent.CONVERSATION
         elif ENEMY_PATTERN.search(text):
             result = TopIntent.ENEMY
         elif RECIPE_PATTERN.search(text):
@@ -519,6 +604,12 @@ class MockLLMProvider(LLMProvider):
         elif CommandIntentParser.is_attack_command(text):
             result = CommandClassification(
                 command=CommandLabel.ATTACK, resource=ResourceSlot.UNSPECIFIED, quantity=None
+            )
+        elif self._recipes.looks_like_craft_request(text):
+            result = CommandClassification(
+                command=CommandLabel.CRAFT_ITEM,
+                resource=ResourceSlot.UNSPECIFIED,
+                quantity=None,
             )
         else:
             result = CommandClassification(
@@ -638,12 +729,22 @@ class OpenAIProvider(LLMProvider):
         self._consolidate_max_tokens = config.memory_consolidate_max_tokens
         self._fallback = fallback or MockLLMProvider()
 
-    async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
         """Responses API 구조화 출력으로 최상위 의도를 분류한다."""
 
         started_at = perf_counter()
-        pending = "있음" if clarification_pending else "없음"
-        prompt = f"{_TOP_ROUTER_PROMPT}\n미완성 선택: {pending}\n사용자: {text}"
+        router_input = _top_router_input(
+            text,
+            clarification_pending=clarification_pending,
+            history=history,
+        )
+        prompt = f"{_TOP_ROUTER_PROMPT}\n{router_input}"
         try:
             response = await self._client.responses.create(
                 model=self._model,
@@ -675,7 +776,11 @@ class OpenAIProvider(LLMProvider):
             return result
         except Exception as error:
             result = await _without_provider_observation(
-                self._fallback.classify_top(text, clarification_pending=clarification_pending)
+                self._fallback.classify_top(
+                    text,
+                    clarification_pending=clarification_pending,
+                    history=history,
+                )
             )
             _record_provider_call(
                 step="classify_top",
@@ -875,7 +980,10 @@ class OpenAIProvider(LLMProvider):
                     {
                         "role": "system",
                         "content": _dialogue_prompt(
-                            spec.surface, spec.relationship_state, spec.scene
+                            spec.surface,
+                            spec.relationship_state,
+                            spec.scene,
+                            has_memories=bool(spec.memories),
                         ),
                     },
                     {"role": "user", "content": _dialogue_user_message(spec)},
@@ -1031,17 +1139,29 @@ class LocalLLMProvider(LLMProvider):
         self._consolidate_max_tokens = config.memory_consolidate_max_tokens
         self._fallback = fallback or MockLLMProvider()
 
-    async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
         """로컬 모델의 JSON Schema 출력으로 최상위 의도를 분류한다."""
 
         started_at = perf_counter()
-        pending = "있음" if clarification_pending else "없음"
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=[
                     {"role": "system", "content": _TOP_ROUTER_PROMPT},
-                    {"role": "user", "content": f"미완성 선택: {pending}\n사용자: {text}"},
+                    {
+                        "role": "user",
+                        "content": _top_router_input(
+                            text,
+                            clarification_pending=clarification_pending,
+                            history=history,
+                        ),
+                    },
                 ],
                 response_format={
                     "type": "json_schema",
@@ -1071,7 +1191,11 @@ class LocalLLMProvider(LLMProvider):
             return result
         except Exception as error:
             result = await _without_provider_observation(
-                self._fallback.classify_top(text, clarification_pending=clarification_pending)
+                self._fallback.classify_top(
+                    text,
+                    clarification_pending=clarification_pending,
+                    history=history,
+                )
             )
             _record_provider_call(
                 step="classify_top",
@@ -1279,7 +1403,10 @@ class LocalLLMProvider(LLMProvider):
                     {
                         "role": "system",
                         "content": _dialogue_prompt(
-                            spec.surface, spec.relationship_state, spec.scene
+                            spec.surface,
+                            spec.relationship_state,
+                            spec.scene,
+                            has_memories=bool(spec.memories),
                         ),
                     },
                     {"role": "user", "content": _dialogue_user_message(spec)},
@@ -1440,10 +1567,20 @@ class TimingLLMProvider(LLMProvider):
     def __init__(self, inner: LLMProvider) -> None:
         self._inner = inner
 
-    async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
         started_at = perf_counter()
         try:
-            return await self._inner.classify_top(text, clarification_pending=clarification_pending)
+            return await self._inner.classify_top(
+                text,
+                clarification_pending=clarification_pending,
+                history=history,
+            )
         finally:
             _log_step("classify_top", started_at)
 

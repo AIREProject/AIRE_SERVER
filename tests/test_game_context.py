@@ -415,7 +415,7 @@ def make_service(
     return CompanionService(
         brain or RecordingBrain(provider),
         metadata=AIMetadata(
-            provider="mock", model_version="mock-v1", prompt_version="companion-v4"
+            provider="mock", model_version="mock-v1", prompt_version="companion-v5"
         ),
         ai_timeout_seconds=5.0,
     )

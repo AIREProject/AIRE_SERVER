@@ -71,6 +71,24 @@ class ConversationDialogueOutput(BaseModel):
     text: str = Field(min_length=1, max_length=200)
 
 
+class MemoryConversationDialogueOutput(BaseModel):
+    """기억 후보가 있는 일상 대화의 최소 근거 계약."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str = Field(min_length=1, max_length=200)
+    memory_references: tuple[int, ...]
+
+    @field_validator("memory_references")
+    @classmethod
+    def validate_memory_references(cls, references: tuple[int, ...]) -> tuple[int, ...]:
+        if any(reference < 0 for reference in references):
+            raise ValueError("memory references must not be negative")
+        if len(set(references)) != len(references):
+            raise ValueError("memory references must be unique")
+        return references
+
+
 @dataclass(frozen=True, slots=True)
 class DialogueSpec:
     """LLM에 전달할 장면과 코드가 확정한 사실, 실패 시 복구 대사를 묶는다."""
@@ -161,10 +179,11 @@ class SurfaceProfile:
 SURFACE_PROFILES: dict[Surface, SurfaceProfile] = {
     Surface.GAME: SurfaceProfile(
         tone=(
-            "한국어 반말로 따뜻하고 짧게 한두 문장만 말한다. 플레이어 바로 옆에 서 있고,"
-            " 눈앞의 상황에 그 자리에서 반응한다.\n"
-            "말투 예시(내용은 무시하고 어조만 참고): 발 맞춰 갈 테니까 앞장서. /"
-            " 그건 내 손을 좀 벗어나네."
+            "한국어 반말로 밝고 편안하게 말한다. 플레이어 바로 옆에서 함께 움직이는 동료답게"
+            " 눈앞의 상황에 즉각 반응한다. 짧은 행동 대사는 한두 문장으로 끝내되 감정을 평평하게"
+            " 만들지 않는다.\n"
+            "말투 예시(내용은 무시하고 어조만 참고): 오케이, 바로 가자. / 앗, 잠깐. 이건 먼저"
+            " 확인하고 움직이는 게 낫겠다."
         ),
         unsupported=FallbackLine(
             "아직 그 요청은 도와줄 수 없어. 따라오기, 대기, 중지를 말해 줘.",
@@ -178,17 +197,17 @@ SURFACE_PROFILES: dict[Surface, SurfaceProfile] = {
             "지금 위치에 대해 확인된 이야기는 아직 없어.",
             "이 위치에 대해 확인된 이야기가 없다",
         ),
-        greeting="안녕! 오늘은 어디부터 둘러볼까?",
-        thanks="별말을 다 해. 필요하면 언제든 불러 줘.",
-        situation="방금 그거, 봤어?",
+        greeting="오, 왔네! 오늘은 어디부터 가볼까?",
+        thanks="ㅋㅋ 별말을. 같이 한 건데 뭐.",
+        situation="헉, 방금 그거 봤어?",
     ),
     Surface.MOBILE: SurfaceProfile(
         tone=(
-            "한국어 반말로 짧게 한두 문장만 말한다. 지금은 플레이어와 떨어져 휴대폰 채팅으로"
-            " 말하고 있다. 곁에 있는 것처럼 눈앞의 상황을 말하지 않고, 메시지를 주고받듯"
-            " 답한다.\n"
-            "말투 예시(내용은 무시하고 어조만 참고): 그거 나도 좀 궁금했어. /"
-            " 음, 그건 지금 내가 못 해 줘."
+            "한국어 반말의 자연스러운 메신저 대화처럼 말한다. 지금은 플레이어와 떨어져 있으므로"
+            " 곁에서 눈앞의 상황을 보는 척하지 않는다. 짧은 반응은 짧게, 설명이 필요하면 200자"
+            " 안에서 핵심을 편하게 풀어 말한다.\n"
+            "말투 예시(내용은 무시하고 어조만 참고): 오, 그거 괜찮은데? / 잠깐, 그러면 굳이"
+            " 저 방식으로 갈 필요 없겠다."
         ),
         # 게임 동작 이름을 적으면 안 된다. 폰에는 따라오기도 대기도 없다.
         unsupported=FallbackLine(
@@ -203,9 +222,9 @@ SURFACE_PROFILES: dict[Surface, SurfaceProfile] = {
             "어느 지역 얘기인지 모르겠어. 게임에서 물어봐 줄래?",
             "어느 위치를 말하는지 알 수 없어 확인된 이야기를 찾지 못했다",
         ),
-        greeting="안녕! 무슨 일이야?",
-        thanks="별말을. 또 필요하면 말해.",
-        situation="방금 거기 무슨 일 있었어?",
+        greeting="오, 왔네 ㅋㅋ 무슨 일이야?",
+        thanks="ㅎㅎ 별말을. 같이 고민한 건데 뭐.",
+        situation="헉, 방금 거기 무슨 일 있었어?",
     ),
 }
 
