@@ -13,7 +13,7 @@ from app.db.models import MemoryCorrectionModel, MemoryModel, MemorySourceModel,
 from app.db.source_repository import SourceRepository, SourceScope
 from app.errors import MemoryNotFoundError
 from app.identity import AuthenticatedDevice
-from app.models import MemoryView, SearchMemoriesRequest, UpdateMemoryRequest
+from app.models import MemorySourceView, MemoryView, SearchMemoriesRequest, UpdateMemoryRequest
 from app.relationship_service import RelationshipService
 
 
@@ -29,7 +29,11 @@ class MemoryService:
             return []
         rows = await self._active(scope=SourceScope(identity.profile_id, slot.row_id, companion_id))
         corrections = await self._latest_corrections(tuple(row.memory_id for row in rows))
-        return [self._view(row, save_slot_id, corrections.get(row.memory_id)) for row in rows]
+        sources = await self._sources(tuple(row.memory_id for row in rows))
+        return [
+            self._view(row, save_slot_id, corrections.get(row.memory_id), sources[row.memory_id])
+            for row in rows
+        ]
 
     async def update(
         self,
@@ -54,12 +58,18 @@ class MemoryService:
             )
             self._session.add(correction)
         await self._session.commit()
-        return self._view(memory, save_slot_id, correction)
+        if correction is None:
+            correction = (await self._latest_corrections((memory.memory_id,))).get(
+                memory.memory_id
+            )
+        sources = await self._sources((memory.memory_id,))
+        return self._view(memory, save_slot_id, correction, sources[memory.memory_id])
 
     async def get(self, identity: AuthenticatedDevice, memory_id: str) -> MemoryView:
         memory, save_slot_id = await self._owned_active(identity, memory_id)
         correction = (await self._latest_corrections((memory.memory_id,))).get(memory.memory_id)
-        return self._view(memory, save_slot_id, correction)
+        sources = await self._sources((memory.memory_id,))
+        return self._view(memory, save_slot_id, correction, sources[memory.memory_id])
 
     async def search(
         self, identity: AuthenticatedDevice, request: SearchMemoriesRequest
@@ -71,6 +81,7 @@ class MemoryService:
             scope=SourceScope(identity.profile_id, slot.row_id, request.companion_id)
         )
         corrections = await self._latest_corrections(tuple(row.memory_id for row in rows))
+        sources = await self._sources(tuple(row.memory_id for row in rows))
         query = request.query.strip().casefold()
         query_tokens = tuple(token for token in query.split() if token)
         ranked: list[tuple[int, MemoryModel, MemoryCorrectionModel | None]] = []
@@ -84,7 +95,7 @@ class MemoryService:
                 ranked.append((score, row, correction))
         ranked.sort(key=lambda item: (-item[0], item[1].created_at, item[1].memory_id))
         return [
-            self._view(row, request.save_slot_id, correction)
+            self._view(row, request.save_slot_id, correction, sources[row.memory_id])
             for _, row, correction in ranked[: request.limit]
         ]
 
@@ -193,9 +204,37 @@ class MemoryService:
         )
         return {row.memory_id: row for row in result.scalars()}
 
+    async def _sources(
+        self, memory_ids: tuple[str, ...]
+    ) -> dict[str, builtins.list[MemorySourceView]]:
+        grouped: dict[str, builtins.list[MemorySourceView]] = {
+            memory_id: [] for memory_id in memory_ids
+        }
+        if not memory_ids:
+            return grouped
+        result = await self._session.execute(
+            select(MemorySourceModel)
+            .where(MemorySourceModel.memory_id.in_(memory_ids))
+            .order_by(MemorySourceModel.occurred_at, MemorySourceModel.row_id)
+        )
+        for source in result.scalars():
+            source_mode = source.source_mode
+            public_type = "Legacy" if source_mode == "LegacyUnknown" else source.source_type
+            grouped[source.memory_id].append(
+                MemorySourceView(
+                    source_type=public_type,
+                    source_mode=source_mode,
+                    occurred_at=source.occurred_at,
+                )
+            )
+        return grouped
+
     @staticmethod
     def _view(
-        memory: MemoryModel, save_slot_id: str, correction: MemoryCorrectionModel | None
+        memory: MemoryModel,
+        save_slot_id: str,
+        correction: MemoryCorrectionModel | None,
+        sources: builtins.list[MemorySourceView],
     ) -> MemoryView:
         return MemoryView(
             memory_id=memory.memory_id,
@@ -207,4 +246,5 @@ class MemoryService:
             pinned=memory.pinned,
             corrected=correction is not None,
             created_at=memory.created_at,
+            sources=sources,
         )

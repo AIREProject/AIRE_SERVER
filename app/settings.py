@@ -102,8 +102,8 @@ class Settings(BaseSettings):
     long_term_session_end_seconds: float = Field(default=600.0, gt=0)
     # 증류 루프가 대기열을 확인하는 주기. 판정은 전부 CompanionBrain._drain 이 한다.
     long_term_tick_seconds: float = Field(default=15.0, gt=0)
-    # 증류의 원본이 되는 전사(app/brain/transcript.py). **끄면 새 장기기억이 생기지 않는다** —
-    # 추출은 전사에 대한 커서 작업이라 읽을 로그가 없다. 이미 있는 기억의 회수는 계속된다.
+    # 개발 재현용 전사(app/brain/transcript.py). canonical Message/Event 기반 Memory worker와
+    # 무관하므로 꺼도 검증된 장기기억 생성과 회수는 계속된다.
     transcript_enabled: bool = False
     transcript_dir: Path = Path("data/transcripts")
     # 개발 재현용 전사만 허용한다. 운영 기본은 비활성화이고 24시간보다 길게 둘 수 없다.
@@ -115,8 +115,15 @@ class Settings(BaseSettings):
     game_event_retention_days: int = Field(default=7, ge=1, le=7)
     audit_retention_days: int = Field(default=30, ge=1, le=30)
     retention_sweep_interval_seconds: float = Field(default=3600.0, ge=60.0, le=3600.0)
+    memory_worker_enabled: bool = True
+    memory_worker_interval_seconds: float = Field(default=5.0, ge=0.1, le=60.0)
+    memory_worker_lease_seconds: float = Field(default=60.0, ge=5.0, le=600.0)
+    memory_worker_max_attempts: int = Field(default=3, ge=1, le=10)
+    memory_worker_batch_size: int = Field(default=32, ge=1, le=100)
     legacy_memory_quarantine_dir: Path = Path("data/memory_quarantine")
     legacy_memory_quarantine_days: int = Field(default=7, ge=1, le=7)
+    legacy_transcript_quarantine_dir: Path = Path("data/transcript_quarantine")
+    legacy_transcript_quarantine_days: int = Field(default=30, ge=30, le=30)
     # 임시 발판: 게임 클라이언트가 game_context.location_id 를 채우기 전까지 세계관 질문을
     # 시험하기 위한 대체 위치. 비워 두면(기본값) 동작은 이 설정이 없던 때와 같다.
     # 클라이언트가 보내기 시작하면 지운다 — 제거 절차는 docs/temporary-scaffolds.md §1.

@@ -43,6 +43,7 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8010
 브라우저에서 다음 주소를 확인합니다.
 
 - Health: `http://127.0.0.1:8010/health`
+- Readiness: `http://127.0.0.1:8010/ready`
 - Swagger UI: `http://127.0.0.1:8010/docs`
 - OpenAPI JSON: `http://127.0.0.1:8010/openapi.json`
 
@@ -130,6 +131,7 @@ Copy-Item .env.example .env
 - [이전 원격 배포 문서 안내](SERVER_REMOTE_DEPLOY_SETUP.md) — 과거 generic 예시 대신 단일 가이드로 연결
 - [인수인계·운영 가이드](docs/handoff.md) — 새 PC 설치, DB, 실행, 백업, 복구와 장애 대응
 - [공개 서버 배포 작업서](docs/하는방법.md) — 폴더를 통째로 전달해 기존 설정·DB를 보존하며 교체하고 검증
+- [CAI-P1~P5 서버 작업 체크리스트](docs/CAI_SERVER_DEPLOYMENT_CHECKLIST.md) — Git 반영 후 운영 서버에서 수행할 설정·migration·LLM·smoke 절차
 - [LLM 설정](docs/llm-setup.md) — Mock, OpenAI, Local LLM과 Embedding
 - [API 사용법](docs/api-endpoints.md) — 고정 인증, Chat, Situation, Offline Task와 오류
 - [게임 데이터](docs/game-data.md) — seed 데이터, migration과 수정 절차

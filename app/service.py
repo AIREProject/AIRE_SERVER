@@ -45,6 +45,7 @@ from app.brain import (
 from app.brain.contract import BrainProvenance, ResponseProvenance
 from app.brain.enemies import EnemyRepository
 from app.brain.llm import build_llm_provider
+from app.brain.memory import MemoryClassification
 from app.brain.recipes import RecipeRepository
 from app.brain.resources import MAX_GATHER_QUANTITY, ResourceId
 from app.brain.store import InMemoryConversationStore
@@ -465,6 +466,9 @@ class CompanionService:
         """앱 종료 시 두뇌가 보유한 HTTP 클라이언트 등을 정리한다."""
 
         await self._brain.aclose()
+
+    async def classify_memory(self, text: str) -> MemoryClassification:
+        return await self._brain.classify_memory(text)
 
     @asynccontextmanager
     async def _chat_lock(self, key: str) -> AsyncIterator[None]:

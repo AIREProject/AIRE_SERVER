@@ -1,19 +1,29 @@
 import asyncio
 from logging.config import fileConfig
+from typing import ClassVar
 
 from alembic import context
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.db import models  # noqa: F401
 from app.db.base import Base
-from app.settings import Settings
+
+
+class MigrationSettings(BaseSettings):
+    """Alembic only needs its URL; unrelated runtime settings cannot block migrations."""
+
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
+    database_url: str = "sqlite+aiosqlite:///./data/companion.db"
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", Settings().database_url)
+config.set_main_option("sqlalchemy.url", MigrationSettings().database_url)
 target_metadata = Base.metadata
 
 

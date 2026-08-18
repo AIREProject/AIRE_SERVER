@@ -157,6 +157,7 @@ async def test_direct_realworld_message_creates_memory_and_promotes_source() -> 
     accepted = await MemoryCandidateService(database).accept_and_acknowledge(  # type: ignore[arg-type]
         claim,
         MemoryCandidate("Preference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, source_id),
+        now=_NOW,
     )
 
     assert accepted is not None and accepted.created
@@ -182,6 +183,7 @@ async def test_user_delete_releases_last_source_and_source_first_purge_archives_
     accepted = await MemoryCandidateService(database).accept_and_acknowledge(  # type: ignore[arg-type]
         claim,
         MemoryCandidate("Preference", "나는 비를 좋아해", 6, scope, SOURCE_MESSAGE, source_id),
+        now=_NOW,
     )
     assert accepted is not None
     identity = AuthenticatedDevice(scope.profile_id, "device-1", DeviceRole.WEB_CLIENT)
@@ -221,9 +223,11 @@ async def test_duplicate_after_restart_reuses_memory_and_adds_second_source() ->
     candidate = MemoryCandidate(
         "Preference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, first_id
     )
-    first = await service.accept(first_claim, candidate)
+    first = await service.accept(first_claim, candidate, now=_NOW)
     restart_claim = await _claim(database, now=_NOW + timedelta(seconds=61))
-    recovered = await service.accept_and_acknowledge(restart_claim, candidate)
+    recovered = await service.accept_and_acknowledge(
+        restart_claim, candidate, now=_NOW + timedelta(seconds=61)
+    )
     assert recovered is not None and not recovered.created
     assert recovered.memory_id == first.memory_id
 
@@ -232,6 +236,7 @@ async def test_duplicate_after_restart_reuses_memory_and_adds_second_source() ->
     second = await service.accept_and_acknowledge(
         second_claim,
         MemoryCandidate("Preference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, second_id),
+        now=_NOW,
     )
 
     assert second is not None and not second.created and second.memory_id == first.memory_id
@@ -251,6 +256,7 @@ async def test_similar_or_conflicting_candidate_is_held_without_new_memory() -> 
     assert await service.accept_and_acknowledge(
         first_claim,
         MemoryCandidate("Preference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, first_id),
+        now=_NOW,
     ) is not None
 
     conflicting_id = await _message(database, scope, text="나는 밤이 무섭지 않아")
@@ -260,6 +266,7 @@ async def test_similar_or_conflicting_candidate_is_held_without_new_memory() -> 
         MemoryCandidate(
             "Preference", "나는 밤이 무섭지 않아", 6, scope, SOURCE_MESSAGE, conflicting_id
         ),
+        now=_NOW,
     ) is None
 
     async with database.session_factory() as session:
@@ -285,6 +292,7 @@ async def test_mismatched_claim_cannot_persist_or_acknowledge_a_memory() -> None
     accepted = await MemoryCandidateService(database).accept_and_acknowledge(  # type: ignore[arg-type]
         stale_claim,
         MemoryCandidate("Preference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, source_id),
+        now=_NOW,
     )
 
     assert accepted is None
@@ -306,6 +314,7 @@ async def test_invalid_type_or_text_candidates_are_rejected_and_acknowledged() -
         MemoryCandidate(
             "UntrustedInference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, invalid_type_id
         ),
+        now=_NOW,
     ) is None
 
     invalid_text_id = await _message(database, scope, text="나는 밤이 무서워")
@@ -315,6 +324,7 @@ async def test_invalid_type_or_text_candidates_are_rejected_and_acknowledged() -
         MemoryCandidate(
             "Preference", "밤에는 조심해야 해", 6, scope, SOURCE_MESSAGE, invalid_text_id
         ),
+        now=_NOW,
     ) is None
 
     async with database.session_factory() as session:
@@ -339,6 +349,7 @@ async def test_purged_source_candidate_is_rejected_and_acknowledged() -> None:
     accepted = await MemoryCandidateService(database).accept_and_acknowledge(  # type: ignore[arg-type]
         claim,
         MemoryCandidate("Preference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, source_id),
+        now=_NOW,
     )
 
     assert accepted is None
@@ -365,6 +376,7 @@ async def test_promotion_failure_rolls_back_memory_and_source_reference(
         await MemoryCandidateService(database).accept(  # type: ignore[arg-type]
             claim,
             MemoryCandidate("Preference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, source_id),
+            now=_NOW,
         )
 
     async with database.session_factory() as session:
@@ -388,6 +400,7 @@ async def test_companion_and_foreign_scope_candidates_are_rejected_and_acknowled
     assert await service.accept_and_acknowledge(
         companion_claim,
         MemoryCandidate("Preference", "나는 밤이 무서워", 6, scope, SOURCE_MESSAGE, companion_id),
+        now=_NOW,
     ) is None
 
     player_id = await _message(database, scope, text="나는 밤이 무서워")
@@ -396,6 +409,7 @@ async def test_companion_and_foreign_scope_candidates_are_rejected_and_acknowled
     assert await service.accept_and_acknowledge(
         player_claim,
         MemoryCandidate("Preference", "나는 밤이 무서워", 6, foreign, SOURCE_MESSAGE, player_id),
+        now=_NOW,
     ) is None
 
     async with database.session_factory() as session:
@@ -414,6 +428,7 @@ async def test_verified_event_is_the_only_relationship_evidence_source() -> None
     accepted = await MemoryCandidateService(database).accept_and_acknowledge(  # type: ignore[arg-type]
         claim,
         MemoryCandidate("RelationshipEvidence", text, 8, scope, SOURCE_EVENT, source_id),
+        now=_NOW,
     )
 
     assert accepted is not None and accepted.created

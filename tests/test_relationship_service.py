@@ -100,6 +100,7 @@ async def _accept_night_fear_preference(database: object, scope: SourceScope) ->
             SOURCE_MESSAGE,
             message_id,
         ),
+        now=_NOW,
     )
     assert accepted is not None
     return accepted.memory_id

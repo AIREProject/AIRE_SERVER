@@ -15,7 +15,13 @@ from datetime import UTC, datetime
 from sqlalchemy import select, update
 
 from app.db.connection import Database
-from app.db.models import GameEventModel, MemoryModel, MemorySourceModel, MessageModel
+from app.db.models import (
+    GameEventModel,
+    MemoryCorrectionModel,
+    MemoryModel,
+    MemorySourceModel,
+    MessageModel,
+)
 from app.db.source_repository import SOURCE_EVENT, SOURCE_MESSAGE, SourceScope
 
 MAX_RECALL_BONUS = 5
@@ -188,6 +194,12 @@ class SourceBackedMemoryStore:
                 )
             )
             source_rows = tuple(source_result.scalars())
+            correction_result = await session.execute(
+                select(MemoryCorrectionModel)
+                .where(MemoryCorrectionModel.memory_id.in_(tuple(row.memory_id for row in rows)))
+                .order_by(MemoryCorrectionModel.created_at, MemoryCorrectionModel.row_id)
+            )
+            corrections = {row.memory_id: row.corrected_text for row in correction_result.scalars()}
             valid = await self._valid_sources(session, source_rows, scope)
         by_memory: dict[str, list[MemorySourceModel]] = {}
         for source in source_rows:
@@ -196,7 +208,7 @@ class SourceBackedMemoryStore:
         return tuple(
             SourceBackedMemory(
                 memory_id=row.memory_id,
-                text=row.text,
+                text=corrections.get(row.memory_id, row.text),
                 memory_type=row.memory_type,
                 importance=row.importance,
                 pinned=row.pinned,

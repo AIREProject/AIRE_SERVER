@@ -41,6 +41,7 @@ HTTP/WS에서 같은 payload를 재전송하면 최초 응답을 재생하며, �
 | Method | Path | 제품 사용 |
 |---|---|---|
 | GET | `/health` | 프로세스·설정 확인 |
+| GET | `/ready` | DB revision 필수 readiness, LLM degraded 상태 확인 |
 | POST | `/api/v1/chat` | UE/Web Chat |
 | POST | `/api/v1/situations` | UE가 관찰한 상황에 대한 선제 대사 |
 | WS | `/api/v1/chat` | 호환용 WebSocket Chat/Situation |
@@ -54,6 +55,7 @@ HTTP/WS에서 같은 payload를 재전송하면 최초 응답을 재생하며, �
 | GET | `/api/v1/game-state` | GameClient/WebClient가 마지막 승인 Snapshot 조회 |
 | POST | `/api/v1/events` | GameClient가 allowlist GameEvent 저장 |
 | POST | `/api/v1/command-results` | GameClient가 Command 실행 결과 상태 전이 저장 |
+| GET/POST/PATCH/DELETE | `/api/v1/memories/*` | WebClient 기억 조회·검색·정정·고정·삭제·초기화 |
 | `/api/v1/devices/*` | 여러 Method | 기존 random token/pairing 호환 경로 |
 | `/api/v1/admin/*` | 여러 Method | 운영자 CRUD, `ADMIN_API_TOKEN` 필요 |
 
@@ -72,6 +74,10 @@ GET /health
 ```
 
 Health는 DB migration, DB query와 실제 LLM 호출을 검사하지 않습니다.
+
+`GET /ready`는 DB 연결과 Alembic `0014` head를 검사합니다. 연결 실패나 revision 불일치는
+HTTP 503 `not_ready`입니다. DB가 준비된 상태에서 Memory worker의 최근 LLM 분류가 실패하면
+Mock fallback이 가능한 HTTP 200 `degraded`로 반환합니다.
 
 ## 4. Chat
 
@@ -303,6 +309,10 @@ memory는 허용하지 않으며, Archived memory는 검색·목록·상세에 �
 `PATCH /api/v1/memories/{memory_id}`는 `importance`, `pinned` 또는
 `corrected_text`와 필수 `correction_reason`을 받습니다. 정정은 append-only audit으로 저장되며
 canonical Message/Event 원문은 변경하지 않습니다.
+
+각 `MemoryView.sources[]`는 내부 ID나 원문 없이 `source_type`, `source_mode`, `occurred_at`만
+제공합니다. `LegacyUnknown` Message는 공개 응답에서 `Legacy` source로 표시됩니다. 최신 정정문은
+목록·검색뿐 아니라 실제 Prompt 회상에도 동일하게 사용됩니다.
 
 `DELETE /api/v1/memories/{memory_id}?reason={reason}`와
 `POST /api/v1/memories/reset`은 memory를 `Archived`로 전이합니다. 이는 legal erasure가 아니라

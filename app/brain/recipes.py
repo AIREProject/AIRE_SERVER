@@ -55,7 +55,8 @@ _STABLE_RECIPE_ID_PATTERN = re.compile(
 _RECIPE_REFERENCE_PATTERN = re.compile(r"(?:그거|그것|그\s*레시피|그\s*제작법)")
 _RECIPE_LIST_PATTERN = re.compile(
     r"(?:알고\s*있는|아는|확인된|가능한|보유한).*(?:레시피|제작법)|"
-    r"(?:레시피|제작법).*(?:목록|리스트|뭐|무엇|어떤|있어)",
+    r"(?:레시피|제작법).*(?:목록|리스트|뭐|무엇|어떤|있어)|"
+    r"^\s*(?:레시피|제작법)\s*알아",
     re.IGNORECASE,
 )
 _RECIPE_COMPARE_PATTERN = re.compile(r"(?:비교|차이|어느\s*게|어떤\s*게|더\s*(?:좋|나))")
@@ -68,6 +69,23 @@ _EXPLICIT_UNKNOWN_PATTERN = re.compile(
     r"(?:[A-Za-z0-9가-힣_.:-]+)(?:을|를|은|는)?\s*어떻게\s*(?:만들|제작)",
     re.IGNORECASE,
 )
+
+# ``alias_pattern`` intentionally requires an end-of-word boundary. Recipe questions
+# commonly attach the query suffix directly to a Korean result name (``돌도끼레시피``),
+# so keep the normal boundary while allowing only an explicit recipe suffix to follow.
+_RECIPE_PARTICLE_PATTERN = r"(?:을|를|은|는|이|가|의|도|만|와|과|랑|이랑|하고)"
+_RECIPE_SUFFIX_PATTERN = r"(?:레시피|제작법|만드는?\s*(?:법|방법))"
+
+
+def _recipe_alias_pattern(alias: str) -> re.Pattern[str]:
+    escaped = re.escape(alias).replace(r"\ ", r"\s+")
+    return re.compile(
+        rf"(?<!\w){escaped}(?:"
+        rf"{_RECIPE_PARTICLE_PATTERN}?(?!\w)|"
+        rf"(?={_RECIPE_SUFFIX_PATTERN}{_RECIPE_PARTICLE_PATTERN}?(?!\w))"
+        rf")",
+        re.IGNORECASE,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,7 +189,7 @@ class RecipeRepository:
         self._recipe_patterns: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
             (item_id, pattern)
             for item_id, aliases in aliases_by_result.items()
-            for pattern in (alias_pattern(alias) for alias in aliases)
+            for pattern in (_recipe_alias_pattern(alias) for alias in aliases)
         )
         self._all_result_aliases: tuple[str, ...] = tuple(
             alias for aliases in aliases_by_result.values() for alias in aliases

@@ -26,6 +26,7 @@ from app.db.source_repository import (
     SourceRepository,
     SourceScope,
 )
+from app.relationship_service import RelationshipService
 
 MEMORY_TYPES = frozenset(
     {"ProfileFact", "Preference", "Episode", "Promise", "RelationshipEvidence"}
@@ -78,7 +79,14 @@ class MemoryCandidateService:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    async def accept(self, claim: ClaimedSource, candidate: MemoryCandidate) -> MemoryAcceptance:
+    async def accept(
+        self,
+        claim: ClaimedSource,
+        candidate: MemoryCandidate,
+        *,
+        now: datetime | None = None,
+    ) -> MemoryAcceptance:
+        moment = now or datetime.now(UTC)
         if (claim.source_type, claim.source_id) != (candidate.source_type, candidate.source_id):
             raise MemoryCandidateRejectedError("Candidate source does not match its outbox claim.")
         if candidate.memory_type not in MEMORY_TYPES:
@@ -91,7 +99,7 @@ class MemoryCandidateService:
             raise MemoryCandidateRejectedError("Memory text must not be blank.")
 
         async with self._database.session_factory() as session:
-            await self._validate_claim(session, claim, candidate)
+            await self._validate_claim(session, claim, candidate, now=moment)
             sources = SourceRepository(session)
             try:
                 source = await sources.get_source(
@@ -128,7 +136,6 @@ class MemoryCandidateService:
                     "Similar or conflicting active memory is held for later review."
                 )
             created = memory is None
-            now = datetime.now(UTC)
             if memory is None:
                 memory = MemoryModel(
                     memory_id=f"memory-{uuid4()}",
@@ -141,7 +148,7 @@ class MemoryCandidateService:
                     importance=candidate.importance,
                     pinned=candidate.pinned,
                     status="Active",
-                    created_at=now,
+                    created_at=moment,
                 )
                 session.add(memory)
                 await session.flush()
@@ -151,7 +158,7 @@ class MemoryCandidateService:
                 candidate.source_id,
                 memory.memory_id,
                 scope=candidate.scope,
-                now=now,
+                now=moment,
                 commit=False,
             )
             linked = await session.scalar(
@@ -170,15 +177,33 @@ class MemoryCandidateService:
                         source_id=candidate.source_id,
                         source_mode=self._source_mode(source),
                         occurred_at=self._occurred_at(source),
-                        created_at=now,
+                        created_at=moment,
                     )
                 )
+            if candidate.memory_type == "Preference":
+                event_result = await session.execute(
+                    select(GameEventModel)
+                    .where(
+                        GameEventModel.profile_id == candidate.scope.profile_id,
+                        GameEventModel.save_slot_row_id == candidate.scope.save_slot_row_id,
+                        GameEventModel.companion_id == candidate.scope.companion_id,
+                        GameEventModel.content_deleted_at.is_(None),
+                    )
+                    .order_by(GameEventModel.occurred_at, GameEventModel.row_id)
+                )
+                relationship = RelationshipService(session)
+                for event in event_result.scalars():
+                    await relationship.observe_event(event)
             await session.commit()
             return MemoryAcceptance(memory.memory_id, created)
 
     @staticmethod
     async def _validate_claim(
-        session: object, claim: ClaimedSource, candidate: MemoryCandidate
+        session: object,
+        claim: ClaimedSource,
+        candidate: MemoryCandidate,
+        *,
+        now: datetime,
     ) -> None:
         outbox = await session.get(SourceOutboxModel, claim.source_seq)  # type: ignore[attr-defined]
         expires_at = outbox.lease_expires_at if outbox is not None else None
@@ -191,17 +216,21 @@ class MemoryCandidateService:
             or outbox.source_id != candidate.source_id
             or outbox.lease_token != claim.lease_token
             or expires_at is None
-            or expires_at <= datetime.now(UTC)
+            or expires_at <= now
         ):
             raise MemoryCandidateRejectedError("Outbox claim is missing, stale, or mismatched.")
 
     async def accept_and_acknowledge(
-        self, claim: ClaimedSource, candidate: MemoryCandidate
+        self,
+        claim: ClaimedSource,
+        candidate: MemoryCandidate,
+        *,
+        now: datetime | None = None,
     ) -> MemoryAcceptance | None:
         """Acknowledge valid or deliberately rejected input; retry operational failures."""
 
         try:
-            accepted = await self.accept(claim, candidate)
+            accepted = await self.accept(claim, candidate, now=now)
         except MemoryCandidateRejectedError:
             async with self._database.session_factory() as session:
                 await SourceRepository(session).acknowledge(claim)
@@ -220,7 +249,7 @@ class MemoryCandidateService:
             is_direct_realworld_player = (
                 isinstance(source, MessageModel)
                 and source.speaker == "player"
-                and source.source_mode == "RealWorld"
+                and source.source_mode in {"RealWorld", "LegacyUnknown"}
             )
             if not is_direct_realworld_player:
                 raise MemoryCandidateRejectedError(

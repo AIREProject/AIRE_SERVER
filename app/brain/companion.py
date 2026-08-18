@@ -52,6 +52,7 @@ from .memory import (
     ConsolidationSpec,
     LongTermMemory,
     LongTermStore,
+    MemoryClassification,
     MemoryExtractionSpec,
     SessionSummarySpec,
     consolidated,
@@ -441,6 +442,9 @@ class CompanionBrain:
         await self._llm.aclose()
         if self._embedder is not None:
             await self._embedder.aclose()
+
+    async def classify_memory(self, text: str) -> MemoryClassification:
+        return await self._llm.classify_memory(text)
 
     async def _recall(
         self,

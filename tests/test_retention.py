@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -29,7 +30,11 @@ from app.db.source_repository import (
     SourceRepository,
     SourceScope,
 )
-from app.retention import LegacyMemoryMaintenance, RetentionService
+from app.retention import (
+    LegacyMemoryMaintenance,
+    RetentionService,
+    _sweep_transcript_quarantine,
+)
 from tests.conftest import make_database, make_settings
 
 _NOW = datetime(2026, 8, 16, 12, 0, tzinfo=UTC)
@@ -479,3 +484,34 @@ async def test_tampered_quarantine_file_is_not_deleted(
     async with retention_database.session_factory() as session:  # type: ignore[attr-defined]
         report = (await session.execute(select(LegacyImportReportModel))).scalar_one()
         assert report.status == "quarantine_modified"
+
+
+def test_legacy_transcript_quarantine_deletes_only_hash_verified_expired_file(
+    tmp_path: Path,
+) -> None:
+    quarantine = tmp_path / "transcript-quarantine"
+    quarantine.mkdir()
+    source = quarantine / "legacy.jsonl"
+    source.write_text('{"speaker":"player","text":"안녕"}\n', encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    report_path = quarantine / "import-report-apply.json"
+    report_path.write_text(
+        json.dumps(
+            [
+                {
+                    "filename": "legacy.jsonl",
+                    "sha256": digest,
+                    "status": "quarantined",
+                    "quarantine_path": str(source),
+                    "quarantine_delete_after": (_NOW - timedelta(seconds=1)).isoformat(),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert _sweep_transcript_quarantine(quarantine, _NOW) == (1, 1)
+    assert not source.exists()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report[0]["status"] == "deleted"
+    assert report[0]["sha256"] == digest

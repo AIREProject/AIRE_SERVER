@@ -118,6 +118,7 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8010
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8010/health
+Invoke-RestMethod http://127.0.0.1:8010/ready
 ```
 
 예상 예시:
@@ -130,9 +131,9 @@ Invoke-RestMethod http://127.0.0.1:8010/health
 }
 ```
 
-`/health`는 프로세스와 설정값만 확인합니다. DB readiness나 실제 LLM 연결 성공을 확인하지
-않습니다. DB는 `alembic current`, LLM은 실제 Chat 응답의 `ai_metadata`와 응답 내용을 함께
-확인합니다.
+`/health`는 liveness입니다. 배포 Gate는 `/ready`가 HTTP 200 `ready` 또는 허용된
+`degraded`인지 확인합니다. DB 연결 실패와 Alembic revision 불일치는 503이며, LLM 분류 장애는
+Mock fallback과 함께 200 `degraded`입니다.
 
 Swagger UI:
 
@@ -189,9 +190,9 @@ Chat 예시는 [API 사용법](api-endpoints.md)을 따릅니다.
 |---|---|---|
 | `data/companion.db` | Profile, Device, Save Slot, Offline Task, 장기기억, 게임 데이터 | 상태 유지 시 필수 |
 | `data/companion.db-wal`, `*.db-shm` | SQLite WAL 보조 파일 | 서버 실행 중 DB와 한 세트 |
-| `data/transcripts/` | 대화 원문 JSONL | 새 장기기억 증류를 이어갈 때 필요 |
+| `data/transcripts/` | 개발 재현용 JSONL, 기본 비활성·최대 1일 | 복구 불필요 |
 | `data/requests.log*` | 요청 경로·상태·시간 메타데이터 | 운영 분석용, 복구에는 선택 |
-| `data/memories/` | Migration 0005가 읽는 옛 JSON 기억 | 기존 JSON 기억을 이전할 때만 필요 |
+| `data/transcript_quarantine/` | 명시적 legacy importer 원본, hash 검증 후 30일 격리 | 만료 전 감사용 |
 
 ### 6.2 안전한 백업
 
@@ -291,7 +292,8 @@ Local LLM 로그를 확인합니다.
 ### 장기기억이 생기지 않음
 
 - Mock LLM은 기억을 추출하지 않습니다.
-- `TRANSCRIPT_ENABLED=false`이면 새 기억의 원본이 없습니다.
+- `TRANSCRIPT_ENABLED=false`는 개발용 전사만 끕니다. 새 기억은 canonical Message/Event와
+  leased Memory worker에서 만들어집니다.
 - 기억 증류는 background interval과 quiet/session-end 시간을 기다립니다.
 - `LONG_TERM_MEMORY_ENABLED=false`이면 저장·회수가 비활성화됩니다.
 

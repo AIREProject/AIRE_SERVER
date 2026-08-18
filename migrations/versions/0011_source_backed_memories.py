@@ -23,7 +23,9 @@ def _scope_columns() -> tuple[sa.Column[object], ...]:
 
 def upgrade() -> None:
     connection = op.get_bind()
-    legacy_count = int(connection.execute(sa.text("SELECT COUNT(*) FROM episodic_memories")).scalar_one())
+    legacy_count = int(
+        connection.execute(sa.text("SELECT COUNT(*) FROM episodic_memories")).scalar_one()
+    )
     op.rename_table("episodic_memories", "legacy_episodic_memories")
     op.drop_index("ix_episodic_memories_player_key", table_name="legacy_episodic_memories")
     op.create_index(

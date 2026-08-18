@@ -9,7 +9,14 @@ from pydantic import SecretStr
 from sqlalchemy import select
 
 from app.credentials import CredentialProtector
-from app.db.models import MemoryCorrectionModel, MemoryModel, SaveSlotModel
+from app.db.models import (
+    ConversationModel,
+    MemoryCorrectionModel,
+    MemoryModel,
+    MemorySourceModel,
+    MessageModel,
+    SaveSlotModel,
+)
 from app.main import create_app
 from tests.conftest import make_authenticated_device, make_database, make_settings
 
@@ -33,6 +40,18 @@ async def memory_client() -> Any:
         session.add(slot)
         await session.flush()
         session.add(
+            ConversationModel(
+                row_id="memory-conversation-1",
+                conversation_id="memory-conversation-1",
+                profile_id=identity.profile_id,
+                save_slot_row_id=slot.row_id,
+                companion_id="mako",
+                session_id="memory-session-1",
+                surface="mobile",
+                created_at=now,
+            )
+        )
+        session.add(
             MemoryModel(
                 memory_id="memory-1",
                 profile_id=identity.profile_id,
@@ -53,6 +72,42 @@ async def memory_client() -> Any:
                 archived_reason=None,
             )
         )
+        await session.flush()
+        session.add(
+            MessageModel(
+                row_id="private-source-id",
+                message_id="memory-source-message-1",
+                conversation_row_id="memory-conversation-1",
+                profile_id=identity.profile_id,
+                save_slot_row_id=slot.row_id,
+                companion_id="mako",
+                request_id="memory-source-request-1",
+                sequence=1,
+                speaker="player",
+                source_mode="RealWorld",
+                content="플레이어는 비를 좋아한다",
+                content_digest="a" * 64,
+                time_context={"source": "RealWorld"},
+                storage_class="MemorySource",
+                retention_reason="MemoryReference",
+                expires_at=None,
+                audit_expires_at=now,
+                content_deleted_at=None,
+                created_at=now,
+                delivered_at=now,
+            )
+        )
+        session.add(
+            MemorySourceModel(
+                row_id="memory-source-1",
+                memory_id="memory-1",
+                source_type="Message",
+                source_id="private-source-id",
+                source_mode="RealWorld",
+                occurred_at=now,
+                created_at=now,
+            )
+        )
         await session.commit()
     with TestClient(create_app(settings)) as client:
         yield client, database, token, other_token
@@ -68,6 +123,12 @@ async def test_memory_api_scopes_corrections_and_archival(memory_client: Any) ->
     listed = client.get(path, headers=_auth(token))
     assert listed.status_code == 200
     assert listed.json()["memories"][0]["corrected"] is False
+    sources = listed.json()["memories"][0]["sources"]
+    assert len(sources) == 1
+    assert sources[0]["source_type"] == "Message"
+    assert sources[0]["source_mode"] == "RealWorld"
+    assert isinstance(sources[0]["occurred_at"], str)
+    assert "private-source-id" not in listed.text
     assert client.get(path, headers=_auth(other_token)).json()["memories"] == []
     assert client.post(
         "/api/v1/memories/search",
@@ -87,6 +148,14 @@ async def test_memory_api_scopes_corrections_and_archival(memory_client: Any) ->
     assert updated.status_code == 200
     assert updated.json()["text"] == "플레이어는 맑은 날을 좋아한다"
     assert updated.json()["corrected"] is True
+    pin_only = client.patch(
+        "/api/v1/memories/memory-1",
+        headers=_auth(token),
+        json={"pinned": False},
+    )
+    assert pin_only.status_code == 200
+    assert pin_only.json()["text"] == "플레이어는 맑은 날을 좋아한다"
+    assert pin_only.json()["corrected"] is True
     searched = client.post(
         "/api/v1/memories/search",
         headers=_auth(token),

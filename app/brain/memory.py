@@ -45,6 +45,22 @@ _RECALL_BONUS_WEIGHT = 0.5
 
 MemoryKind = Literal["profile", "episode", "session_summary"]
 
+
+class MemoryClassification(BaseModel):
+    """LLM output limited to disposition and ranking metadata.
+
+    Canonical source text is intentionally absent: the worker copies it from the
+    authenticated Message row after this result has passed strict validation.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["Reject", "ProfileFact", "Preference", "Promise", "Episode"]
+    importance: int = Field(ge=1, le=10)
+
+
+REJECT_MEMORY = MemoryClassification(decision="Reject", importance=1)
+
 # 회수 동점을 가를 때의 종류 우선순위. 플레이어 자체에 대한 사실이 지난 세션 요약보다 먼저다.
 _KIND_ORDER: dict[MemoryKind, int] = {"profile": 0, "episode": 1, "session_summary": 2}
 

@@ -81,6 +81,44 @@ def test_recipe_query_modes_use_validated_targets() -> None:
     }
 
 
+def test_recipe_list_questions_accept_attached_and_spaced_wording() -> None:
+    repository = RecipeRepository()
+
+    for query in ("레시피알아?", "레시피 알아?", "아는 제작법 말해"):
+        parsed = repository.query_for(query)
+
+        assert parsed is not None
+        assert parsed.mode is RecipeQueryMode.LIST_KNOWN
+        assert parsed.targets == ()
+
+
+def test_recipe_detail_accepts_attached_recipe_suffix() -> None:
+    repository = RecipeRepository()
+
+    for query in ("돌도끼레시피 알려줘", "돌도끼 레시피 알려줘", "돌도끼레시피를 알려줘"):
+        parsed = repository.query_for(query)
+
+        assert parsed is not None
+        assert parsed.mode is RecipeQueryMode.DETAIL
+        assert parsed.targets[0].recipe_ids == ("recipe-3",)
+
+
+def test_attached_suffix_does_not_turn_unknown_substrings_into_targets() -> None:
+    repository = RecipeRepository()
+
+    for query in (
+        "부싯불레시피 알려줘",
+        "부싯돌레시피 알려줘",
+        "부싯불 레시피 알아?",
+        "전설검 레시피 알아?",
+    ):
+        parsed = repository.query_for(query)
+
+        assert parsed is not None
+        assert parsed.mode is RecipeQueryMode.UNKNOWN_RECIPE
+        assert parsed.targets == ()
+
+
 def test_recipe_compare_requires_exactly_two_validated_targets() -> None:
     repository = RecipeRepository()
 

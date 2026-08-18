@@ -61,6 +61,7 @@ class ClaimedSource:
     source_id: str
     lease_token: str
     lease_expires_at: datetime
+    attempt_count: int = 1
 
 
 def _utc(value: datetime | None) -> datetime:
@@ -341,6 +342,7 @@ class SourceRepository:
                 source_id=row.source_id,
                 lease_token=token,
                 lease_expires_at=expires,
+                attempt_count=row.attempt_count,
             )
 
     async def acknowledge(

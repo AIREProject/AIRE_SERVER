@@ -42,8 +42,10 @@ from .memory import (
     EMPTY_EXTRACTION,
     EMPTY_SUMMARY,
     MAX_MEMORY_TEXT,
+    REJECT_MEMORY,
     Consolidation,
     ConsolidationSpec,
+    MemoryClassification,
     MemoryExtraction,
     MemoryExtractionSpec,
     SessionSummary,
@@ -165,6 +167,18 @@ resource 는 답일 때만 의미가 있다. is_answer 가 false 면 unspecified
 - unspecified: 답이지만 여전히 무엇인지 특정하지 못함('아무거나', '둘 다')
 
 답변을 생성하지 말고 판정 결과만 반환한다."""
+
+_MEMORY_CLASSIFIER_PROMPT = """검증된 플레이어 원문 한 줄을 장기기억 후보로 분류한다.
+출력은 decision과 importance뿐이며 원문을 요약·수정·복사하거나 새 사실을 만들지 않는다.
+
+- ProfileFact: 플레이어 본인에 대한 지속적인 사실
+- Preference: 플레이어의 명시적인 선호나 비선호
+- Promise: 플레이어가 명시적으로 한 미래 약속
+- Episode: 다음 만남에도 의미가 있는 개인적 사건이나 경험
+- Reject: 인사, 질문, 추측, 불확실한 말, 일시적 상태, 게임 현재 상태, 명령, Recipe·재료·수량
+
+애매하면 Reject로 둔다. importance는 Reject일 때 1, 그 외에는 1부터 10까지의 보존 우선순위다.
+기억 문장이나 답변을 생성하지 말고 분류 결과만 반환한다."""
 
 DIALOGUE_PROMPT_VERSION = "companion-v4"
 
@@ -318,6 +332,12 @@ class LLMProvider(ABC):
 
         raise NotImplementedError
 
+    async def classify_memory(self, text: str) -> MemoryClassification:
+        """Classify only; providers must never generate the stored memory text."""
+
+        del text
+        return REJECT_MEMORY
+
     @abstractmethod
     async def classify_command(self, text: str) -> CommandClassification:
         """명령형 발화를 명령 계열과 채집 슬롯(자원·수량)으로 분류한다."""
@@ -403,6 +423,10 @@ class MockLLMProvider(LLMProvider):
             result = TopIntent.UNKNOWN
         self._record_mock_call("classify_top", started_at)
         return result
+
+    async def classify_memory(self, text: str) -> MemoryClassification:
+        del text
+        return REJECT_MEMORY
 
     async def classify_command(self, text: str) -> CommandClassification:
         """기존 정규식 파서의 우선순위를 재현하는 결정론적 분류를 수행한다."""
@@ -589,6 +613,29 @@ class OpenAIProvider(LLMProvider):
                 started_at=started_at,
             )
             return result
+
+    async def classify_memory(self, text: str) -> MemoryClassification:
+        response = await self._client.responses.create(
+            model=self._model,
+            input=[
+                {"role": "system", "content": _MEMORY_CLASSIFIER_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "memory_classification",
+                    "strict": True,
+                    "schema": MemoryClassification.model_json_schema(),
+                }
+            },
+            temperature=self._classify_temperature,
+            max_output_tokens=self._classify_max_tokens,
+            reasoning={"effort": "minimal"},
+        )
+        if not isinstance(response.output_text, str) or not response.output_text.strip():
+            raise _EmptyOutputError
+        return MemoryClassification.model_validate_json(response.output_text)
 
     async def classify_command(self, text: str) -> CommandClassification:
         """Responses API 구조화 출력으로 명령 계열과 채집 슬롯을 분류한다."""
@@ -905,6 +952,30 @@ class LocalLLMProvider(LLMProvider):
             )
             return result
 
+    async def classify_memory(self, text: str) -> MemoryClassification:
+        response = await self._client.chat.completions.create(
+            model=self._model,
+            messages=[
+                {"role": "system", "content": _MEMORY_CLASSIFIER_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "memory_classification",
+                    "strict": True,
+                    "schema": MemoryClassification.model_json_schema(),
+                },
+            },
+            temperature=self._classify_temperature,
+            max_tokens=self._classify_max_tokens,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        content = response.choices[0].message.content
+        if content is None or not content.strip():
+            raise _EmptyOutputError
+        return MemoryClassification.model_validate_json(content)
+
     async def classify_command(self, text: str) -> CommandClassification:
         """로컬 모델의 JSON Schema 출력으로 명령 계열과 채집 슬롯을 분류한다."""
 
@@ -1184,6 +1255,13 @@ class TimingLLMProvider(LLMProvider):
             return await self._inner.classify_top(text, clarification_pending=clarification_pending)
         finally:
             _log_step("classify_top", started_at)
+
+    async def classify_memory(self, text: str) -> MemoryClassification:
+        started_at = perf_counter()
+        try:
+            return await self._inner.classify_memory(text)
+        finally:
+            _log_step("classify_memory", started_at)
 
     async def classify_command(self, text: str) -> CommandClassification:
         started_at = perf_counter()

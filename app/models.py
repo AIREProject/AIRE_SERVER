@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, field_validator, model_validator
 
 from app.game_context_models import GameContextV1
 from app.model_types import StableId as StableId
@@ -214,6 +214,12 @@ class SituationResponse(StrictModel):
     ai_metadata: AIMetadata
 
 
+class MemorySourceView(StrictModel):
+    source_type: Literal["Message", "Event", "Legacy"]
+    source_mode: Literal["RealWorld", "GameWorld", "LegacyUnknown"]
+    occurred_at: datetime
+
+
 class MemoryView(StrictModel):
     memory_id: StableId
     save_slot_id: StableId
@@ -224,6 +230,7 @@ class MemoryView(StrictModel):
     pinned: bool
     corrected: bool
     created_at: datetime
+    sources: list[MemorySourceView]
 
 
 class MemoryListResponse(StrictModel):
@@ -243,6 +250,13 @@ class UpdateMemoryRequest(StrictModel):
     correction_reason: str | None = Field(default=None, min_length=1, max_length=512)
     importance: int | None = Field(default=None, ge=1, le=10)
     pinned: bool | None = None
+
+    @field_validator("corrected_text", "correction_reason")
+    @classmethod
+    def validate_non_blank_text(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("Correction text and reason must not be blank.")
+        return value
 
     @model_validator(mode="after")
     def validate_correction(self) -> Self:

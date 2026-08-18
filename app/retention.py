@@ -77,6 +77,58 @@ def _timestamp(value: datetime | None) -> str | None:
     return _utc(value).isoformat()
 
 
+def _sweep_transcript_quarantine(directory: Path, now: datetime) -> tuple[int, int]:
+    """Delete only hash-verified files whose persisted 30-day deadline elapsed."""
+
+    deleted = updated = 0
+    if not directory.exists():
+        return deleted, updated
+    root = directory.resolve()
+    for report_path in directory.glob("import-report-apply*.json"):
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(report, list):
+            continue
+        changed = False
+        for item in report:
+            if not isinstance(item, dict) or item.get("status") != "quarantined":
+                continue
+            raw_deadline = item.get("quarantine_delete_after")
+            raw_path = item.get("quarantine_path")
+            digest = item.get("sha256")
+            if (
+                not isinstance(raw_deadline, str)
+                or not isinstance(raw_path, str)
+                or not isinstance(digest, str)
+            ):
+                continue
+            try:
+                deadline = _utc(datetime.fromisoformat(raw_deadline))
+                candidate = Path(raw_path).resolve()
+            except (ValueError, OSError):
+                continue
+            if deadline > now or candidate.parent != root or not candidate.is_file():
+                continue
+            if hashlib.sha256(candidate.read_bytes()).hexdigest() != digest:
+                item["status"] = "hash_mismatch"
+                changed = True
+                continue
+            candidate.unlink()
+            item["status"] = "deleted"
+            item["quarantine_path"] = None
+            item["deleted_at"] = now.isoformat()
+            deleted += 1
+            changed = True
+        if changed:
+            report_path.write_text(
+                json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            updated += 1
+    return deleted, updated
+
+
 def _legacy_row(
     *,
     kind: str,
@@ -423,6 +475,7 @@ class RetentionService:
         legacy_memory_directory: Path | None = None,
         legacy_quarantine_directory: Path | None = None,
         legacy_quarantine_days: int = 7,
+        legacy_transcript_quarantine_directory: Path | None = None,
     ) -> None:
         self._database = database
         if settings is not None:
@@ -435,6 +488,9 @@ class RetentionService:
             legacy_memory_directory = settings.long_term_memory_dir
             legacy_quarantine_directory = settings.legacy_memory_quarantine_dir
             legacy_quarantine_days = settings.legacy_memory_quarantine_days
+            legacy_transcript_quarantine_directory = (
+                settings.legacy_transcript_quarantine_dir
+            )
         self._message_days = {
             "player": user_message_retention_days,
             "companion": companion_message_retention_days,
@@ -454,6 +510,7 @@ class RetentionService:
                 quarantine_days=legacy_quarantine_days,
             )
         )
+        self._legacy_transcripts = legacy_transcript_quarantine_directory
 
     async def sweep(self, *, now: datetime | None = None) -> RetentionSweepResult:
         moment = _utc(now)
@@ -468,6 +525,12 @@ class RetentionService:
         quarantined = deleted = reports = 0
         if self._legacy is not None:
             quarantined, deleted, reports = await self._legacy.run(now=moment)
+        if self._legacy_transcripts is not None:
+            transcript_deleted, transcript_reports = await asyncio.to_thread(
+                _sweep_transcript_quarantine, self._legacy_transcripts, moment
+            )
+            deleted += transcript_deleted
+            reports += transcript_reports
         return RetentionSweepResult(
             message_content_purged=message_count,
             event_content_purged=event_count,

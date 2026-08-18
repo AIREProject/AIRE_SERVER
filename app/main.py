@@ -14,6 +14,7 @@ from app.db.game_data_loader import load_game_dataset
 from app.errors_http import register_error_handlers
 from app.gamedata.dataset import GameDataSet
 from app.logging import configure_logging
+from app.memory_worker import MemoryWorker
 from app.middleware import RequestContextMiddleware
 from app.retention import RetentionService
 from app.routes.admin import router as admin_router
@@ -43,6 +44,15 @@ async def _run_retention_loop(
             await retention.sweep()
         except Exception:
             logger.exception("retention_periodic_sweep_failed")
+
+
+async def _run_memory_loop(worker: MemoryWorker, *, interval_seconds: float) -> None:
+    while True:
+        try:
+            await worker.drain_once()
+        except Exception:
+            logger.exception("memory_worker_cycle_failed")
+        await asyncio.sleep(interval_seconds)
 
 
 def _run_to_completion[T](coro: Coroutine[Any, Any, T]) -> T:
@@ -144,6 +154,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else None
         ),
     )
+    memory_worker = MemoryWorker(
+        database,
+        companion,
+        lease_seconds=selected_settings.memory_worker_lease_seconds,
+        max_attempts=selected_settings.memory_worker_max_attempts,
+        batch_size=selected_settings.memory_worker_batch_size,
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -157,9 +174,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 interval_seconds=selected_settings.retention_sweep_interval_seconds,
             )
         )
+        memory_task = (
+            asyncio.create_task(
+                _run_memory_loop(
+                    memory_worker,
+                    interval_seconds=selected_settings.memory_worker_interval_seconds,
+                )
+            )
+            if selected_settings.memory_worker_enabled
+            else None
+        )
         try:
             yield
         finally:
+            if memory_task is not None:
+                memory_task.cancel()
+                try:
+                    await memory_task
+                except asyncio.CancelledError:
+                    pass
             retention_task.cancel()
             try:
                 await retention_task
@@ -176,6 +209,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.companion = companion
     app.state.database = database
     app.state.retention = retention
+    app.state.memory_worker = memory_worker
     if settings is not None:
         app.dependency_overrides[get_settings] = lambda: selected_settings
 
