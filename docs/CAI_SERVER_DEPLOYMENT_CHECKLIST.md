@@ -38,7 +38,7 @@ curl -fsS https://traip.mtvs2026.work/health
 ```bash
 cd /home/mtvs-1/workspace/AIRE_SERVER
 backup_stamp="$(date +%Y%m%d-%H%M%S)"
-backup_dir="/home/mtvs-1/backups/AIRE_SERVER-${backup_stamp}"
+backup_dir="/home/mtvs-1/workspace/AIRE_SERVER/backups/predeploy_${backup_stamp}"
 mkdir -p "$backup_dir"
 cp -a .env "$backup_dir/.env"
 cp -a data "$backup_dir/data"
@@ -46,7 +46,8 @@ printf '%s\n' "$backup_dir"
 ```
 
 출력된 `backup_dir`을 배포 기록에 남깁니다. DB가 실행 중이므로 이 복사본은 비상 보존본이고,
-배포 스크립트가 service를 정지한 뒤 만드는 data 백업도 반드시 성공해야 합니다.
+배포 스크립트가 service를 정지한 뒤 만드는 data 백업도 반드시 성공해야 합니다. `backups/`의
+`data_*`·`predeploy_*` 디렉터리는 생성 시점으로부터 3일이 지나면 매일 자동 삭제됩니다.
 
 ## 3. 서버 `.env` 수정
 
@@ -127,7 +128,7 @@ systemctl --user status aire-server.service --no-pager
 journalctl --user -u aire-server.service -n 150 --no-pager
 ```
 
-정상 revision은 `0015 (head)`입니다. migration 실패 시 downgrade하지 말고 service를 중지한 뒤
+정상 revision은 `0016 (head)`입니다. migration 실패 시 downgrade하지 말고 service를 중지한 뒤
 백업과 첫 오류를 보존합니다.
 
 ## 6. Legacy Transcript 이관
@@ -194,7 +195,7 @@ curl -fsS https://traip.mtvs2026.work/openapi.json -o /tmp/aire-openapi.json
 
 - HTTP 200
 - `database=ready`
-- `database_revision=0015`
+- `database_revision=0016`
 - `status=ready`, 또는 Mock fallback을 의도적으로 허용한 경우에만 `degraded`
 
 OpenAPI 경로를 검사합니다.
@@ -245,7 +246,7 @@ Recipe 응답은 검증된 돌도끼 재료·수량·작업대·시간을 직접
 ## 10. 서버 작업 완료 조건
 
 - `aire-server.service`가 `active`
-- Alembic `0015 (head)`
+- Alembic `0016 (head)`
 - 내부·공개 `/ready` HTTP 200
 - 실제 LLM 행렬 `passed`
 - 공개 OpenAPI의 필수 경로 누락 없음

@@ -21,7 +21,7 @@ class ReadinessResponse(BaseModel):
     status: Literal["ready", "degraded", "not_ready"]
     database: Literal["ready", "unavailable", "revision_mismatch"]
     database_revision: str | None
-    expected_revision: str = "0015"
+    expected_revision: str = "0016"
     llm: Literal["ready", "degraded"]
     configured_llm_provider: str
     fallback_provider: Literal["mock"] = "mock"
@@ -45,7 +45,7 @@ async def get_ready(
     try:
         async with request.app.state.database.engine.connect() as connection:
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-        database_state = "ready" if revision == "0015" else "revision_mismatch"
+        database_state = "ready" if revision == "0016" else "revision_mismatch"
     except SQLAlchemyError:
         database_state = "unavailable"
     if database_state != "ready":
