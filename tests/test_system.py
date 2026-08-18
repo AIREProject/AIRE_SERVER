@@ -33,9 +33,9 @@ async def test_ready_accepts_current_database_head() -> None:
     database = await make_database(settings)
     async with database.engine.begin() as connection:
         await connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
-        await connection.execute(text("INSERT INTO alembic_version VALUES ('0014')"))
+        await connection.execute(text("INSERT INTO alembic_version VALUES ('0015')"))
     with TestClient(create_app(settings)) as client:
         response = client.get("/ready")
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
-    assert response.json()["database_revision"] == "0014"
+    assert response.json()["database_revision"] == "0015"
