@@ -38,7 +38,7 @@ curl -fsS https://traip.mtvs2026.work/health
 ```bash
 cd /home/mtvs-1/workspace/AIRE_SERVER
 backup_stamp="$(date +%Y%m%d-%H%M%S)"
-backup_dir="/home/mtvs-1/backups/AIRE_SERVER-${backup_stamp}"
+backup_dir="/home/mtvs-1/workspace/AIRE_SERVER/backups/predeploy_${backup_stamp}"
 mkdir -p "$backup_dir"
 cp -a .env "$backup_dir/.env"
 cp -a data "$backup_dir/data"
