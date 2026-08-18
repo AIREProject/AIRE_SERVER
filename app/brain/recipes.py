@@ -415,11 +415,7 @@ class RecipeRepository:
         )
         station = _WORKBENCH_NAMES[recipe.required_workbench]
         result_amount = f" {recipe.result_amount}개" if recipe.result_amount != 1 else ""
-        duration = (
-            f" {_duration_text(recipe.duration_seconds)} 만에"
-            if recipe.duration_seconds > 0
-            else ""
-        )
+        duration = f" {_duration_text(recipe.duration_seconds)} 만에"
         result_label = f"{result.name_ko}{result_amount}"
         return (
             f"{topic(result_label)} {ingredients}로 "

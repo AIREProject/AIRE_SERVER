@@ -32,7 +32,7 @@ def test_iron_and_steel_ingots_include_both_crafting_paths() -> None:
     assert "석탄 1개" in fact.text
 
 
-def test_result_quantity_and_duration_are_rendered_when_present() -> None:
+def test_result_quantity_and_duration_are_always_rendered() -> None:
     repository = RecipeRepository()
 
     nail_fact = repository.fact_for("못 레시피")
@@ -42,7 +42,7 @@ def test_result_quantity_and_duration_are_rendered_when_present() -> None:
     assert "5개" in nail_fact.text
     assert "1초" in nail_fact.text
     assert bandage_fact is not None
-    assert "0초" not in bandage_fact.text
+    assert "0초" in bandage_fact.text
 
 
 def test_multiple_result_items_do_not_choose_one_recipe() -> None:
