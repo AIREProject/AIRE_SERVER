@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from .enemies import EnemyRepository
-from .intent import CommandLabel, ResourceSlot
+from .intent import CommandClassification, CommandLabel, ResourceSlot
 from .recipes import RecipeRepository
 from .resources import ResourceRepository
 
@@ -187,6 +187,53 @@ class CommandIntentParser:
         """Mock 공급자에서만 공격 동사가 있는지 확인한다. 적 이름이 앞에 붙어도 매칭된다."""
 
         return cls._ATTACK_VERB.search(cls.normalize(text)) is not None
+
+    @classmethod
+    def corroborate(
+        cls, text: str, proposed: CommandClassification
+    ) -> CommandClassification:
+        """LLM Command를 사용자 원문의 명시적 행동 요청과 대조한다.
+
+        Provider는 명령 계열만 제안한다. 실제 label과 Gather 슬롯·수량은 원문에 같은 계열의
+        요청 근거가 있을 때만 살아남는다. 일반 대화를 Provider가 Command로 오분류해도 여기서
+        UNKNOWN으로 닫히며, 지원 자원과 수량은 LLM 값이 아니라 canonical parser 결과를 쓴다.
+        """
+
+        rejected = CommandClassification(
+            command=CommandLabel.UNKNOWN,
+            resource=ResourceSlot.UNSPECIFIED,
+            quantity=None,
+        )
+        simple = cls.classify_simple_command(text)
+        if simple is not None:
+            if proposed.command is not simple:
+                return rejected
+            return CommandClassification(
+                command=simple,
+                resource=ResourceSlot.UNSPECIFIED,
+                quantity=None,
+            )
+        if cls.is_gather_command(text):
+            if (
+                proposed.command is not CommandLabel.GATHER_RESOURCE
+                or cls.is_gather_question(text)
+            ):
+                return rejected
+            resource, quantity = cls.resolve_gather(text)
+            return CommandClassification(
+                command=CommandLabel.GATHER_RESOURCE,
+                resource=resource,
+                quantity=quantity,
+            )
+        if cls.is_attack_command(text):
+            if proposed.command is not CommandLabel.ATTACK:
+                return rejected
+            return CommandClassification(
+                command=CommandLabel.ATTACK,
+                resource=ResourceSlot.UNSPECIFIED,
+                quantity=None,
+            )
+        return rejected
 
     @staticmethod
     def normalize(text: str) -> str:

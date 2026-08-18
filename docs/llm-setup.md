@@ -66,7 +66,9 @@ Local endpoint가 지원해야 하는 기능:
 - OpenAI-compatible Chat Completions
 - `response_format.type=json_schema`
 - strict JSON Schema output
-- `dialogue_output` 대사 JSON Schema output
+- `conversation_dialogue_output`의 text-only 일상대화 JSON Schema output
+- `dialogue_output`의 사실 기반 장면 JSON Schema output
+- `recipe_selection`의 검증 후보 ID·confidence JSON Schema output
 - 요청 body의 `chat_template_kwargs.enable_thinking=false`를 허용하거나 무시
 
 Base URL은 일반적으로 `/v1`까지 포함합니다. model name은 Local server의 model 목록에 등록된
@@ -121,23 +123,22 @@ Embedding server가 `dimensions` 인자를 지원하지 않으면 dimensions 값
 기본 흐름은 다음과 같습니다.
 
 ```text
-Chat/Situation
-→ data/transcripts/에 원문 전사
-→ background 추출·요약
-→ SQLite episodic_memories 저장
-→ 이후 관련 기억 회수
+인증된 player Message
+→ leased source outbox
+→ LLM이 기억 유형·중요도만 분류
+→ canonical Message 원문을 Memory에 저장
+→ 이후 scope와 관련성이 맞는 Active 기억 회수
 → 대사 Prompt의 [기억] 블록에 참고 정보로 전달
 ```
 
-주요 설정:
+주요 설정은 다음과 같습니다.
 
 ```dotenv
-LONG_TERM_MEMORY_ENABLED=true
-LONG_TERM_EXTRACT_EVERY_N_TURNS=3
-LONG_TERM_RECALL_LIMIT=3
-LONG_TERM_QUIET_SECONDS=90
-LONG_TERM_SESSION_END_SECONDS=600
-LONG_TERM_TICK_SECONDS=15
+MEMORY_WORKER_ENABLED=true
+MEMORY_WORKER_INTERVAL_SECONDS=5
+MEMORY_WORKER_LEASE_SECONDS=60
+MEMORY_WORKER_MAX_ATTEMPTS=3
+MEMORY_WORKER_BATCH_SIZE=32
 TRANSCRIPT_ENABLED=false
 TRANSCRIPT_DIR=data/transcripts
 TRANSCRIPT_RETENTION_DAYS=1
@@ -145,10 +146,13 @@ TRANSCRIPT_RETENTION_DAYS=1
 
 주의사항:
 
-- Mock LLM은 장기기억을 새로 만들지 않습니다.
-- Transcript를 끄면 새 기억을 추출할 원본이 없습니다.
-- 이미 DB에 저장된 기억의 회수는 Transcript 설정과 별개입니다.
-- 기억은 `AIRE_OPEN + demo-slot-1` 범위에서 UE/Web에 공유됩니다.
+- Mock LLM은 Message를 `Reject`로 분류하므로 새 장기기억을 만들지 않습니다.
+- Transcript는 개발 진단용이며 꺼져 있어도 canonical Message 기반 저장·회수는 동작합니다.
+- LLM 출력은 저장 text로 사용하지 않고 `decision`과 `importance`만 사용합니다.
+- Recipe·Command·현재 게임 상태·companion 발화는 Message 기억으로 저장하지 않습니다.
+- 기억은 profile + save-slot + companion scope에서 UE/Web에 공유됩니다.
+- Web 정정 후에는 최신 정정문만 검색과 Prompt 회상에 사용됩니다.
+- delete/reset된 기억과 source가 삭제된 기억은 Prompt에 들어가지 않습니다.
 - 기억은 확정 게임 사실이 아니라 대화 참고 정보로만 Prompt에 들어갑니다.
 
 ## 7. 연결 확인

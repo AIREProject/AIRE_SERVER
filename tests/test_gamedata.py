@@ -10,7 +10,7 @@ from app.gamedata.dataset import (
 def test_dataset_has_expected_erd_row_counts() -> None:
     assert DATASET.items is ITEMS
     assert DATASET.recipes is RECIPES
-    assert len(ITEMS) == 27
+    assert len(ITEMS) == 26
     assert len(RECIPES) == 13
     assert len(SMELTING_RECIPES) == 4
     assert len(ENEMIES) == 3

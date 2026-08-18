@@ -1,6 +1,11 @@
 from app.brain.command_intent import RECIPE_PATTERN
 from app.brain.intent import RecipeQueryMode
-from app.brain.recipes import RecipeQuery, RecipeRepository, RecipeTarget
+from app.brain.recipes import (
+    RecipeQuery,
+    RecipeRepository,
+    RecipeSelection,
+    RecipeTarget,
+)
 from app.gamedata.dataset import ITEMS, RECIPES, SMELTING_RECIPES
 
 
@@ -103,6 +108,17 @@ def test_recipe_detail_accepts_attached_recipe_suffix() -> None:
         assert parsed.targets[0].recipe_ids == ("recipe-3",)
 
 
+def test_recipe_detail_accepts_optional_spaces_inside_verified_alias() -> None:
+    repository = RecipeRepository()
+
+    for query in ("엉성한붕대 레시피 알려줘", "엉성한 붕대 레시피 알려줘"):
+        parsed = repository.query_for(query)
+
+        assert parsed is not None
+        assert parsed.mode is RecipeQueryMode.DETAIL
+        assert parsed.targets[0].recipe_ids == ("recipe-1",)
+
+
 def test_attached_suffix_does_not_turn_unknown_substrings_into_targets() -> None:
     repository = RecipeRepository()
 
@@ -141,6 +157,47 @@ def test_recipe_unknown_name_and_id_are_not_guessed() -> None:
     assert unknown_id is not None
     assert unknown_id.mode is RecipeQueryMode.UNKNOWN_RECIPE
     assert unknown_id.targets == ()
+
+
+def test_natural_language_selection_is_promoted_only_after_id_and_confidence_validation() -> None:
+    repository = RecipeRepository()
+
+    resolved = repository.query_from_selection(
+        RecipeSelection(
+            decision="match", candidate_recipe_ids=("recipe-1",), confidence=92
+        )
+    )
+    low_confidence = repository.query_from_selection(
+        RecipeSelection(
+            decision="match", candidate_recipe_ids=("recipe-1",), confidence=79
+        )
+    )
+    invented = repository.query_from_selection(
+        RecipeSelection(
+            decision="match", candidate_recipe_ids=("recipe-999",), confidence=100
+        )
+    )
+
+    assert resolved is not None and resolved.mode is RecipeQueryMode.DETAIL
+    assert resolved.targets[0].recipe_ids == ("recipe-1",)
+    assert low_confidence is None
+    assert invented is None
+
+
+def test_natural_language_ambiguity_keeps_only_validated_candidates() -> None:
+    repository = RecipeRepository()
+    parsed = repository.query_from_selection(
+        RecipeSelection(
+            decision="ambiguous",
+            candidate_recipe_ids=("recipe-3", "recipe-4"),
+            confidence=75,
+        )
+    )
+
+    assert parsed is not None and parsed.mode is RecipeQueryMode.AMBIGUOUS
+    assert repository.clarification_for(parsed) == (
+        "돌도끼, 돌곡괭이 중 어떤 제작법을 말하는지 알려 줘."
+    )
 
 
 def test_recipe_follow_up_uses_only_a_validated_target() -> None:

@@ -124,7 +124,7 @@ X-Request-ID: chat-game-1
       {
         "container_id": "AIRE.Inventory.MAKO",
         "free_slots": 12,
-        "item_totals": [{"item_id": "Branch", "count": 4}],
+        "item_totals": [{"item_id": "PlantStem", "count": 4}],
         "truncated": false
       }
     ]
@@ -155,6 +155,11 @@ fresh bounded query로 실제 wood 대상을 다시 검증한다. Mobile surface
 이 strict Game 범위와 별개로 기존 `OfflineTask/Gathering` 계약(wood·stone, 수량 1~50,
 미지정 시 50)을 유지한다.
 
+LLM의 Command label과 resource/quantity는 제안일 뿐이다. Backend는 이동·대기·중지·복귀·
+채집·공격마다 사용자 원문에 같은 행동 계열의 명시적 요청이 있는지 다시 확인한다. Gather
+resource와 quantity는 원문 parser 결과로 덮어쓰며 질문, 복수·손상 수량, Provider label 불일치와
+일반 대화 오분류는 Command 후보로 승격하지 않는다.
+
 `Command.CraftItem`은 AX-I06의 첫 제작 수직 슬라이스다. UE가 이 명령을 allowlist에 넣은
 경우에만 명시적인 `철검`/`Sword_Iron`/`IronSword` 제작 요청이 후보가 된다. 후보 parameters는
 항상 다음과 같고, 다른 Recipe ID나 수량은 후보를 만들지 않는다.
@@ -174,11 +179,17 @@ fresh bounded query로 실제 wood 대상을 다시 검증한다. Mobile surface
 후보를 만들지 않는다. `game_context`의 위치·위협·작업·인벤토리 사실만으로도 후보를 만들지
 않으며, 후보를 받은 UE Command Gateway가 Recipe·재료·상태·작업대를 최종 검증한다.
 
-Recipe 질문 응답은 검증된 Recipe fact를 그대로 반환하며 LLM이 재작성하지 않는다. 명시적
-제작 요청의 `display_text`도 `알겠어. 철검 하나를 만들게.`로 고정하고, 같은 응답에 위
-`CraftItem` 후보를 반드시 포함한다. 두 대사 경로에는 Inventory·주변 자원 같은 World Context
-fact를 섞지 않아 다른 Item을 Recipe 재료처럼 말하거나 Command 후보가 대사와 분리되는 일을
-막는다.
+Recipe 질문은 먼저 stable ID와 검증 alias를 결정론적으로 찾는다. 대상을 찾지 못한 상세 질문만
+LLM이 서버가 제공한 후보 중 최대 세 개의 Recipe ID와 confidence를 구조화 출력으로 선택한다.
+단일 후보는 confidence 80 이상일 때만 상세 조회로 승격하고, 복수 후보는 60 이상일 때 표시
+이름으로 확인 질문을 돌려준다. 목록·비교·직전 참조 질의는 이 fallback으로 상세 하나로 바꾸지
+않으며, 등록되지 않은 ID와 낮은 confidence는 거부한다.
+
+최종 Recipe 응답은 어느 경로에서도 검증된 Recipe fact를 그대로 반환하며 LLM이 재료·수량·
+작업대·시간을 생성하거나 재작성하지 않는다. 명시적 제작 요청의 `display_text`도 `알겠어. 철검
+하나를 만들게.`로 고정하고, 같은 응답에 위 `CraftItem` 후보를 반드시 포함한다. 두 대사 경로에는
+Inventory·주변 자원 같은 World Context fact를 섞지 않아 다른 Item을 Recipe 재료처럼 말하거나
+Command 후보가 대사와 분리되는 일을 막는다.
 
 ### 4.2 Mobile 요청
 
@@ -192,7 +203,7 @@ Header는 `Authorization: Bearer AIRE_WEB`을 사용하고 다음 field를 바�
   "save_slot_id": "demo-slot-1",
   "companion_id": "mako",
   "message_id": "mobile-message-1",
-  "user_message": "오늘 뭐 할까?",
+  "user_message": "나무30개 캐줘",
   "surface": "mobile",
   "time_context": {
     "source": "RealWorld",
@@ -201,12 +212,16 @@ Header는 `Authorization: Bearer AIRE_WEB`을 사용하고 다음 field를 바�
     "period": "Afternoon"
   },
   "recent_event_ids": [],
-  "allowed_commands": []
+  "allowed_commands": ["Command.GatherResource"]
 }
 ```
 
 Mobile은 `game_context`를 생략하거나 `null`로 보낸다. `{}` 및 임의 자유 형식 object는
 허용하지 않는다. `surface=game`에서는 `game_context`가 반드시 위 Context v1이어야 한다.
+Mobile Web은 Offline Gathering 변환을 위해 `Command.GatherResource` 하나만 광고한다. 검증된
+채집 요청은 UE Command 후보를 반환하지 않고 `offline_task_id`가 있는 `InProgress` Task 한
+건으로 저장한다. `나무30개`처럼 자원과 수량을 붙여 쓴 입력도 wood 30으로 해석하며, Task 전체
+상태는 `GET /api/v1/tasks`에서 확인한다.
 
 현재 `TimeContext`는 `GameWorld`와 `RealWorld` 모두 `day/hour/period` 구조를 사용합니다.
 `observed_at`, `timezone`, `interaction_mode`는 계약 field가 아닙니다.
@@ -232,7 +247,7 @@ Mobile은 `game_context`를 생략하거나 `null`로 보낸다. `{}` 및 임의
     {
       "container_id": "AIRE.Inventory.MAKO",
       "free_slots": 12,
-      "item_totals": [{"item_id": "Branch", "count": 4}],
+      "item_totals": [{"item_id": "PlantStem", "count": 4}],
       "truncated": false
     }
   ]
@@ -412,7 +427,7 @@ X-Request-ID: task-create-1
   "request_id": "task-create-1",
   "save_slot_id": "demo-slot-1",
   "task_type": "Gathering",
-  "item_id": "Branch",
+  "item_id": "PlantStem",
   "quantity": 5
 }
 ```
@@ -422,6 +437,9 @@ Task type은 `Gathering`, `Crafting`, `Scouting`, 상태는 `Pending`, `InProgre
 
 `quantity`가 있는 시간 기반 Task는 생성 즉시 `InProgress`로 시작합니다. 수량 없는 legacy
 Task만 `Pending`으로 시작해 GameClient의 `/start`를 기다립니다.
+
+나무 재료의 canonical Item ID는 `PlantStem` 하나입니다. `Branch`는 migration 0015에서
+기존 Task·Recipe·Game State 참조와 함께 `PlantStem`으로 병합되며 새 요청에는 허용하지 않습니다.
 
 ### 6.3 목록
 

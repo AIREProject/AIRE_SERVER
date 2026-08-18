@@ -28,6 +28,7 @@ from app.offline_task_models import (
 # 정책 migration 이전 Task나 정책 행이 없는 콘텐츠에만 쓰는 legacy fallback.
 # 새 지원 Task는 offline_task_policies 값을 seconds_per_item에 snapshot해 계산한다.
 _GATHER_SECONDS_PER_ITEM = 600.0
+_PLANT_STEM_SECONDS_PER_ITEM = 5.0
 
 
 def _crafting_seconds_per_item(item_id: str | None) -> float | None:
@@ -44,6 +45,8 @@ def _crafting_seconds_per_item(item_id: str | None) -> float | None:
 
 def _seconds_per_item(task_type: OfflineTaskType, item_id: str | None) -> float | None:
     if task_type is OfflineTaskType.GATHERING:
+        if item_id == "PlantStem":
+            return _PLANT_STEM_SECONDS_PER_ITEM
         return _GATHER_SECONDS_PER_ITEM
     if task_type is OfflineTaskType.CRAFTING:
         return _crafting_seconds_per_item(item_id)
@@ -266,9 +269,7 @@ class OfflineTaskService:
             raise OfflineTaskTransitionError
         rate = self._task_seconds_per_item(task)
         if rate is None or rate <= 0:
-            raise OfflineTaskInvalidRequestError(
-                "No duration model exists for this task type yet."
-            )
+            raise OfflineTaskInvalidRequestError("No duration model exists for this task type yet.")
         requested = task.quantity if task.quantity is not None else MAX_GATHER_QUANTITY
         elapsed_seconds = (datetime.now(UTC) - self._as_utc(task.started_at)).total_seconds()
         result_quantity = min(requested, int(elapsed_seconds // rate))
@@ -369,9 +370,7 @@ class OfflineTaskService:
     @staticmethod
     def _validate_item(task_type: OfflineTaskType, item_id: str | None) -> None:
         if task_type in {OfflineTaskType.GATHERING, OfflineTaskType.CRAFTING} and item_id is None:
-            raise OfflineTaskInvalidRequestError(
-                "Gathering and Crafting tasks require item_id."
-            )
+            raise OfflineTaskInvalidRequestError("Gathering and Crafting tasks require item_id.")
 
     @staticmethod
     def _require_web(identity: AuthenticatedDevice) -> None:

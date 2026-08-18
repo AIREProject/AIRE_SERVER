@@ -33,13 +33,14 @@ _DISPLAY_NAMES: dict[ResourceId, str] = {
 }
 
 # 한국어는 교착어라 "나무를"처럼 조사가 붙는다. 단순 부분 문자열 검색은
-# "부싯돌"을 돌로 잘못 잡으므로 앞은 어절 경계, 뒤는 조사까지만 허용한다.
+# "부싯돌"을 돌로 잘못 잡으므로 앞은 어절 경계로 막고, 뒤는 조사나 수량 숫자만 허용한다.
+# 숫자는 모바일 입력에서 흔한 ``나무30개``를 canonical wood로 읽기 위한 경계다.
 _PARTICLES = "을|를|은|는|이|가|도|만|와|과|랑|이랑|하고"
 _PUNCTUATION_PATTERN = re.compile(r"[^\w\s]", flags=re.UNICODE)
 
 
 def _alias_pattern(alias: str) -> re.Pattern[str]:
-    return re.compile(rf"(?:^|\s){re.escape(alias)}(?:{_PARTICLES})?(?=\s|$)")
+    return re.compile(rf"(?:^|\s){re.escape(alias)}(?:{_PARTICLES})?(?=\s|\d|$)")
 
 
 class GatherParameters(BaseModel):

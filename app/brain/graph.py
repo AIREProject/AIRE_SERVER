@@ -342,12 +342,19 @@ def build_companion_graph(
             state["text"]
         ):
             return {"pending_answered": False}
-        slot = await llm.resolve_pending(state["text"], pending)
-        if slot is None:
+        proposed_slot = await llm.resolve_pending(state["text"], pending)
+        matched_resources = resources.find_all(state["text"])
+        if len(matched_resources) == 1:
+            verified_slot = ResourceSlot(matched_resources[0].value)
+        elif len(matched_resources) > 1:
+            verified_slot = ResourceSlot.UNSPECIFIED
+        else:
+            verified_slot = None
+        if proposed_slot is None or proposed_slot is not verified_slot:
             return {"pending_answered": False}
         return {
             "pending_answered": True,
-            "resource": slot,
+            "resource": verified_slot,
             "quantity": pending.quantity,
         }
 
@@ -371,6 +378,15 @@ def build_companion_graph(
             # Game GatherResource 후보 경계로 들어오지 못하게 한다.
             intent = TopIntent.UNKNOWN
             recipe_query = None
+        if intent is TopIntent.RECIPE and recipes.should_resolve_natural_language(
+            state["text"], recipe_query
+        ):
+            selection = await llm.resolve_recipe(
+                state["text"], recipes.selection_options()
+            )
+            resolved_query = recipes.query_from_selection(selection)
+            if resolved_query is not None:
+                recipe_query = resolved_query
         if intent is TopIntent.RECIPE and recipe_query is None:
             recipe_query = RecipeQuery(RecipeQueryMode.AMBIGUOUS)
         query_mode: RecipeQueryMode | RequestQueryMode | None = (
@@ -385,7 +401,8 @@ def build_companion_graph(
         }
 
     async def command_classify_node(state: CompanionState) -> CompanionUpdate:
-        classification = await llm.classify_command(state["text"])
+        proposed = await llm.classify_command(state["text"])
+        classification = CommandIntentParser.corroborate(state["text"], proposed)
         craft_requested = recipes.is_craft_request(state["text"])
         return {
             "command_label": classification.command,
@@ -467,6 +484,17 @@ def build_companion_graph(
         if CommandType.GATHER_RESOURCE not in turn.allowed_actions:
             return await decline(state)
 
+        # 질문을 행동으로 바꾸거나, 원문에 수량 표현이 있는데 parser가 온전한 정수 하나로
+        # 확정하지 못한 요청을 기본 50개로 바꾸지 않는다.
+        if CommandIntentParser.is_gather_question(state["text"]):
+            return await decline(state)
+        if (
+            turn.surface is Surface.MOBILE
+            and CommandIntentParser.has_gather_quantity(state["text"])
+            and quantity is None
+        ):
+            return await decline(state)
+
         if slot is ResourceSlot.UNSPECIFIED:
             names = "와 ".join(resources.supported_names())
             # 되묻기를 이어가는 것은 방금 그 질문에 모호하게 답했을 때뿐이다.
@@ -536,6 +564,12 @@ def build_companion_graph(
             }
 
         scene, fallback = _GATHER_SCENES[resource]
+        if turn.surface is Surface.MOBILE:
+            task_quantity = quantity or resources.max_quantity
+            fallback = (
+                f"좋아. {resources.display_name(resource)} {task_quantity}개를 모으는 "
+                "작업을 시작할게."
+            )
         # 수량은 플레이어가 말했을 때만 흐른다. 확정 사실에 넣어야 대사에 숫자를 쓸 수 있다.
         facts = () if quantity is None else (f"요청 수량은 {quantity}개다",)
         parameters = GatherParameters(resource=resource, quantity=quantity)
@@ -575,7 +609,7 @@ def build_companion_graph(
                 }
             if query.mode is RecipeQueryMode.AMBIGUOUS:
                 return {
-                    "display_text": "어떤 제작법을 말하는지 대상 하나만 알려 줘.",
+                    "display_text": recipes.clarification_for(query),
                     "action": None,
                 }
             if query.mode is RecipeQueryMode.UNKNOWN_RECIPE:

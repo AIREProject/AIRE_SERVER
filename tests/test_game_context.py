@@ -49,7 +49,7 @@ def context_payload() -> dict[str, Any]:
                 "free_slots": 48,
                 "item_totals": [
                     {"item_id": "Stone", "count": 5},
-                    {"item_id": "Branch", "count": 4},
+                    {"item_id": "PlantStem", "count": 4},
                 ],
                 "truncated": False,
             },
@@ -58,7 +58,7 @@ def context_payload() -> dict[str, Any]:
                 "free_slots": 12,
                 "item_totals": [
                     {"item_id": "IronOre", "count": 2},
-                    {"item_id": "Branch", "count": 4},
+                    {"item_id": "PlantStem", "count": 4},
                 ],
                 "truncated": True,
             },
@@ -151,9 +151,7 @@ def test_websocket_invalid_context_is_normalized_to_invalid_request(
     payload["game_context"]["threat"]["count"] = 33
 
     with client.websocket_connect("/api/v1/chat") as websocket:
-        websocket.send_json(
-            {"type": "chat", "token": token, "payload": payload}
-        )
+        websocket.send_json({"type": "chat", "token": token, "payload": payload})
         message = websocket.receive_json()
 
     assert message["type"] == "error"
@@ -219,15 +217,13 @@ def test_context_v1_rejects_unsupported_version() -> None:
         (("threat", "nearest_kind"), "Enemy/TrenchCrawler"),
         (("nearby_resources", 0, "kind"), "wood path"),
         (("available_workstations", 0), "UObject'/Game/Workbench.Basic'"),
-        (("inventories", 0, "item_totals", 0, "item_id"), "Item/Branch"),
+        (("inventories", 0, "item_totals", 0, "item_id"), "Item/PlantStem"),
         (("location_id",), []),
         (("threat", "nearest_kind"), {}),
-        (("inventories", 0, "item_totals", 0, "item_id"), ["Branch"]),
+        (("inventories", 0, "item_totals", 0, "item_id"), ["PlantStem"]),
     ],
 )
-def test_context_v1_rejects_invalid_stable_ids(
-    path: tuple[str | int, ...], value: Any
-) -> None:
+def test_context_v1_rejects_invalid_stable_ids(path: tuple[str | int, ...], value: Any) -> None:
     payload = context_payload()
     target: Any = payload
     for key in path[:-1]:
@@ -257,9 +253,7 @@ def test_context_v1_rejects_invalid_stable_ids(
         ),
     ],
 )
-def test_context_v1_rejects_duplicate_collection_entries(
-    field: str, value: list[Any]
-) -> None:
+def test_context_v1_rejects_duplicate_collection_entries(field: str, value: list[Any]) -> None:
     payload = context_payload()
     payload[field] = value
 
@@ -270,8 +264,8 @@ def test_context_v1_rejects_duplicate_collection_entries(
 def test_context_v1_rejects_duplicate_inventory_item_ids() -> None:
     payload = context_payload()
     payload["inventories"][0]["item_totals"] = [
-        {"item_id": "Branch", "count": 1},
-        {"item_id": "Branch", "count": 2},
+        {"item_id": "PlantStem", "count": 1},
+        {"item_id": "PlantStem", "count": 2},
     ]
 
     with pytest.raises(ValidationError):
@@ -281,9 +275,7 @@ def test_context_v1_rejects_duplicate_inventory_item_ids() -> None:
 @pytest.mark.parametrize(
     "change",
     [
-        lambda payload: payload["threat"].update(
-            {"present": False, "count": 2}
-        ),
+        lambda payload: payload["threat"].update({"present": False, "count": 2}),
         lambda payload: payload["threat"].update(
             {"present": True, "count": 0, "nearest_kind": None}
         ),
@@ -321,9 +313,7 @@ def test_context_v1_rejects_out_of_range_counts(change: Any) -> None:
 
 def test_context_v1_rejects_oversized_arrays() -> None:
     payload = context_payload()
-    payload["nearby_resources"] = [
-        {"kind": f"resource-{index}", "count": 1} for index in range(9)
-    ]
+    payload["nearby_resources"] = [{"kind": f"resource-{index}", "count": 1} for index in range(9)]
     with pytest.raises(ValidationError):
         GameContextV1.model_validate(payload)
 
@@ -362,9 +352,7 @@ def test_chat_request_requires_context_for_game_and_allows_mobile_without_it() -
     with pytest.raises(ValidationError):
         ChatRequest.model_validate(make_chat_payload())
 
-    request = ChatRequest.model_validate(
-        make_chat_payload(game_context=context_payload())
-    )
+    request = ChatRequest.model_validate(make_chat_payload(game_context=context_payload()))
     assert request.surface is Surface.GAME
     assert request.game_context is not None
 
@@ -433,9 +421,7 @@ def make_service(
     )
 
 
-def make_request(
-    context: dict[str, Any], *, request_id: str = "request-context-1"
-) -> ChatRequest:
+def make_request(context: dict[str, Any], *, request_id: str = "request-context-1") -> ChatRequest:
     payload = make_chat_payload(game_context=context)
     payload["request_id"] = request_id
     return ChatRequest.model_validate(payload)
@@ -497,7 +483,7 @@ async def test_service_passes_all_structured_context_values_to_dialogue_facts(
         "Working",
         "AIRE.Inventory.MAKO",
         "AIRE.Inventory.SharedStorage",
-        "Branch",
+        "PlantStem",
         "IronOre",
         "Stone",
     ):
@@ -516,10 +502,14 @@ async def test_service_passes_all_structured_context_values_to_dialogue_facts(
         "Workbench.Advanced",
         "Workbench.Basic",
     )
-    assert tuple(
-        inventory.container_id for inventory in turn.world_context.inventories
-    ) == ("AIRE.Inventory.MAKO", "AIRE.Inventory.SharedStorage")
-    assert turn.world_context.inventories[0].item_totals[0].item_id == "Branch"
+    assert tuple(inventory.container_id for inventory in turn.world_context.inventories) == (
+        "AIRE.Inventory.MAKO",
+        "AIRE.Inventory.SharedStorage",
+    )
+    assert tuple(item.item_id for item in turn.world_context.inventories[0].item_totals) == (
+        "IronOre",
+        "PlantStem",
+    )
     with pytest.raises(FrozenInstanceError):
         turn.world_context.location_id = "mutated"  # type: ignore[misc]
 

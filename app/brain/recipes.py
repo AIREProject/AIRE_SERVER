@@ -3,6 +3,9 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.gamedata.dataset import DATASET, GameDataSet, Item, Recipe, SmeltingRecipe
 
@@ -78,7 +81,11 @@ _RECIPE_SUFFIX_PATTERN = r"(?:레시피|제작법|만드는?\s*(?:법|방법))"
 
 
 def _recipe_alias_pattern(alias: str) -> re.Pattern[str]:
-    escaped = re.escape(alias).replace(r"\ ", r"\s+")
+    # Korean item names are commonly typed with or without the display-name spaces
+    # (``엉성한 붕대`` / ``엉성한붕대``). Only spaces already present in a verified
+    # alias become optional; arbitrary substrings are still protected by the normal
+    # word boundary and Recipe suffix rules below.
+    escaped = re.escape(alias).replace(r"\ ", r"\s*")
     return re.compile(
         rf"(?<!\w){escaped}(?:"
         rf"{_RECIPE_PARTICLE_PATTERN}?(?!\w)|"
@@ -110,6 +117,44 @@ class RecipeFactResult:
 
     text: str
     fact_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RecipeSelectionOption:
+    """LLM이 선택할 수 있는 검증된 결과물과 대표 stable Recipe ID."""
+
+    recipe_id: str
+    result_name: str
+    aliases: tuple[str, ...]
+
+
+class RecipeSelection(BaseModel):
+    """자연어 해석 결과. Recipe 내용은 없고 allowlist ID와 확신도만 담는다."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    decision: Literal["match", "ambiguous", "no_match"]
+    candidate_recipe_ids: tuple[str, ...] = Field(max_length=3)
+    confidence: int = Field(ge=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_candidate_count(self) -> RecipeSelection:
+        count = len(self.candidate_recipe_ids)
+        if self.decision == "match" and count != 1:
+            raise ValueError("match requires exactly one candidate Recipe ID")
+        if self.decision == "ambiguous" and not 2 <= count <= 3:
+            raise ValueError("ambiguous requires two or three candidate Recipe IDs")
+        if self.decision == "no_match" and count != 0:
+            raise ValueError("no_match must not include a candidate Recipe ID")
+        return self
+
+
+NO_RECIPE_SELECTION = RecipeSelection(
+    decision="no_match", candidate_recipe_ids=(), confidence=0
+)
+
+_RECIPE_MATCH_CONFIDENCE = 80
+_RECIPE_AMBIGUOUS_CONFIDENCE = 60
 
 
 def _join_ingredients(ingredients: Iterable[str]) -> str:
@@ -193,6 +238,15 @@ class RecipeRepository:
         )
         self._all_result_aliases: tuple[str, ...] = tuple(
             alias for aliases in aliases_by_result.values() for alias in aliases
+        )
+        self._selection_options: tuple[RecipeSelectionOption, ...] = tuple(
+            RecipeSelectionOption(
+                recipe_id=target.recipe_ids[0],
+                result_name=result_items[item_id].name_ko,
+                aliases=aliases_by_result[item_id],
+            )
+            for item_id, target in sorted(self._targets_by_result.items())
+            if target.recipe_ids
         )
 
     def fact_for(self, query: str) -> DialogueFact | None:
@@ -332,6 +386,68 @@ class RecipeRepository:
         """Mock 라우터가 제작법 의도를 찾을 때 사용할 결과물 별칭을 반환한다."""
 
         return self._all_result_aliases
+
+    def selection_options(self) -> tuple[RecipeSelectionOption, ...]:
+        """Provider에 노출할 수 있는 검증된 후보 목록을 반환한다."""
+
+        return self._selection_options
+
+    def should_resolve_natural_language(
+        self, query: str, parsed: RecipeQuery | None
+    ) -> bool:
+        """정확 매칭 뒤 LLM 후보 선택을 시도해도 되는 상세 질문인지 판정한다."""
+
+        if parsed is not None and parsed.mode not in {
+            RecipeQueryMode.AMBIGUOUS,
+            RecipeQueryMode.UNKNOWN_RECIPE,
+        }:
+            return False
+        # 목록·비교·직전 참조는 각각 별도 구조가 있다. 후보 선택으로 상세 질문 하나로
+        # 바꾸면 사용자의 요청 의미가 달라지므로 자연어 fallback을 사용하지 않는다.
+        return not any(
+            pattern.search(query) is not None
+            for pattern in (
+                _RECIPE_LIST_PATTERN,
+                _RECIPE_COMPARE_PATTERN,
+                _RECIPE_REFERENCE_PATTERN,
+            )
+        )
+
+    def query_from_selection(self, selection: RecipeSelection) -> RecipeQuery | None:
+        """LLM 선택을 allowlist와 확신도에 대조해 검증된 query로 승격한다."""
+
+        targets: list[RecipeTarget] = []
+        for recipe_id in selection.candidate_recipe_ids:
+            target = self._targets_by_recipe_id.get(recipe_id.casefold())
+            if target is None or target in targets:
+                return None
+            targets.append(target)
+
+        if (
+            selection.decision == "match"
+            and selection.confidence >= _RECIPE_MATCH_CONFIDENCE
+            and len(targets) == 1
+        ):
+            return RecipeQuery(RecipeQueryMode.DETAIL, tuple(targets))
+        if (
+            selection.decision == "ambiguous"
+            and selection.confidence >= _RECIPE_AMBIGUOUS_CONFIDENCE
+            and 2 <= len(targets) <= 3
+        ):
+            return RecipeQuery(RecipeQueryMode.AMBIGUOUS, tuple(targets))
+        return None
+
+    def clarification_for(self, query: RecipeQuery) -> str:
+        """검증된 복수 후보가 있으면 표시 이름만 사용해 확인 질문을 만든다."""
+
+        names = tuple(
+            self._result_items[target.result_item_id].name_ko
+            for target in query.targets
+            if target.result_item_id in self._result_items
+        )
+        if len(names) >= 2:
+            return f"{', '.join(names)} 중 어떤 제작법을 말하는지 알려 줘."
+        return "어떤 제작법을 말하는지 대상 하나만 알려 줘."
 
     def craft_recipe_id_for(self, query: str) -> str | None:
         """명시적인 철검 제작 요청만 AX-I06 Recipe ID로 해석한다.

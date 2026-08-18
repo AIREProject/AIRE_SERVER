@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.brain.dialogue import SURFACE_PROFILES, DialogueOutput, DialogueScene, DialogueSpec
+from app.brain.dialogue import DialogueOutput, DialogueScene, DialogueSpec
 from app.brain.intent import CommandLabel, ResourceSlot, TopIntent
 from app.brain.llm import (
     LocalLLMProvider,
@@ -17,6 +17,7 @@ from app.brain.llm import (
     _dialogue_user_message,
     build_llm_provider,
 )
+from app.brain.recipes import RecipeSelectionOption
 from app.brain.store import ConversationTurn
 from app.models import Surface
 from app.settings import Settings
@@ -134,9 +135,7 @@ async def test_local_provider_uses_chat_completions() -> None:
     client.chat.completions.create = AsyncMock(
         return_value=SimpleNamespace(
             choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content=dialogue_json("반가워!", "conversation"))
-                )
+                SimpleNamespace(message=SimpleNamespace(content='{"text":"반가워!"}'))
             ]
         )
     )
@@ -156,17 +155,11 @@ async def test_local_provider_uses_chat_completions() -> None:
     assert call["max_tokens"] == 160
     assert call["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
     dialogue_schema = call["response_format"]["json_schema"]
-    assert dialogue_schema["name"] == "dialogue_output"
-    assert set(dialogue_schema["schema"]["required"]) == {
-        "text",
-        "purpose",
-        "fact_references",
-        "memory_references",
-        "situation_references",
-        "accepts_command",
-    }
+    assert dialogue_schema["name"] == "conversation_dialogue_output"
+    assert set(dialogue_schema["schema"]["required"]) == {"text"}
     assert call["messages"][0]["role"] == "system"
     assert "확정 사실" in call["messages"][0]["content"]
+    assert "출력 JSON에는 text만 넣는다" in call["messages"][0]["content"]
     assert call["messages"][1] == {
         "role": "user",
         "content": (
@@ -177,6 +170,44 @@ async def test_local_provider_uses_chat_completions() -> None:
         ),
     }
     assert spec.fallback not in str(call["messages"])
+
+
+@pytest.mark.asyncio
+async def test_local_provider_resolves_natural_language_to_allowlisted_recipe_ids() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=(
+                            '{"decision":"match","candidate_recipe_ids":["recipe-1"],'
+                            '"confidence":94}'
+                        )
+                    )
+                )
+            ]
+        )
+    )
+    with patch("openai.AsyncOpenAI", return_value=client):
+        provider = LocalLLMProvider(local_config())
+
+    result = await provider.resolve_recipe(
+        "상처에 대충 감는 거 만드는 법",
+        (
+            RecipeSelectionOption(
+                recipe_id="recipe-1",
+                result_name="엉성한 붕대",
+                aliases=("엉성한 붕대", "붕대"),
+            ),
+        ),
+    )
+
+    assert result.candidate_recipe_ids == ("recipe-1",)
+    call = client.chat.completions.create.await_args.kwargs
+    assert call["response_format"]["json_schema"]["name"] == "recipe_selection"
+    assert "재료·수량·작업대·시간" in call["messages"][0]["content"]
+    assert "recipe-1 | 엉성한 붕대" in call["messages"][1]["content"]
 
 
 def test_missing_local_key_keeps_mock_provider() -> None:
@@ -439,9 +470,7 @@ async def test_local_provider_falls_back_when_call_fails() -> None:
         user_text="안녕",
         relationship_state="High",
     )
-    assert (await provider.generate_dialogue(spec)).text == (
-        SURFACE_PROFILES[Surface.GAME].provider_retry
-    )
+    assert (await provider.generate_dialogue(spec)).text == spec.fallback
 
 
 @pytest.mark.asyncio
@@ -495,9 +524,7 @@ async def test_dialogue_system_prompt_switches_with_the_surface() -> None:
         return_value=SimpleNamespace(
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(
-                        content=dialogue_json("응, 나 여기 있어.", "conversation")
-                    )
+                    message=SimpleNamespace(content='{"text":"응, 나 여기 있어."}')
                 )
             ]
         )

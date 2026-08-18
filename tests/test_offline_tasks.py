@@ -50,9 +50,7 @@ async def _make_device(
                 token_lookup_id=lookup_id,
                 token_hash=PROTECTOR.hash_value("device-token", token),
                 creation_request_id=request_id,
-                game_registration_key=(
-                    profile_id if role is DeviceRole.GAME_CLIENT else None
-                ),
+                game_registration_key=(profile_id if role is DeviceRole.GAME_CLIENT else None),
                 created_at=now,
                 last_used_at=None,
                 revoked_at=None,
@@ -79,13 +77,6 @@ async def task_clients() -> Any:
     async with database.session_factory() as session:
         session.add_all(
             [
-                ItemModel(
-                    item_id="Branch",
-                    item_type="Material",
-                    name_ko="나뭇가지",
-                    aliases=["나뭇가지"],
-                    description="나무에서 떨어진 가지.",
-                ),
                 ItemModel(
                     item_id="PlantStem",
                     item_type="Material",
@@ -170,7 +161,7 @@ def _create_gathering_task(client: TestClient, web_headers: dict[str, str], requ
             "request_id": request_id,
             "save_slot_id": "slot-a",
             "task_type": "Gathering",
-            "item_id": "Branch",
+            "item_id": "PlantStem",
         },
     )
     assert created.status_code == 200
@@ -190,7 +181,7 @@ def test_web_creates_and_game_advances_task(task_clients: Any) -> None:
             "request_id": "task-create-1",
             "save_slot_id": "slot-a",
             "task_type": "Gathering",
-            "item_id": "Branch",
+            "item_id": "PlantStem",
         },
     )
 
@@ -220,12 +211,8 @@ def test_task_creation_is_idempotent_for_same_scope(task_clients: Any) -> None:
         "task_type": "Scouting",
     }
 
-    first = client.post(
-        "/api/v1/tasks", headers=_headers(task_clients["web_token"]), json=body
-    )
-    second = client.post(
-        "/api/v1/tasks", headers=_headers(task_clients["web_token"]), json=body
-    )
+    first = client.post("/api/v1/tasks", headers=_headers(task_clients["web_token"]), json=body)
+    second = client.post("/api/v1/tasks", headers=_headers(task_clients["web_token"]), json=body)
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -269,9 +256,7 @@ async def test_quantity_task_starts_immediately_and_reports_live_progress(
     )
 
     assert listed.status_code == 200
-    live_task = next(
-        value for value in listed.json()["tasks"] if value["task_id"] == task_id
-    )
+    live_task = next(value for value in listed.json()["tasks"] if value["task_id"] == task_id)
     assert live_task["status"] == "InProgress"
     assert live_task["progress_quantity"] == 2
     assert live_task["result_quantity"] is None
@@ -283,9 +268,7 @@ def test_web_deletes_owned_pending_and_in_progress_tasks(task_clients: Any) -> N
     game_headers = _headers(task_clients["game_token"])
 
     pending_id = _create_gathering_task(client, web_headers, "task-delete-pending")
-    in_progress_id = _create_gathering_task(
-        client, web_headers, "task-delete-in-progress"
-    )
+    in_progress_id = _create_gathering_task(client, web_headers, "task-delete-in-progress")
     started = client.post(f"/api/v1/tasks/{in_progress_id}/start", headers=game_headers)
     assert started.status_code == 200
 
@@ -428,13 +411,13 @@ async def test_list_shows_live_progress_without_mutating_status(task_clients: An
     client = task_clients["client"]
     web_headers = _headers(task_clients["web_token"])
     task_id = _create_gathering_task(client, web_headers, "task-progress-1")
-    # 25분 경과 → 10분당 1개이므로 2개까지 진행됐어야 한다.
+    # 12초 경과 → 5초당 1개이므로 2개까지 진행됐어야 한다.
     await _force_task_state(
         task_clients["database"],
         task_id,
         status="InProgress",
         quantity=5,
-        started_at=datetime.now(UTC) - timedelta(minutes=25),
+        started_at=datetime.now(UTC) - timedelta(seconds=12),
     )
 
     first = client.get("/api/v1/tasks", headers=web_headers, params={"save_slot_id": "slot-a"})
@@ -522,13 +505,13 @@ async def test_mobile_collect_finalizes_partial_progress_immediately(task_client
     client = task_clients["client"]
     web_headers = _headers(task_clients["web_token"])
     task_id = _create_gathering_task(client, web_headers, "task-collect-1")
-    # 요청 수량은 50개지만 45분(4개 분량)만 지난 상태 — 다 안 채워도 그 자리에서 확정.
+    # 요청 수량은 50개지만 22초(4개 분량)만 지난 상태 — 다 안 채워도 그 자리에서 확정.
     await _force_task_state(
         task_clients["database"],
         task_id,
         status="InProgress",
         quantity=50,
-        started_at=datetime.now(UTC) - timedelta(minutes=45),
+        started_at=datetime.now(UTC) - timedelta(seconds=22),
     )
 
     collected = client.post(f"/api/v1/tasks/{task_id}/collect", headers=web_headers)
@@ -549,7 +532,7 @@ async def test_first_unit_not_ready_stays_in_progress(task_clients: Any) -> None
         task_id,
         status="InProgress",
         quantity=5,
-        started_at=datetime.now(UTC) - timedelta(minutes=5),
+        started_at=datetime.now(UTC) - timedelta(seconds=4),
     )
 
     completed = client.post(
@@ -576,7 +559,7 @@ async def test_game_complete_applies_same_elapsed_calc_for_quantity_tasks(
         task_id,
         status="InProgress",
         quantity=50,
-        started_at=datetime.now(UTC) - timedelta(minutes=45),
+        started_at=datetime.now(UTC) - timedelta(seconds=22),
     )
 
     completed = client.post(f"/api/v1/tasks/{task_id}/complete", headers=game_headers)

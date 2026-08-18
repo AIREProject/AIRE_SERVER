@@ -90,6 +90,7 @@ Admin 변경은 해당 DB에만 적용되며 새 서버의 빈 DB에는 자동 �
 
 - Protocol과 DB에서는 display name 대신 stable ID를 사용합니다.
 - Item과 Recipe 참조는 현재 seed ID와 정확히 일치해야 합니다.
+- 나무 재료는 `PlantStem` 하나를 사용하며 legacy `Branch`는 migration 0015에서 병합합니다.
 - UE UObject 이름, Actor name, 배열 index를 서버 ID로 사용하지 않습니다.
 - ID를 변경하면 기존 Offline Task와 Recipe foreign key에 영향을 줄 수 있습니다.
 

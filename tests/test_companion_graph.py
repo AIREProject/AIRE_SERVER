@@ -32,7 +32,7 @@ from app.brain.memory import (
     SessionSummary,
     SessionSummarySpec,
 )
-from app.brain.recipes import RecipeRepository
+from app.brain.recipes import RecipeRepository, RecipeSelection, RecipeSelectionOption
 from app.brain.resources import MAX_GATHER_QUANTITY, ResourceRepository
 from app.brain.store import MAX_ASK_COUNT, InMemoryConversationStore, PendingSlot
 from app.gamedata.dataset import ITEMS
@@ -103,6 +103,26 @@ class ExplodingLLMProvider(LLMProvider):
         raise RuntimeError("consolidation down")
 
 
+class ForcedCommandProvider(MockLLMProvider):
+    def __init__(self, classification: CommandClassification) -> None:
+        super().__init__()
+        self._classification = classification
+
+    async def classify_top(self, text: str, *, clarification_pending: bool) -> TopIntent:
+        del text, clarification_pending
+        return TopIntent.COMMAND
+
+    async def classify_command(self, text: str) -> CommandClassification:
+        del text
+        return self._classification
+
+
+class ForcedPendingProvider(MockLLMProvider):
+    async def resolve_pending(self, text: str, pending: PendingSlot) -> ResourceSlot | None:
+        del text, pending
+        return ResourceSlot.WOOD
+
+
 @pytest.mark.parametrize(
     ("intent", "destination"),
     [
@@ -166,6 +186,7 @@ async def test_every_terminal_node_fills_display_text(text: str) -> None:
     [
         # 수량을 말했을 때만 수량이 흐른다.
         ("나무 20개 캐 줘", {"resource": "wood", "quantity": 20}),
+        ("나무30개 캐줘", {"resource": "wood", "quantity": 30}),
         ("바위 3개 캐 줘", {"resource": "stone", "quantity": 3}),
         # 수량 미명시는 실패가 아니다. 키를 비워 게임이 기본량을 정하게 한다.
         ("나무를 모아 줘", {"resource": "wood"}),
@@ -186,6 +207,63 @@ async def test_gather_emits_action_with_resolved_parameters(
     assert action is not None
     assert action.type is CommandType.GATHER_RESOURCE
     assert action.parameters == expected_parameters
+
+
+@pytest.mark.parametrize(
+    "classification",
+    [
+        CommandClassification(
+            command=CommandLabel.FOLLOW_PLAYER,
+            resource=ResourceSlot.UNSPECIFIED,
+            quantity=None,
+        ),
+        CommandClassification(
+            command=CommandLabel.GATHER_RESOURCE,
+            resource=ResourceSlot.WOOD,
+            quantity=30,
+        ),
+        CommandClassification(
+            command=CommandLabel.ATTACK,
+            resource=ResourceSlot.UNSPECIFIED,
+            quantity=None,
+        ),
+    ],
+)
+async def test_provider_cannot_turn_general_conversation_into_a_command(
+    classification: CommandClassification,
+) -> None:
+    final = await make_graph(ForcedCommandProvider(classification)).ainvoke(
+        {"turn": make_turn("오늘 기분 어때?"), "text": "오늘 기분 어때?"}
+    )
+
+    assert final.get("action") is None
+
+
+async def test_provider_command_family_must_match_the_user_utterance() -> None:
+    provider = ForcedCommandProvider(
+        CommandClassification(
+            command=CommandLabel.ATTACK,
+            resource=ResourceSlot.UNSPECIFIED,
+            quantity=None,
+        )
+    )
+    final = await make_graph(provider).ainvoke(
+        {
+            "turn": make_turn("나무30개 캐줘", surface=Surface.MOBILE),
+            "text": "나무30개 캐줘",
+        }
+    )
+
+    assert final.get("action") is None
+
+
+async def test_provider_cannot_answer_a_pending_resource_with_unrelated_text() -> None:
+    brain = CompanionBrain(ForcedPendingProvider())
+    await say(brain, "저것 좀 캐 줘", key="forced-pending")
+
+    reply = await say(brain, "안녕", key="forced-pending")
+
+    assert reply.action is None
 
 
 @pytest.mark.parametrize(
@@ -542,6 +620,20 @@ class RecordingProvider(MockLLMProvider):
         return await super().generate_dialogue(spec)
 
 
+class NaturalRecipeProvider(RecordingProvider):
+    def __init__(self, selection: RecipeSelection) -> None:
+        super().__init__()
+        self.selection = selection
+        self.recipe_inputs: list[str] = []
+
+    async def resolve_recipe(
+        self, text: str, options: tuple[RecipeSelectionOption, ...]
+    ) -> RecipeSelection:
+        assert options
+        self.recipe_inputs.append(text)
+        return self.selection
+
+
 async def test_dialogue_candidate_flag_matches_the_emitted_action() -> None:
     accepted_provider = RecordingProvider()
     accepted = await say(
@@ -596,6 +688,64 @@ async def test_recipe_list_detail_and_compare_bypass_dialogue_generation() -> No
     assert compared.provenance.repository_match is True
     assert compared.provenance.final_response_source == "game_repository"
     assert compared.provenance.fact_ids == ("recipe:recipe-3", "recipe:recipe-4")
+
+
+async def test_natural_language_recipe_uses_only_the_validated_repository_fact() -> None:
+    llm = NaturalRecipeProvider(
+        RecipeSelection(
+            decision="match", candidate_recipe_ids=("recipe-1",), confidence=95
+        )
+    )
+    reply = await say(
+        CompanionBrain(llm),
+        "상처에 대충 감는 거 어떻게 만들지?",
+        key="recipe-natural-language",
+    )
+
+    assert llm.recipe_inputs == ["상처에 대충 감는 거 어떻게 만들지?"]
+    assert llm.dialogue_specs == []
+    assert "엉성한 붕대" in reply.text
+    assert reply.provenance is not None
+    assert reply.provenance.repository_match is True
+    assert reply.provenance.fact_ids == ("recipe:recipe-1",)
+
+
+async def test_exact_recipe_alias_bypasses_natural_language_resolution() -> None:
+    llm = NaturalRecipeProvider(
+        RecipeSelection(
+            decision="match", candidate_recipe_ids=("recipe-4",), confidence=100
+        )
+    )
+    reply = await say(
+        CompanionBrain(llm),
+        "엉성한붕대 레시피 알려줘",
+        key="recipe-exact-bypass",
+    )
+
+    assert llm.recipe_inputs == []
+    assert "엉성한 붕대" in reply.text
+    assert reply.provenance is not None
+    assert reply.provenance.fact_ids == ("recipe:recipe-1",)
+
+
+async def test_natural_language_recipe_rejects_an_invented_recipe_id() -> None:
+    llm = NaturalRecipeProvider(
+        RecipeSelection(
+            decision="match", candidate_recipe_ids=("recipe-999",), confidence=100
+        )
+    )
+    reply = await say(
+        CompanionBrain(llm),
+        "상처에 대충 감는 거 어떻게 만들지?",
+        key="recipe-invented-id",
+    )
+
+    assert reply.text == (
+        "확인된 제작법에 없는 대상이야. 이름이나 Recipe ID를 다시 확인해 줘."
+    )
+    assert reply.action is None
+    assert reply.provenance is not None
+    assert reply.provenance.repository_match is False
 
 
 async def test_ambiguous_and_unknown_recipe_use_distinct_fixed_responses() -> None:

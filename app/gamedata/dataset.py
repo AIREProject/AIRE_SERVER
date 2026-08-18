@@ -88,9 +88,9 @@ ITEMS: tuple[Item, ...] = (
     Item(
         "PlantStem",
         "Material",
-        "식물 줄기",
-        ("식물 줄기", "풀 줄기", "줄기"),
-        "들판에서 흔하게 구할 수 있는 식물 줄기. 붕대나 밧줄을 엮는 데 쓰임.",
+        "나무",
+        ("나무", "목재", "나뭇가지", "나무 가지", "가지", "식물 줄기", "풀 줄기", "줄기"),
+        "필드에서 구할 수 있는 기본 나무 재료. 도구, 붕대와 밧줄 제작에 쓰임.",
     ),
     Item(
         "ShoddyBandage",
@@ -105,13 +105,6 @@ ITEMS: tuple[Item, ...] = (
         "밧줄",
         ("밧줄", "로프"),
         "식물 줄기를 꼬아 만든 질긴 밧줄. 갑옷이나 작업대를 고정할 때 필수적임.",
-    ),
-    Item(
-        "Branch",
-        "Material",
-        "나뭇가지",
-        ("나뭇가지", "나무 가지", "가지"),
-        "나무에서 떨어진 굵은 나뭇가지. 기초적인 도구의 손잡이나 땔감으로 씀.",
     ),
     Item(
         "Stone",
@@ -285,7 +278,7 @@ RECIPES: tuple[Recipe, ...] = (
         1,
         "None (Handcraft)",
         0.0,
-        (Ingredient("Branch", 2), Ingredient("Stone", 1)),
+        (Ingredient("PlantStem", 2), Ingredient("Stone", 1)),
     ),
     Recipe(
         "recipe-4",
@@ -293,7 +286,7 @@ RECIPES: tuple[Recipe, ...] = (
         1,
         "None (Handcraft)",
         0.0,
-        (Ingredient("Branch", 2), Ingredient("Stone", 2)),
+        (Ingredient("PlantStem", 2), Ingredient("Stone", 2)),
     ),
     Recipe(
         "recipe-5",
@@ -301,7 +294,7 @@ RECIPES: tuple[Recipe, ...] = (
         1,
         "None (Handcraft)",
         3.0,
-        (Ingredient("Branch", 5), Ingredient("Stone", 3)),
+        (Ingredient("PlantStem", 5), Ingredient("Stone", 3)),
     ),
     Recipe("recipe-6", "Nail_Iron", 5, "Basic Workbench", 1.0, (Ingredient("IronIngot", 1),)),
     Recipe(

@@ -176,27 +176,20 @@ async def test_render_uses_fallback_for_invalid_dialogue() -> None:
     assert await render(provider, spec) == spec.fallback
 
 
-@pytest.mark.parametrize("surface", list(Surface))
-@pytest.mark.parametrize("reason", ["provider_timeout", "provider_unavailable"])
-def test_conversation_retryable_provider_failures_ask_for_retry(
-    surface: Surface,
-    reason: str,
-) -> None:
-    spec = DialogueSpec(scene="conversation", fallback="기존 대사", surface=surface)
-
-    assert provider_failure_fallback(spec, reason) == SURFACE_PROFILES[surface].provider_retry
-
-
 @pytest.mark.parametrize(
     "reason",
-    ["invalid_structured_output", "empty_output", "sanitizer_rejection"],
+    [
+        "provider_timeout",
+        "provider_unavailable",
+        "invalid_structured_output",
+        "empty_output",
+        "sanitizer_rejection",
+    ],
 )
-def test_conversation_invalid_provider_output_uses_safe_guidance(reason: str) -> None:
+def test_conversation_provider_failure_keeps_safe_scene_fallback(reason: str) -> None:
     spec = DialogueSpec(scene="conversation", fallback="기존 대사")
 
-    assert provider_failure_fallback(spec, reason) == (
-        SURFACE_PROFILES[Surface.GAME].provider_invalid
-    )
+    assert provider_failure_fallback(spec, reason) == spec.fallback
 
 
 @pytest.mark.parametrize(

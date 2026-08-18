@@ -25,6 +25,7 @@ from .contract import FallbackReason, ProviderCallProvenance
 from .dialogue import (
     SCENE_GUIDE,
     SURFACE_PROFILES,
+    ConversationDialogueOutput,
     DialogueOutput,
     DialogueSpec,
     provider_failure_fallback,
@@ -50,6 +51,11 @@ from .memory import (
     MemoryExtractionSpec,
     SessionSummary,
     SessionSummarySpec,
+)
+from .recipes import (
+    NO_RECIPE_SELECTION,
+    RecipeSelection,
+    RecipeSelectionOption,
 )
 from .resources import ResourceRepository
 from .store import PendingSlot
@@ -182,6 +188,13 @@ _MEMORY_CLASSIFIER_PROMPT = """검증된 플레이어 원문 한 줄을 장기�
 
 DIALOGUE_PROMPT_VERSION = "companion-v4"
 
+_FULL_DIALOGUE_OUTPUT_CONTRACT = """출력은 JSON Schema를 따른다. purpose는 [지시]의 장면 이름과
+같아야 한다. fact, memory, situation reference에는 실제로 사용한 0부터 시작하는 인덱스만
+넣는다. 근거를 쓰지 않았으면 빈 배열로 둔다. accepts_command는 [Command Candidate]가 있음일
+때만 true다."""
+_CONVERSATION_OUTPUT_CONTRACT = """이 요청은 일상 대화다. 출력 JSON에는 text만 넣는다.
+purpose, reference와 Command 수락 여부는 Backend가 정하므로 생성하지 않는다."""
+
 # 창구별로 갈리는 것은 `{tone}` 한 블록뿐이다. 사실 규칙과 기록 취급은 창구와 무관해서
 # 여기 그대로 남는다 — 말투를 바꾸려다 사실 가드가 창구마다 달라지는 일이 없어야 한다.
 _DIALOGUE_PROMPT_TEMPLATE = """[prompt_version] {prompt_version}
@@ -210,16 +223,39 @@ Command Candidate가 없으면 행동을 수락하거나 실행하겠다고 약�
 추측을 사실처럼 말하거나, 기억을 확정 게임 사실로 승격하거나, 과도한 애착·독점·영원한 약속을
 표현하지 않는다. 되묻지 않는다(단, 지시가 되물으라고 하면 예외). 이모지와 따옴표를 쓰지 않는다.
 
-출력은 JSON Schema를 따른다. purpose는 [지시]의 장면 이름과 같아야 한다. fact, memory,
-situation reference에는 실제로 사용한 0부터 시작하는 인덱스만 넣는다. 근거를 쓰지 않았으면 빈
-배열로 둔다. accepts_command는 [Command Candidate]가 있음일 때만 true다."""
+{output_contract}"""
 
 
-def _dialogue_prompt(surface: Surface, relationship_state: str) -> str:
+def _dialogue_prompt(surface: Surface, relationship_state: str, scene: str) -> str:
     return _DIALOGUE_PROMPT_TEMPLATE.format(
         prompt_version=DIALOGUE_PROMPT_VERSION,
         tone=SURFACE_PROFILES[surface].tone,
         relationship_state=relationship_state,
+        output_contract=(
+            _CONVERSATION_OUTPUT_CONTRACT
+            if scene == "conversation"
+            else _FULL_DIALOGUE_OUTPUT_CONTRACT
+        ),
+    )
+
+
+def _dialogue_schema(spec: DialogueSpec) -> tuple[str, dict[str, object]]:
+    if spec.scene == "conversation":
+        return "conversation_dialogue_output", ConversationDialogueOutput.model_json_schema()
+    return "dialogue_output", DialogueOutput.model_json_schema()
+
+
+def _parse_dialogue_output(content: str, spec: DialogueSpec) -> DialogueOutput:
+    if spec.scene != "conversation":
+        return DialogueOutput.model_validate_json(content)
+    generated = ConversationDialogueOutput.model_validate_json(content)
+    return DialogueOutput(
+        text=generated.text,
+        purpose="conversation",
+        fact_references=(),
+        memory_references=(),
+        situation_references=(),
+        accepts_command=False,
     )
 
 
@@ -262,6 +298,18 @@ _CONSOLIDATION_PROMPT = f"""너는 생존 게임 AI 동료 마코의 기억을 �
 - **내용을 버리지 않는다.** 합치는 것은 두 줄을 한 줄로 줄이는 일이지 하나를 고르는 일이
   아니다. 합쳐서 뜻이 달라질 것 같으면 그 묶음은 만들지 않는다.
 - 합칠 것이 하나도 없으면 빈 배열로 둔다."""
+
+
+_RECIPE_RESOLVER_PROMPT = """사용자의 자연어가 아래 검증된 제작 결과 중 무엇을 뜻하는지
+분류한다. 재료·수량·작업대·시간이나 답변 문장을 생성하지 않는다. candidate_recipe_ids에는
+[검증 후보]에 그대로 적힌 Recipe ID만 복사한다.
+
+- match: 발화가 후보 하나를 분명하게 가리킴. 후보 ID 하나만 반환한다.
+- ambiguous: 후보 둘 또는 셋이 실제로 모두 가능함. 가능한 ID만 반환한다.
+- no_match: 근거가 부족하거나 어떤 후보도 가리키지 않음. ID는 빈 배열로 둔다.
+
+대명사만 있는 질문, 후보와 무관한 이름, 단순히 비슷해 보이는 단어는 no_match다. confidence는
+의미가 후보를 가리킨다고 확신하는 정도를 0부터 100까지의 정수로 반환한다."""
 
 
 _SPEAKER_LABELS = {"player": "플레이어", "companion": "마코", "situation": "상황"}
@@ -323,6 +371,16 @@ def _dialogue_user_message(spec: DialogueSpec) -> str:
     return "\n".join(lines)
 
 
+def _recipe_resolver_input(
+    text: str, options: tuple[RecipeSelectionOption, ...]
+) -> str:
+    candidates = "\n".join(
+        f"- {option.recipe_id} | {option.result_name} | 별칭: {', '.join(option.aliases)}"
+        for option in options
+    )
+    return f"[검증 후보]\n{candidates}\n[사용자]\n{text}"
+
+
 class LLMProvider(ABC):
     """의도 분류와 사실 기반 대사 생성을 제공하는 공통 인터페이스."""
 
@@ -337,6 +395,14 @@ class LLMProvider(ABC):
 
         del text
         return REJECT_MEMORY
+
+    async def resolve_recipe(
+        self, text: str, options: tuple[RecipeSelectionOption, ...]
+    ) -> RecipeSelection:
+        """검증 후보 중 자연어가 가리키는 Recipe ID만 선택한다."""
+
+        del text, options
+        return NO_RECIPE_SELECTION
 
     @abstractmethod
     async def classify_command(self, text: str) -> CommandClassification:
@@ -427,6 +493,14 @@ class MockLLMProvider(LLMProvider):
     async def classify_memory(self, text: str) -> MemoryClassification:
         del text
         return REJECT_MEMORY
+
+    async def resolve_recipe(
+        self, text: str, options: tuple[RecipeSelectionOption, ...]
+    ) -> RecipeSelection:
+        del text, options
+        started_at = perf_counter()
+        self._record_mock_call("resolve_recipe", started_at)
+        return NO_RECIPE_SELECTION
 
     async def classify_command(self, text: str) -> CommandClassification:
         """기존 정규식 파서의 우선순위를 재현하는 결정론적 분류를 수행한다."""
@@ -637,6 +711,61 @@ class OpenAIProvider(LLMProvider):
             raise _EmptyOutputError
         return MemoryClassification.model_validate_json(response.output_text)
 
+    async def resolve_recipe(
+        self, text: str, options: tuple[RecipeSelectionOption, ...]
+    ) -> RecipeSelection:
+        """검증된 Recipe ID allowlist 안에서만 자연어 대상을 선택한다."""
+
+        if not options:
+            return NO_RECIPE_SELECTION
+        started_at = perf_counter()
+        try:
+            response = await self._client.responses.create(
+                model=self._model,
+                input=[
+                    {"role": "system", "content": _RECIPE_RESOLVER_PROMPT},
+                    {"role": "user", "content": _recipe_resolver_input(text, options)},
+                ],
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "recipe_selection",
+                        "strict": True,
+                        "schema": RecipeSelection.model_json_schema(),
+                    }
+                },
+                temperature=self._classify_temperature,
+                max_output_tokens=self._classify_max_tokens,
+                reasoning={"effort": "minimal"},
+            )
+            if not isinstance(response.output_text, str) or not response.output_text.strip():
+                raise _EmptyOutputError
+            result = RecipeSelection.model_validate_json(response.output_text)
+            _record_provider_call(
+                step="resolve_recipe",
+                configured_provider="openai",
+                effective_provider="openai",
+                succeeded=True,
+                fallback_used=False,
+                fallback_reason=None,
+                started_at=started_at,
+            )
+            return result
+        except Exception as error:
+            result = await _without_provider_observation(
+                self._fallback.resolve_recipe(text, options)
+            )
+            _record_provider_call(
+                step="resolve_recipe",
+                configured_provider="openai",
+                effective_provider="mock",
+                succeeded=False,
+                fallback_used=True,
+                fallback_reason=_fallback_reason(error),
+                started_at=started_at,
+            )
+            return result
+
     async def classify_command(self, text: str) -> CommandClassification:
         """Responses API 구조화 출력으로 명령 계열과 채집 슬롯을 분류한다."""
 
@@ -739,21 +868,24 @@ class OpenAIProvider(LLMProvider):
 
         started_at = perf_counter()
         try:
+            schema_name, schema = _dialogue_schema(spec)
             response = await self._client.responses.create(
                 model=self._model,
                 input=[
                     {
                         "role": "system",
-                        "content": _dialogue_prompt(spec.surface, spec.relationship_state),
+                        "content": _dialogue_prompt(
+                            spec.surface, spec.relationship_state, spec.scene
+                        ),
                     },
                     {"role": "user", "content": _dialogue_user_message(spec)},
                 ],
                 text={
                     "format": {
                         "type": "json_schema",
-                        "name": "dialogue_output",
+                        "name": schema_name,
                         "strict": True,
-                        "schema": DialogueOutput.model_json_schema(),
+                        "schema": schema,
                     }
                 },
                 temperature=self._dialogue_temperature,
@@ -762,7 +894,7 @@ class OpenAIProvider(LLMProvider):
             )
             if not isinstance(response.output_text, str) or not response.output_text.strip():
                 raise _EmptyOutputError
-            result = DialogueOutput.model_validate_json(response.output_text)
+            result = _parse_dialogue_output(response.output_text, spec)
             _record_provider_call(
                 step="generate_dialogue",
                 configured_provider="openai",
@@ -976,6 +1108,62 @@ class LocalLLMProvider(LLMProvider):
             raise _EmptyOutputError
         return MemoryClassification.model_validate_json(content)
 
+    async def resolve_recipe(
+        self, text: str, options: tuple[RecipeSelectionOption, ...]
+    ) -> RecipeSelection:
+        """검증된 Recipe ID allowlist 안에서만 자연어 대상을 선택한다."""
+
+        if not options:
+            return NO_RECIPE_SELECTION
+        started_at = perf_counter()
+        try:
+            response = await self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": _RECIPE_RESOLVER_PROMPT},
+                    {"role": "user", "content": _recipe_resolver_input(text, options)},
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "recipe_selection",
+                        "strict": True,
+                        "schema": RecipeSelection.model_json_schema(),
+                    },
+                },
+                temperature=self._classify_temperature,
+                max_tokens=self._classify_max_tokens,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            )
+            content = response.choices[0].message.content
+            if content is None or not content.strip():
+                raise _EmptyOutputError
+            result = RecipeSelection.model_validate_json(content)
+            _record_provider_call(
+                step="resolve_recipe",
+                configured_provider="local",
+                effective_provider="local",
+                succeeded=True,
+                fallback_used=False,
+                fallback_reason=None,
+                started_at=started_at,
+            )
+            return result
+        except Exception as error:
+            result = await _without_provider_observation(
+                self._fallback.resolve_recipe(text, options)
+            )
+            _record_provider_call(
+                step="resolve_recipe",
+                configured_provider="local",
+                effective_provider="mock",
+                succeeded=False,
+                fallback_used=True,
+                fallback_reason=_fallback_reason(error),
+                started_at=started_at,
+            )
+            return result
+
     async def classify_command(self, text: str) -> CommandClassification:
         """로컬 모델의 JSON Schema 출력으로 명령 계열과 채집 슬롯을 분류한다."""
 
@@ -1084,21 +1272,24 @@ class LocalLLMProvider(LLMProvider):
 
         started_at = perf_counter()
         try:
+            schema_name, schema = _dialogue_schema(spec)
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=[
                     {
                         "role": "system",
-                        "content": _dialogue_prompt(spec.surface, spec.relationship_state),
+                        "content": _dialogue_prompt(
+                            spec.surface, spec.relationship_state, spec.scene
+                        ),
                     },
                     {"role": "user", "content": _dialogue_user_message(spec)},
                 ],
                 response_format={
                     "type": "json_schema",
                     "json_schema": {
-                        "name": "dialogue_output",
+                        "name": schema_name,
                         "strict": True,
-                        "schema": DialogueOutput.model_json_schema(),
+                        "schema": schema,
                     },
                 },
                 temperature=self._dialogue_temperature,
@@ -1108,7 +1299,7 @@ class LocalLLMProvider(LLMProvider):
             content = response.choices[0].message.content
             if content is None or not content.strip():
                 raise _EmptyOutputError
-            result = DialogueOutput.model_validate_json(content)
+            result = _parse_dialogue_output(content, spec)
             _record_provider_call(
                 step="generate_dialogue",
                 configured_provider="local",
@@ -1262,6 +1453,15 @@ class TimingLLMProvider(LLMProvider):
             return await self._inner.classify_memory(text)
         finally:
             _log_step("classify_memory", started_at)
+
+    async def resolve_recipe(
+        self, text: str, options: tuple[RecipeSelectionOption, ...]
+    ) -> RecipeSelection:
+        started_at = perf_counter()
+        try:
+            return await self._inner.resolve_recipe(text, options)
+        finally:
+            _log_step("resolve_recipe", started_at)
 
     async def classify_command(self, text: str) -> CommandClassification:
         started_at = perf_counter()

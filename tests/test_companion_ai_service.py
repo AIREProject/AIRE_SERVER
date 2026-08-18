@@ -257,15 +257,15 @@ async def test_gather_without_allowlist_returns_dialogue_only(
     assert result.command_candidates == []
 
 
-async def _seed_branch_item(database: Database) -> None:
+async def _seed_plant_stem_item(database: Database) -> None:
     async with database.session_factory() as db_session:
         db_session.add(
             ItemModel(
-                item_id="Branch",
+                item_id="PlantStem",
                 item_type="Material",
-                name_ko="나뭇가지",
-                aliases=["나뭇가지"],
-                description="나무에서 떨어진 가지.",
+                name_ko="나무",
+                aliases=["나무"],
+                description="필드에서 구할 수 있는 기본 나무 재료.",
             )
         )
         await db_session.commit()
@@ -274,7 +274,7 @@ async def _seed_branch_item(database: Database) -> None:
 async def test_mobile_gather_creates_offline_task(
     database: Database, session: AsyncSession
 ) -> None:
-    await _seed_branch_item(database)
+    await _seed_plant_stem_item(database)
     identity, _token = await make_authenticated_device(
         database, PROTECTOR, role=DeviceRole.WEB_CLIENT
     )
@@ -294,14 +294,21 @@ async def test_mobile_gather_creates_offline_task(
 
     async with database.session_factory() as check_session:
         rows = (
-            await check_session.execute(
-                select(OfflineTaskModel).where(OfflineTaskModel.profile_id == identity.profile_id)
+            (
+                await check_session.execute(
+                    select(OfflineTaskModel).where(
+                        OfflineTaskModel.profile_id == identity.profile_id
+                    )
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert len(rows) == 1
     assert rows[0].task_id == result.offline_task_id
     assert rows[0].task_type == "Gathering"
-    assert rows[0].item_id == "Branch"
+    assert rows[0].item_id == "PlantStem"
+    assert rows[0].seconds_per_item == 5.0
     # 채팅 경로는 살아있는 GameClient가 없어 Pending을 건너뛰고 바로 시작한다.
     assert rows[0].status == "InProgress"
     # 수량 미지정 요청은 상한치(MAX_GATHER_QUANTITY)를 요청 수량으로 삼는다.
@@ -311,7 +318,7 @@ async def test_mobile_gather_creates_offline_task(
 async def test_mobile_gather_with_quantity_stores_requested_amount(
     database: Database, session: AsyncSession
 ) -> None:
-    await _seed_branch_item(database)
+    await _seed_plant_stem_item(database)
     identity, _token = await make_authenticated_device(
         database, PROTECTOR, role=DeviceRole.WEB_CLIENT
     )
@@ -328,18 +335,57 @@ async def test_mobile_gather_with_quantity_stores_requested_amount(
 
     async with database.session_factory() as check_session:
         rows = (
-            await check_session.execute(
-                select(OfflineTaskModel).where(OfflineTaskModel.profile_id == identity.profile_id)
+            (
+                await check_session.execute(
+                    select(OfflineTaskModel).where(
+                        OfflineTaskModel.profile_id == identity.profile_id
+                    )
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert rows[0].task_id == result.offline_task_id
     assert rows[0].quantity == 20
+
+
+async def test_mobile_attached_quantity_creates_visible_in_progress_task(
+    database: Database, session: AsyncSession
+) -> None:
+    await _seed_plant_stem_item(database)
+    identity, _token = await make_authenticated_device(
+        database, PROTECTOR, role=DeviceRole.WEB_CLIENT
+    )
+    service = make_service()
+
+    result = await respond(
+        service,
+        identity,
+        session,
+        "나무30개 캐줘",
+        allowed_commands=[CommandType.GATHER_RESOURCE],
+        surface=Surface.MOBILE,
+    )
+
+    assert result.command_candidates == []
+    assert result.offline_task_id is not None
+    assert result.display_text == "좋아. 나무 30개를 모으는 작업을 시작할게."
+    async with database.session_factory() as check_session:
+        task = (
+            await check_session.execute(
+                select(OfflineTaskModel).where(OfflineTaskModel.task_id == result.offline_task_id)
+            )
+        ).scalar_one()
+    assert task.status == "InProgress"
+    assert task.item_id == "PlantStem"
+    assert task.quantity == 30
+    assert task.seconds_per_item == 5.0
 
 
 async def test_mobile_gather_task_creation_is_idempotent(
     database: Database, session: AsyncSession
 ) -> None:
-    await _seed_branch_item(database)
+    await _seed_plant_stem_item(database)
     identity, _token = await make_authenticated_device(
         database, PROTECTOR, role=DeviceRole.WEB_CLIENT
     )
@@ -367,10 +413,16 @@ async def test_mobile_gather_task_creation_is_idempotent(
 
     async with database.session_factory() as check_session:
         rows = (
-            await check_session.execute(
-                select(OfflineTaskModel).where(OfflineTaskModel.profile_id == identity.profile_id)
+            (
+                await check_session.execute(
+                    select(OfflineTaskModel).where(
+                        OfflineTaskModel.profile_id == identity.profile_id
+                    )
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert len(rows) == 1
 
 
@@ -659,9 +711,7 @@ async def test_generated_draft_retry_does_not_call_llm_again(
 
     operation = (
         await session.execute(
-            select(ChatOperationModel).where(
-                ChatOperationModel.request_id == "req-draft-retry"
-            )
+            select(ChatOperationModel).where(ChatOperationModel.request_id == "req-draft-retry")
         )
     ).scalar_one()
     assert operation.state == "Generated"
@@ -702,16 +752,12 @@ async def test_completed_chat_replays_after_service_restart(
 ) -> None:
     request = make_request("안녕, 마코", request_id="req-restart-replay")
     async with database.session_factory() as first_session:
-        first = await make_service().create_response(
-            request, identity, first_session, PROTECTOR
-        )
+        first = await make_service().create_response(request, identity, first_session, PROTECTOR)
 
     replay_provider = RecordingProvider()
     restarted = make_service(llm=replay_provider)
     async with database.session_factory() as second_session:
-        replay = await restarted.create_response(
-            request, identity, second_session, PROTECTOR
-        )
+        replay = await restarted.create_response(request, identity, second_session, PROTECTOR)
 
     assert replay == first
     assert replay_provider.dialogue_specs == []
@@ -725,9 +771,7 @@ async def test_conversation_key_carries_multi_turn_state(
     service = make_service()
     allowed = [CommandType.GATHER_RESOURCE]
 
-    asked = await respond(
-        service, identity, session, "저것 좀 캐 줘", allowed_commands=allowed
-    )
+    asked = await respond(service, identity, session, "저것 좀 캐 줘", allowed_commands=allowed)
     answered = await respond(
         service,
         identity,

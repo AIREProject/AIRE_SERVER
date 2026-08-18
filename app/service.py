@@ -92,7 +92,7 @@ if TYPE_CHECKING:
 # app/brain/resources.py 의 ResourceId 는 브레인이 채집을 판단하는 축이고, 이 매핑은
 # 그 판단을 Offline_Task 계약(app/offline_task_models.py)으로 옮기는 순수 번역이다.
 _GATHER_ITEM_IDS: dict[ResourceId, str] = {
-    ResourceId.WOOD: "Branch",
+    ResourceId.WOOD: "PlantStem",
     ResourceId.STONE: "Stone",
 }
 

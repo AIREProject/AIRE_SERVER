@@ -8,11 +8,10 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from app.brain import CompanionBrain, CompanionTurn, SituationTurn
-from app.brain.dialogue import SURFACE_PROFILES, DialogueOutput, DialogueSpec
+from app.brain.dialogue import ConversationDialogueOutput, DialogueOutput, DialogueSpec
 from app.brain.llm import LocalLLMProvider, MockLLMProvider
 from app.credentials import CredentialProtector
 from app.main import create_app
-from app.models import Surface
 from tests.conftest import make_authenticated_device, make_database, make_settings
 
 PROTECTOR = CredentialProtector(SecretStr("test-only-pepper-not-for-production"))
@@ -42,18 +41,25 @@ class _FakeCompletions:
     async def create(self, **kwargs: Any) -> Any:
         response_format = kwargs.get("response_format", {})
         schema_name = response_format.get("json_schema", {}).get("name")
-        result = self._dialogue if schema_name == "dialogue_output" else self._classification
+        is_dialogue = schema_name in {
+            "dialogue_output",
+            "conversation_dialogue_output",
+        }
+        result = self._dialogue if is_dialogue else self._classification
         if isinstance(result, Exception):
             raise result
-        if schema_name == "dialogue_output" and isinstance(result, str) and result.strip():
-            result = DialogueOutput(
-                text=result,
-                purpose="conversation",
-                fact_references=(),
-                memory_references=(),
-                situation_references=(),
-                accepts_command=False,
-            ).model_dump_json()
+        if is_dialogue and isinstance(result, str) and result.strip():
+            if schema_name == "conversation_dialogue_output":
+                result = ConversationDialogueOutput(text=result).model_dump_json()
+            else:
+                result = DialogueOutput(
+                    text=result,
+                    purpose="conversation",
+                    fact_references=(),
+                    memory_references=(),
+                    situation_references=(),
+                    accepts_command=False,
+                ).model_dump_json()
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=result))]
         )
@@ -107,7 +113,7 @@ async def test_local_call_failure_records_mock_fallback_without_error_text(
     assert reply.provenance.final_fallback_reason == reason
     assert all(call.configured_provider == "local" for call in reply.provenance.provider_calls)
     assert all(call.fallback_used for call in reply.provenance.provider_calls)
-    assert reply.text == SURFACE_PROFILES[Surface.GAME].provider_retry
+    assert reply.text == "안녕! 오늘은 어디부터 둘러볼까?"
     assert "secret failure detail" not in repr(reply.provenance)
 
 
@@ -147,12 +153,12 @@ async def test_route_fallback_and_final_local_dialogue_keep_both_sources(
     assert reply.provenance.provider_calls[-1].succeeded is True
 
 
-async def test_empty_conversation_output_uses_safe_guidance() -> None:
+async def test_empty_conversation_output_uses_safe_scene_fallback() -> None:
     provider = _local_provider('{"intent":"conversation"}', " ")
 
     reply = await CompanionBrain(provider).respond(_turn("안녕, 마코"))
 
-    assert reply.text == SURFACE_PROFILES[Surface.GAME].provider_invalid
+    assert reply.text == "안녕! 오늘은 어디부터 둘러볼까?"
     assert reply.provenance is not None
     assert reply.provenance.final_response_source == "mock_fallback"
     assert reply.provenance.final_fallback_reason == "empty_output"
@@ -171,10 +177,10 @@ async def test_sanitizer_rejection_has_a_distinct_final_source() -> None:
     assert reply.provenance.final_fallback_reason == "sanitizer_rejection"
 
 
-async def test_conversation_sanitizer_rejection_uses_safe_guidance() -> None:
+async def test_conversation_sanitizer_rejection_uses_safe_scene_fallback() -> None:
     reply = await CompanionBrain(_InvalidConversationProvider()).respond(_turn("안녕, 마코"))
 
-    assert reply.text == SURFACE_PROFILES[Surface.GAME].provider_invalid
+    assert reply.text == "안녕! 오늘은 어디부터 둘러볼까?"
     assert reply.provenance is not None
     assert reply.provenance.final_response_source == "validation_rejection"
     assert reply.provenance.final_fallback_reason == "sanitizer_rejection"

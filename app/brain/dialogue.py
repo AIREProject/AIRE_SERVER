@@ -58,6 +58,19 @@ class DialogueOutput(BaseModel):
         return references
 
 
+class ConversationDialogueOutput(BaseModel):
+    """일상 대화에서 Provider가 생성하는 최소 출력.
+
+    purpose, 근거 reference와 Command 수락 여부는 Backend가 이미 알고 있다. 일반 대화에서
+    모델이 이 메타데이터까지 되말하게 하면 작은 Local LLM의 사소한 필드 오류 하나가 정상
+    대화 전체를 막으므로 text만 받으며, 이후 기존 sanitizer가 사실 주장과 행동 약속을 막는다.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str = Field(min_length=1, max_length=200)
+
+
 @dataclass(frozen=True, slots=True)
 class DialogueSpec:
     """LLM에 전달할 장면과 코드가 확정한 사실, 실패 시 복구 대사를 묶는다."""
@@ -138,8 +151,6 @@ class SurfaceProfile:
     lore_missing: FallbackLine
     greeting: str
     thanks: str
-    provider_retry: str
-    provider_invalid: str
     # 상황 이벤트(`situation.py`)의 LLM 실패 시 폴백. 어떤 상황이 왔는지 모르는 채로 안전해야
     # 하므로 구체적인 내용을 담지 않는다 — `FallbackLine` 이 아닌 이유: 상황 자체가 이미
     # `[상황]` 사실 블록이라 별도의 `fact` 짝이 필요 없다.
@@ -169,8 +180,6 @@ SURFACE_PROFILES: dict[Surface, SurfaceProfile] = {
         ),
         greeting="안녕! 오늘은 어디부터 둘러볼까?",
         thanks="별말을 다 해. 필요하면 언제든 불러 줘.",
-        provider_retry="지금은 답을 만들기 어려워. 잠시 뒤 다시 물어봐 줘.",
-        provider_invalid="답을 안전하게 확인하지 못했어. 질문을 조금 다르게 말해 줘.",
         situation="방금 그거, 봤어?",
     ),
     Surface.MOBILE: SurfaceProfile(
@@ -196,22 +205,16 @@ SURFACE_PROFILES: dict[Surface, SurfaceProfile] = {
         ),
         greeting="안녕! 무슨 일이야?",
         thanks="별말을. 또 필요하면 말해.",
-        provider_retry="지금은 답을 만들기 어려워. 잠시 뒤 다시 물어봐 줘.",
-        provider_invalid="답을 안전하게 확인하지 못했어. 질문을 조금 다르게 말해 줘.",
         situation="방금 거기 무슨 일 있었어?",
     ),
 }
 
 
 def provider_failure_fallback(spec: DialogueSpec, reason: FallbackReason) -> str:
-    """일반 대화만 실패 원인에 맞춰 안내하고 행동·사실 장면은 기존 대사를 보존한다."""
+    """Provider 실패는 관측성에 남기고 사용자에게는 안전한 장면 폴백을 반환한다."""
 
-    if spec.scene != "conversation":
-        return spec.fallback
-    surface = SURFACE_PROFILES[spec.surface]
-    if reason in ("provider_timeout", "provider_unavailable"):
-        return surface.provider_retry
-    return surface.provider_invalid
+    del reason
+    return spec.fallback
 
 
 _NUMBER_PATTERN = re.compile(r"\d+")
