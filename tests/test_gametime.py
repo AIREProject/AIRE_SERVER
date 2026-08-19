@@ -1,4 +1,6 @@
-from app.brain.gametime import describe, period_for_hour
+from datetime import datetime
+
+from app.brain.gametime import KST, describe, period_for_hour
 from app.models import TimeContext, TimeSource
 
 
@@ -22,3 +24,13 @@ def test_period_for_hour_covers_day_boundaries() -> None:
     assert period_for_hour(14) == "오후"
     assert period_for_hour(18) == "저녁"
     assert period_for_hour(22) == "한밤중"
+
+
+def test_real_world_renders_kst_date_weekday_and_period() -> None:
+    context = TimeContext(source=TimeSource.REAL_WORLD, day=19, hour=16, period="afternoon")
+    fixed_now = datetime(2026, 8, 19, 16, 54, tzinfo=KST)
+
+    assert describe(context, now=fixed_now) == (
+        "지금은 현실 시간(KST) 기준 2026년 8월 19일 수요일 오후, 16시 54분이다.",
+    )
+

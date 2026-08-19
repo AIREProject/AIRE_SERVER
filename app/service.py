@@ -22,7 +22,7 @@ import hashlib
 import json
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from time import perf_counter
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -44,6 +44,7 @@ from app.brain import (
 )
 from app.brain.contract import BrainProvenance, ResponseProvenance
 from app.brain.enemies import EnemyRepository
+from app.brain.gametime import KST, period_code_for_hour
 from app.brain.llm import build_llm_provider
 from app.brain.memory import MemoryClassification
 from app.brain.recipes import RecipeRepository
@@ -77,6 +78,9 @@ from app.models import (
     CommandType,
     SituationRequest,
     SituationResponse,
+    Surface,
+    TimeContext,
+    TimeSource,
 )
 from app.offline_task_models import CreateOfflineTaskRequest, OfflineTaskType
 from app.offline_task_service import OfflineTaskService
@@ -233,12 +237,23 @@ class CompanionService:
             response = await repository.build_response(start.operation)
             if response is None:
                 history = await repository.history_before(start.input_message)
+                game_time = request.time_context
+                if request.surface is Surface.MOBILE or (
+                    game_time is not None and game_time.source is TimeSource.REAL_WORLD
+                ):
+                    kst_now = datetime.now(KST)
+                    game_time = TimeContext(
+                        source=TimeSource.REAL_WORLD,
+                        day=kst_now.day,
+                        hour=kst_now.hour,
+                        period=period_code_for_hour(kst_now.hour),
+                    )
                 turn = CompanionTurn(
                     text=request.user_message,
                     surface=request.surface,
                     allowed_actions=frozenset(request.allowed_commands),
                     world_context=self._world_context_facts(request.game_context),
-                    game_time=request.time_context,
+                    game_time=game_time,
                     conversation_key=start.conversation.conversation_id,
                     player_key=_player_key(
                         protector,
@@ -365,10 +380,21 @@ class CompanionService:
         slot = await SaveSlotRepository(session).get_or_create(
             profile_id=identity.profile_id, save_slot_id=request.save_slot_id
         )
+        game_time = request.time_context
+        if request.surface is Surface.MOBILE or (
+            game_time is not None and game_time.source is TimeSource.REAL_WORLD
+        ):
+            kst_now = datetime.now(KST)
+            game_time = TimeContext(
+                source=TimeSource.REAL_WORLD,
+                day=kst_now.day,
+                hour=kst_now.hour,
+                period=period_code_for_hour(kst_now.hour),
+            )
         turn = SituationTurn(
             situation=tuple(request.situation),
             surface=request.surface,
-            game_time=request.time_context,
+            game_time=game_time,
             conversation_key=_conversation_key(
                 protector,
                 profile_id=identity.profile_id,

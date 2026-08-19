@@ -136,11 +136,12 @@ class ChatRequest(StrictModel):
             raise ValueError("Game chat requires a versioned game context.")
         if self.surface is Surface.MOBILE and self.game_context is not None:
             raise ValueError("Mobile chat must not contain a game context.")
-        expected_time_source = (
-            TimeSource.GAME_WORLD if self.surface is Surface.GAME else TimeSource.REAL_WORLD
-        )
-        if self.time_context is not None and self.time_context.source is not expected_time_source:
-            raise ValueError("Time context source does not match the chat surface.")
+        if (
+            self.surface is Surface.MOBILE
+            and self.time_context is not None
+            and self.time_context.source is not TimeSource.REAL_WORLD
+        ):
+            raise ValueError("Mobile chat time context source must be RealWorld.")
         if len(self.allowed_commands) != len(set(self.allowed_commands)):
             raise ValueError("Allowed commands must be unique.")
         if len(self.recent_event_ids) != len(set(self.recent_event_ids)):

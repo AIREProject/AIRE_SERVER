@@ -187,7 +187,7 @@ async def test_unsupported_schema_version_is_rejected(authed_client: Any) -> Non
     assert response.status_code == 400
 
 
-async def test_game_chat_rejects_real_world_time_context(authed_client: Any) -> None:
+async def test_game_chat_accepts_real_world_time_context(authed_client: Any) -> None:
     client, token, _profile_id = authed_client
 
     response = client.post(
@@ -204,7 +204,7 @@ async def test_game_chat_rejects_real_world_time_context(authed_client: Any) -> 
         ),
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 200
 
 
 async def test_missing_bearer_token_is_rejected(authed_client: Any) -> None:
