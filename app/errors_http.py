@@ -31,6 +31,8 @@ from app.errors import (
     InsufficientCraftingMaterialsError,
     InvalidPairingCodeError,
     InventorySnapshotRequiredError,
+    MemoryCandidateNotFoundError,
+    MemoryCandidateTransitionError,
     MemoryNotFoundError,
     OfflineTaskInvalidRequestError,
     OfflineTaskNotFoundError,
@@ -196,6 +198,18 @@ APPLICATION_ERROR_MAP: dict[type[Exception], tuple[int, ErrorCode, str, bool]] =
         404,
         ErrorCode.MEMORY_NOT_FOUND,
         "The requested memory was not found in this authenticated scope.",
+        False,
+    ),
+    MemoryCandidateNotFoundError: (
+        404,
+        ErrorCode.MEMORY_CANDIDATE_NOT_FOUND,
+        "The requested memory candidate was not found in this authenticated scope.",
+        False,
+    ),
+    MemoryCandidateTransitionError: (
+        409,
+        ErrorCode.MEMORY_CANDIDATE_TRANSITION,
+        "The memory candidate cannot make that decision transition.",
         False,
     ),
     UnauthorizedAdminError: (

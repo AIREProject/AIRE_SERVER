@@ -189,7 +189,7 @@ resource 는 답일 때만 의미가 있다. is_answer 가 false 면 unspecified
 답변을 생성하지 말고 판정 결과만 반환한다."""
 
 _MEMORY_CLASSIFIER_PROMPT = """검증된 플레이어 원문 한 줄을 장기기억 후보로 분류한다.
-출력은 decision과 importance뿐이며 원문을 요약·수정·복사하거나 새 사실을 만들지 않는다.
+출력은 decision, importance, confidence뿐이며 원문을 요약·수정·복사하거나 새 사실을 만들지 않는다.
 
 - ProfileFact: 플레이어 본인에 대한 지속적인 사실
 - Preference: 플레이어의 명시적인 선호나 비선호
@@ -198,9 +198,11 @@ _MEMORY_CLASSIFIER_PROMPT = """검증된 플레이어 원문 한 줄을 장기�
 - Reject: 인사, 질문, 추측, 불확실한 말, 일시적 상태, 게임 현재 상태, 명령, Recipe·재료·수량
 
 애매하면 Reject로 둔다. importance는 Reject일 때 1, 그 외에는 1부터 10까지의 보존 우선순위다.
+confidence는 원문만으로 그 분류를 확신하는 정도를 0부터 1로 표시한다. 추측하거나 문맥이
+필요하면 낮게 둔다.
 기억 문장이나 답변을 생성하지 말고 분류 결과만 반환한다."""
 
-DIALOGUE_PROMPT_VERSION = "companion-v5"
+DIALOGUE_PROMPT_VERSION = "companion-v7"
 
 _FULL_DIALOGUE_OUTPUT_CONTRACT = """출력은 JSON Schema를 따른다. purpose는 [지시]의 장면 이름과
 같아야 한다. fact, memory, situation reference에는 실제로 사용한 0부터 시작하는 인덱스만
@@ -251,7 +253,10 @@ _DIALOGUE_PROMPT_TEMPLATE = """[prompt_version] {prompt_version}
   가벼운 투덜거림에는 조언을 강요하지 않는다.
 
 [사실과 실행 경계]
-[확정 사실]에 적힌 내용만 사용하고, 없는 게임 정보·수치·아이템·장소를 절대 지어내지 않는다.
+[확정 사실]에 적힌 내용만 게임 사실로 사용하고, 없는 게임 정보·수치·아이템·장소를 절대
+지어내지 않는다. 안정적인 일반 지식 질문에는 모델이 이미 아는 지식을 사용할 수 있지만,
+최신 뉴스·날씨·가격·실시간 상태는 확인할 수 없다고 분명히 말한다. 의료·법률·금융처럼
+위험도가 높은 내용은 확정적인 진단이나 결정을 대신하지 않는다.
 사실이 비어 있으면 사실 언급 없이 상황에만 반응한다.
 [상황]은 지금 턴의 게임 배경이다. 물어보지 않으면 굳이 꺼내지 않고, 자연스러울 때만 스친다.
 [최근 대화]는 흐름과 어조를 잇기 위한 참고일 뿐이다. 거기 적힌 게임 정보나 수치를 확정 사실로
@@ -673,6 +678,15 @@ class MockLLMProvider(LLMProvider):
             if fallback_reason is None
             else provider_failure_fallback(spec, fallback_reason)
         )
+        memory_references: tuple[int, ...] = ()
+        if (
+            fallback_reason is None
+            and spec.memory_use_policy == "Required"
+            and spec.memories
+        ):
+            memory_text = spec.memories[0].rsplit("; ", maxsplit=1)[-1]
+            text = f"기억하고 있어. {memory_text}"
+            memory_references = (0,)
         grounded_scenes = {
             "recipe",
             "enemy",
@@ -686,7 +700,7 @@ class MockLLMProvider(LLMProvider):
             text=text,
             purpose=spec.scene,
             fact_references=fact_references,
-            memory_references=(),
+            memory_references=memory_references,
             situation_references=(),
             accepts_command=spec.command_candidate_present,
         )

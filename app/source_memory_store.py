@@ -11,7 +11,7 @@ import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
 
@@ -30,6 +30,7 @@ MAX_PROMPT_MEMORIES = 3
 MAX_PROMPT_MEMORY_CHARS = 360
 MIN_SEMANTIC_RELEVANCE = 0.75
 _HALF_LIFE_DAYS = 30.0
+_CONTEXT_COOLDOWN = timedelta(minutes=10)
 _TYPE_ORDER = {
     "ProfileFact": 0,
     "Preference": 1,
@@ -73,6 +74,29 @@ class RecalledMemory:
     trace_id: str
     memory_id: str
     text: str
+    memory_type: str
+    source_modes: tuple[str, ...]
+    occurred_at: datetime
+    priority: str
+    required: bool
+
+
+def render_prompt_memory(memory: RecalledMemory) -> str:
+    modes = ",".join(memory.source_modes)
+    return (
+        f"[{memory.trace_id}] type={memory.memory_type}; source={modes}; "
+        f"occurred_at={memory.occurred_at.isoformat()}; priority={memory.priority}; "
+        f"{memory.text}"
+    )
+
+
+def _prompt_memory_length(index: int, memory: SourceBackedMemory) -> int:
+    modes = ",".join(memory.source_modes)
+    priority = "High" if memory.pinned or memory.importance >= 8 else "Normal"
+    return len(
+        f"[M{index}] type={memory.memory_type}; source={modes}; "
+        f"occurred_at={memory.occurred_at.isoformat()}; priority={priority}; {memory.text}"
+    )
 
 
 def _tokens(text: str) -> tuple[str, ...]:
@@ -152,10 +176,10 @@ def _semantic_similarity(
 def _decayed_strength(memory: SourceBackedMemory, now: datetime) -> float:
     reference = memory.recalled_at or memory.occurred_at
     age_days = max((now - _utc(reference)).total_seconds(), 0.0) / 86_400.0
-    return (
-        memory.importance * 0.3 * math.pow(0.5, age_days / _HALF_LIFE_DAYS)
-        + min(memory.recall_count, MAX_RECALL_BONUS) * 0.5
-    )
+    importance = memory.importance * 0.5
+    if not memory.pinned:
+        importance *= math.pow(0.5, age_days / _HALF_LIFE_DAYS)
+    return importance + min(memory.recall_count, MAX_RECALL_BONUS) * 0.5
 
 
 class SourceBackedMemoryStore:
@@ -167,28 +191,47 @@ class SourceBackedMemoryStore:
         scope: SourceScope | None,
         *,
         query: str,
+        context_query: str = "",
+        direct_recall: bool = False,
         source_mode: str | None,
         query_embedding: Sequence[float] | None = None,
         embedding_model: str | None = None,
         limit: int = MAX_PROMPT_MEMORIES,
         now: datetime | None = None,
     ) -> tuple[RecalledMemory, ...]:
-        if scope is None or not query.strip() or limit <= 0:
+        if scope is None or (not query.strip() and not context_query.strip()) or limit <= 0:
             return ()
         moment = now or datetime.now(UTC)
         memories = await self._active_memories(scope)
         normalized_embedding = _normalize_embedding(query_embedding)
         query_tokens = set(_tokens(query))
+        context_tokens = set(_tokens(context_query))
         explicit_types = _explicit_memory_types(query)
-        ranked: list[tuple[float, SourceBackedMemory]] = []
+        direct_recall = direct_recall or bool(explicit_types)
+        ranked: list[tuple[float, SourceBackedMemory, bool]] = []
         for memory in memories:
             keyword_hits = _lexical_hits(query_tokens, memory.text)
+            context_hits = _lexical_hits(context_tokens, memory.text)
             semantic = _semantic_similarity(memory, normalized_embedding, embedding_model)
             type_match = memory.memory_type in explicit_types
             # LLM은 주어진 후보를 자연스럽게 사용할지 판단하지만, 관련 없는 기억을 Prompt에
             # 넣어 추측의 재료로 만들지는 않는다. 직접 어휘, 검증된 embedding, 명시적인 기억
             # 종류 중 하나가 맞아야 후보가 된다.
-            if not keyword_hits and not type_match and (
+            user_relevant = bool(keyword_hits or type_match) or (
+                semantic is not None and semantic >= MIN_SEMANTIC_RELEVANCE
+            )
+            context_only = not user_relevant and context_hits > 0
+            if not user_relevant and not context_only:
+                continue
+            if context_only and not (memory.importance >= 6 or memory.pinned):
+                continue
+            if (
+                context_only
+                and memory.recalled_at is not None
+                and moment - _utc(memory.recalled_at) < _CONTEXT_COOLDOWN
+            ):
+                continue
+            if not keyword_hits and not type_match and not context_only and (
                 semantic is None or semantic < MIN_SEMANTIC_RELEVANCE
             ):
                 continue
@@ -202,10 +245,14 @@ class SourceBackedMemoryStore:
                 keyword_hits * 10.0
                 + semantic_score * 5.0
                 + (8.0 if type_match else 0.0)
-                + _decayed_strength(memory, moment)
+                + (
+                    memory.importance * 0.5
+                    if direct_recall
+                    else _decayed_strength(memory, moment)
+                )
             )
-            score += mode_bonus + (0.5 if memory.pinned else 0.0)
-            ranked.append((score, memory))
+            score += context_hits * 8.0 + mode_bonus + (1.5 if memory.pinned else 0.0)
+            ranked.append((score, memory, context_only))
         ranked.sort(
             key=lambda item: (
                 -item[0],
@@ -216,20 +263,30 @@ class SourceBackedMemoryStore:
         )
         selected_list: list[SourceBackedMemory] = []
         used_chars = 0
-        for _, memory in ranked:
+        selected_required: list[bool] = []
+        for _, memory, context_only in ranked:
             if len(selected_list) == min(limit, MAX_PROMPT_MEMORIES):
                 break
-            prompt_text = f"[M{len(selected_list)}] {memory.text}"
-            if used_chars + len(prompt_text) > MAX_PROMPT_MEMORY_CHARS:
+            prompt_length = _prompt_memory_length(len(selected_list), memory)
+            if used_chars + prompt_length > MAX_PROMPT_MEMORY_CHARS:
                 continue
             selected_list.append(memory)
-            used_chars += len(prompt_text)
+            selected_required.append(direct_recall or (context_only and not selected_list[:-1]))
+            used_chars += prompt_length
         selected = tuple(selected_list)
         if not selected:
             return ()
-        await self._record_recall(scope, tuple(item.memory_id for item in selected), moment)
         return tuple(
-            RecalledMemory(trace_id=f"M{index}", memory_id=item.memory_id, text=item.text)
+            RecalledMemory(
+                trace_id=f"M{index}",
+                memory_id=item.memory_id,
+                text=item.text,
+                memory_type=item.memory_type,
+                source_modes=item.source_modes,
+                occurred_at=item.occurred_at,
+                priority="High" if item.pinned or item.importance >= 8 else "Normal",
+                required=selected_required[index] and index == 0,
+            )
             for index, item in enumerate(selected)
         )
 
@@ -330,7 +387,7 @@ class SourceBackedMemoryStore:
             valid.update((SOURCE_EVENT, row.row_id) for row in result.scalars())
         return valid
 
-    async def _record_recall(
+    async def record_used(
         self, scope: SourceScope, memory_ids: tuple[str, ...], now: datetime
     ) -> None:
         async with self._database.session_factory() as session:

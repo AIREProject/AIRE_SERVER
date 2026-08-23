@@ -118,6 +118,14 @@ class MemoryNotFoundError(RuntimeError):
     pass
 
 
+class MemoryCandidateNotFoundError(RuntimeError):
+    pass
+
+
+class MemoryCandidateTransitionError(RuntimeError):
+    pass
+
+
 # --- 관리자 CRUD (app/routes/admin.py) -----------------------------------------------
 
 
@@ -170,6 +178,8 @@ class ErrorCode(StrEnum):
     COMMAND_CANDIDATE_NOT_FOUND = "CommandCandidateNotFound"
     COMMAND_RESULT_TRANSITION = "CommandResultTransitionNotAllowed"
     MEMORY_NOT_FOUND = "MemoryNotFound"
+    MEMORY_CANDIDATE_NOT_FOUND = "MemoryCandidateNotFound"
+    MEMORY_CANDIDATE_TRANSITION = "MemoryCandidateTransitionNotAllowed"
     UNAUTHORIZED_ADMIN = "UnauthorizedAdmin"
     ADMIN_AUTHENTICATION_UNAVAILABLE = "AdminAuthenticationUnavailable"
     ADMIN_RESOURCE_NOT_FOUND = "AdminResourceNotFound"

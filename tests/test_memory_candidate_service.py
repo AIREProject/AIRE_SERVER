@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from app.db.models import (
     ConversationModel,
     GameEventModel,
+    MemoryCandidateModel,
     MemoryModel,
     MemorySourceModel,
     MessageModel,
@@ -30,6 +31,7 @@ from app.identity import AuthenticatedDevice, DeviceRole
 from app.memory_candidate_service import (
     MemoryCandidate,
     MemoryCandidateService,
+    expire_pending_candidates,
     render_event_memory,
 )
 from app.memory_service import MemoryService
@@ -272,8 +274,75 @@ async def test_similar_or_conflicting_candidate_is_held_without_new_memory() -> 
     async with database.session_factory() as session:
         count = await session.scalar(select(func.count()).select_from(MemoryModel))
         outbox = await session.get(SourceOutboxModel, conflicting_claim.source_seq)
+        pending = await session.scalar(select(MemoryCandidateModel))
     assert count == 1
     assert outbox is not None and outbox.state == OUTBOX_COMPLETED
+    assert pending is not None and pending.status == "PendingReview"
+    assert pending.review_reason in {"TextSimilarity", "PossibleConflict"}
+
+
+async def test_low_confidence_candidate_is_pending_instead_of_active() -> None:
+    database = await make_database(make_settings())
+    scope = await _scope(database)
+    source_id = await _message(database, scope, text="나는 비 오는 날을 좋아해")
+    claim = await _claim(database)
+
+    accepted = await MemoryCandidateService(database).accept_and_acknowledge(  # type: ignore[arg-type]
+        claim,
+        MemoryCandidate(
+            "Preference",
+            "나는 비 오는 날을 좋아해",
+            6,
+            scope,
+            SOURCE_MESSAGE,
+            source_id,
+            confidence=0.79,
+        ),
+        now=_NOW,
+    )
+
+    assert accepted is None
+    async with database.session_factory() as session:
+        active_count = await session.scalar(select(func.count()).select_from(MemoryModel))
+        pending = await session.scalar(select(MemoryCandidateModel))
+        source = await session.get(MessageModel, source_id)
+    assert active_count == 0
+    assert pending is not None and pending.review_reason == "LowConfidence"
+    assert source is not None and source.storage_class == "MemorySource"
+
+
+async def test_pending_candidate_expires_after_thirty_days_and_tombstones_source() -> None:
+    database = await make_database(make_settings())
+    scope = await _scope(database)
+    source_id = await _message(database, scope, text="나는 비 오는 날을 좋아해")
+    claim = await _claim(database)
+    await MemoryCandidateService(database).accept_and_acknowledge(  # type: ignore[arg-type]
+        claim,
+        MemoryCandidate(
+            "Preference",
+            "나는 비 오는 날을 좋아해",
+            6,
+            scope,
+            SOURCE_MESSAGE,
+            source_id,
+            confidence=0.5,
+        ),
+        now=_NOW,
+    )
+
+    async with database.session_factory() as session:
+        assert await expire_pending_candidates(
+            session, now=_NOW + timedelta(days=31)
+        ) == 1
+        await session.commit()
+
+    async with database.session_factory() as session:
+        candidate = await session.scalar(select(MemoryCandidateModel))
+        active_count = await session.scalar(select(func.count()).select_from(MemoryModel))
+        outbox = await session.get(SourceOutboxModel, claim.source_seq)
+    assert candidate is not None and candidate.status == "Expired"
+    assert active_count == 0
+    assert outbox is not None and outbox.state == "Tombstone"
 
 
 async def test_mismatched_claim_cannot_persist_or_acknowledge_a_memory() -> None:

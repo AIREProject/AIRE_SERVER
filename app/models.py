@@ -224,6 +224,8 @@ class MemoryView(StrictModel):
     pinned: bool
     corrected: bool
     created_at: datetime
+    last_used_at: datetime | None = None
+    use_count: int = Field(default=0, ge=0)
     sources: list[MemorySourceView]
 
 
@@ -270,3 +272,54 @@ class ResetMemoriesRequest(StrictModel):
 class MemoryResetResponse(StrictModel):
     request_id: str
     archived_count: int = Field(ge=0)
+
+
+class MemoryCandidateView(StrictModel):
+    candidate_id: StableId
+    save_slot_id: StableId
+    companion_id: StableId
+    memory_type: str = Field(min_length=1, max_length=32)
+    text: str = Field(min_length=1, max_length=4000)
+    source_mode: Literal["RealWorld", "GameWorld", "LegacyUnknown"]
+    occurred_at: datetime
+    review_reason: str = Field(min_length=1, max_length=64)
+    created_at: datetime
+
+
+class MemoryCandidateListResponse(StrictModel):
+    request_id: str
+    candidates: list[MemoryCandidateView]
+
+
+class ReviewMemoryCandidateRequest(StrictModel):
+    decision: Literal["Approve", "Reject"]
+    memory_type: Literal[
+        "ProfileFact", "Preference", "Episode", "Promise", "RelationshipEvidence"
+    ] | None = None
+    importance: int | None = Field(default=None, ge=1, le=10)
+    pinned: bool | None = None
+    corrected_text: str | None = Field(default=None, min_length=1, max_length=4000)
+    reason: str = Field(min_length=1, max_length=512)
+
+    @field_validator("corrected_text", "reason")
+    @classmethod
+    def validate_review_text(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("Review text must not be blank.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_reject_edits(self) -> Self:
+        if self.decision == "Reject" and any(
+            value is not None
+            for value in (self.memory_type, self.importance, self.pinned, self.corrected_text)
+        ):
+            raise ValueError("Reject cannot modify candidate fields.")
+        return self
+
+
+class MemoryCandidateDecisionResponse(StrictModel):
+    request_id: str
+    candidate_id: StableId
+    decision: Literal["Approve", "Reject"]
+    memory: MemoryView | None

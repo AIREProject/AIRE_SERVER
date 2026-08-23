@@ -106,6 +106,7 @@ class DialogueSpec:
     # 지난 세션들에서 알게 된 것(`memory.py`). `history` 와 같은 취급이다 — 확정 사실이
     # 아니다. 숫자를 담지 않으므로(`build_memory`) `sanitize` 의 숫자 검사와 충돌하지 않는다.
     memories: tuple[str, ...] = ()
+    memory_use_policy: Literal["None", "Optional", "Required"] = "None"
     # 게임이 현재 턴에 알려 준 상황. 게임 시계는 서버가 신뢰하는 값이지만 장면의 확정
     # 사실과는 다른 블록으로 보여 준다.
     situation: tuple[str, ...] = ()
@@ -249,6 +250,9 @@ _FACT_GROUNDED_SCENES: frozenset[DialogueScene] = frozenset(
     {"recipe", "enemy", "lore", "unsupported", "event_completed", "event_failed"}
 )
 _sanitizer_context: ContextVar[list[bool] | None] = ContextVar("sanitizer_results", default=None)
+_memory_reference_context: ContextVar[list[tuple[int, ...]] | None] = ContextVar(
+    "memory_reference_results", default=None
+)
 
 
 def begin_sanitizer_trace() -> Token[list[bool] | None]:
@@ -258,6 +262,18 @@ def begin_sanitizer_trace() -> Token[list[bool] | None]:
 def finish_sanitizer_trace(token: Token[list[bool] | None]) -> tuple[bool, ...]:
     results = tuple(_sanitizer_context.get() or ())
     _sanitizer_context.reset(token)
+    return results
+
+
+def begin_memory_reference_trace() -> Token[list[tuple[int, ...]] | None]:
+    return _memory_reference_context.set([])
+
+
+def finish_memory_reference_trace(
+    token: Token[list[tuple[int, ...]] | None],
+) -> tuple[tuple[int, ...], ...]:
+    results = tuple(_memory_reference_context.get() or ())
+    _memory_reference_context.reset(token)
     return results
 
 
@@ -286,6 +302,8 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
     normalized = _WHITESPACE_PATTERN.sub(" ", normalized).strip()
     if not normalized or len(normalized) > 200:
         return None
+    if spec.memory_use_policy == "Required" and not isinstance(output, DialogueOutput):
+        return None
 
     if isinstance(output, DialogueOutput):
         if output.purpose != spec.scene:
@@ -295,6 +313,10 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
         if not _references_are_valid(output.fact_references, spec.facts, normalized):
             return None
         if not _references_are_valid(output.memory_references, spec.memories, normalized):
+            return None
+        if spec.memory_use_policy == "Required" and 0 not in output.memory_references:
+            return None
+        if not _memory_claims_are_valid(output.memory_references, spec.memories, normalized):
             return None
         if not _references_are_valid(output.situation_references, spec.situation, normalized):
             return None
@@ -312,6 +334,10 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
         output_numbers = set(_NUMBER_PATTERN.findall(normalized))
         if not output_numbers.issubset(allowed_numbers):
             return None
+    if isinstance(output, DialogueOutput):
+        traces = _memory_reference_context.get()
+        if traces is not None and len(traces) < 8:
+            traces.append(output.memory_references)
     return normalized
 
 
@@ -331,6 +357,51 @@ def _has_lexical_anchor(text: str, source: str) -> bool:
 
     text_anchors = _bigrams(text)
     return bool(text_anchors.intersection(_bigrams(source)))
+
+
+_ROOT_PATTERN = re.compile(r"[가-힣A-Za-z]+")
+_ROOT_SUFFIX = re.compile(r"(?:으로|에서|에게|처럼|보다|까지|하고|이랑|했어|한다|하다|였어|이다|"
+                          r"을|를|은|는|이|가|도|만|와|과|랑|로|의|에)$")
+_NEGATION_PATTERN = re.compile(r"(?:아니|않|못|없|싫|안\s|\bnot\b|\bnever\b|\bno\b)", re.I)
+
+
+def _meaningful_roots(text: str) -> set[str]:
+    return {
+        root
+        for token in _ROOT_PATTERN.findall(text.casefold())
+        if len(root := _ROOT_SUFFIX.sub("", token)) >= 2
+        and root not in {"memory", "type", "source", "priority", "normal", "high"}
+    }
+
+
+def _memory_claims_are_valid(
+    references: tuple[int, ...], sources: tuple[str, ...], response: str
+) -> bool:
+    if not references:
+        return True
+    response_roots = _meaningful_roots(response)
+    referenced = tuple(sources[index] for index in references if index < len(sources))
+    for source in referenced:
+        source_roots = _meaningful_roots(source)
+        overlap = {
+            source_root
+            for source_root in source_roots
+            if any(
+                source_root == response_root
+                or source_root in response_root
+                or response_root in source_root
+                for response_root in response_roots
+            )
+        }
+        required = min(2, len(source_roots))
+        if required and len(overlap) < required:
+            return False
+        if bool(_NEGATION_PATTERN.search(source)) != bool(_NEGATION_PATTERN.search(response)):
+            return False
+    allowed_numbers = set(_NUMBER_PATTERN.findall(" ".join(referenced)))
+    if not set(_NUMBER_PATTERN.findall(response)).issubset(allowed_numbers):
+        return False
+    return True
 
 
 def _bigrams(text: str) -> set[str]:

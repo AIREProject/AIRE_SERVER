@@ -8,10 +8,19 @@ import pytest
 from langgraph.graph.state import CompiledStateGraph
 
 from app.brain import CompanionBrain, CompanionReply, CompanionTurn
+from app.brain.contract import (
+    InventoryFacts,
+    InventoryItemFacts,
+    ResourceFacts,
+    ThreatFacts,
+    WorkFacts,
+    WorldContextFacts,
+)
 from app.brain.dialogue import SURFACE_PROFILES, DialogueOutput, DialogueSpec
 from app.brain.enemies import EnemyRepository
 from app.brain.graph import (
     CompanionState,
+    _request_query_mode,
     build_companion_graph,
     route_by_command,
     route_by_top,
@@ -19,6 +28,7 @@ from app.brain.graph import (
 from app.brain.intent import (
     CommandClassification,
     CommandLabel,
+    ConversationMode,
     ResourceSlot,
     TopIntent,
 )
@@ -42,6 +52,54 @@ from app.brain.store import (
 )
 from app.gamedata.dataset import ITEMS
 from app.models import CommandType, Surface, TimeContext, TimeSource
+
+
+@pytest.mark.parametrize(
+    ("intent", "text", "expected"),
+    (
+        (TopIntent.CONVERSATION, "오늘도 같이 이야기하자", ConversationMode.SMALL_TALK),
+        (TopIntent.CONVERSATION, "오늘 너무 힘들어", ConversationMode.EMOTIONAL_SUPPORT),
+        (TopIntent.CONVERSATION, "어떻게 생각해?", ConversationMode.OPINION_ADVICE),
+        (TopIntent.CONVERSATION, "파이썬이 뭐야?", ConversationMode.GENERAL_KNOWLEDGE),
+        (TopIntent.CONVERSATION, "나는 겨울을 좋아해", ConversationMode.PREFERENCE_SHARE),
+        (TopIntent.CONVERSATION, "내 취향 기억해?", ConversationMode.MEMORY_RECALL),
+        (TopIntent.CONVERSATION, "음", ConversationMode.AMBIGUOUS),
+        (TopIntent.UNKNOWN, "...", ConversationMode.NOT_APPLICABLE),
+    ),
+)
+def test_conversation_modes_cover_each_response_boundary(
+    intent: TopIntent, text: str, expected: ConversationMode
+) -> None:
+    assert _request_query_mode(intent, text) is expected
+
+
+def test_memory_context_query_uses_only_safe_context_fields() -> None:
+    context = WorldContextFacts(
+        is_available=True,
+        location_id="location-cave",
+        threat=ThreatFacts(present=True, count=2, nearest_kind="wolf"),
+        nearby_resources=(ResourceFacts(kind="secret-resource", count=9),),
+        available_workstations=("secret-workstation",),
+        current_work=WorkFacts(type="Gather", state="Running"),
+        inventories=(
+            InventoryFacts(
+                container_id="secret-inventory",
+                free_slots=3,
+                item_totals=(InventoryItemFacts(item_id="secret-item", count=4),),
+                truncated=False,
+            ),
+        ),
+    )
+    query = CompanionBrain._context_memory_query(
+        TimeContext(source=TimeSource.GAME_WORLD, day=2, hour=23, period="Night"),
+        context,
+    )
+
+    assert query == "Night location-cave 위협 wolf Gather Running"
+    assert "secret-resource" not in query
+    assert "secret-workstation" not in query
+    assert "secret-inventory" not in query
+    assert "secret-item" not in query
 
 
 def make_turn(

@@ -22,7 +22,7 @@ import hashlib
 import json
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from typing import TYPE_CHECKING
 from uuid import uuid4

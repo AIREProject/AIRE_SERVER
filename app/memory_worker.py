@@ -128,6 +128,7 @@ class MemoryWorker:
                 source_id=source_id,
                 embedding=embedding,
                 embedding_model=embedding_model,
+                confidence=classification.confidence,
             )
         if source_type == SOURCE_EVENT:
             event = source
@@ -148,5 +149,6 @@ class MemoryWorker:
                 source_id=source_id,
                 embedding=embedding,
                 embedding_model=embedding_model,
+                confidence=1.0,
             )
         return None

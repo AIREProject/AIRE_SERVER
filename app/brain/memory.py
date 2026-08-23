@@ -57,9 +57,10 @@ class MemoryClassification(BaseModel):
 
     decision: Literal["Reject", "ProfileFact", "Preference", "Promise", "Episode"]
     importance: int = Field(ge=1, le=10)
+    confidence: float = Field(ge=0.0, le=1.0)
 
 
-REJECT_MEMORY = MemoryClassification(decision="Reject", importance=1)
+REJECT_MEMORY = MemoryClassification(decision="Reject", importance=1, confidence=1.0)
 
 # 회수 동점을 가를 때의 종류 우선순위. 플레이어 자체에 대한 사실이 지난 세션 요약보다 먼저다.
 _KIND_ORDER: dict[MemoryKind, int] = {"profile": 0, "episode": 1, "session_summary": 2}

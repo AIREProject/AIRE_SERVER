@@ -244,5 +244,7 @@ class MemoryService:
             pinned=memory.pinned,
             corrected=correction is not None,
             created_at=memory.created_at,
+            last_used_at=memory.recalled_at,
+            use_count=memory.recall_count,
             sources=sources,
         )
