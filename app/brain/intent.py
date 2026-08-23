@@ -34,6 +34,17 @@ class RequestQueryMode(StrEnum):
     UNSUPPORTED_FACT = "unsupported_fact"
 
 
+class ConversationMode(StrEnum):
+    SMALL_TALK = "SmallTalk"
+    EMOTIONAL_SUPPORT = "EmotionalSupport"
+    OPINION_ADVICE = "OpinionAdvice"
+    GENERAL_KNOWLEDGE = "GeneralKnowledge"
+    PREFERENCE_SHARE = "PreferenceShare"
+    MEMORY_RECALL = "MemoryRecall"
+    AMBIGUOUS = "Ambiguous"
+    NOT_APPLICABLE = "NotApplicable"
+
+
 class TopClassification(BaseModel):
     """LLM 최상위 라우터가 반환해야 하는 구조화된 출력."""
 

@@ -38,6 +38,13 @@ class JsonFormatter(logging.Formatter):
         "prompt_version",
         "sanitizer_succeeded",
         "provider_calls",
+        "count",
+        "reason",
+        "retrieved_count",
+        "required_count",
+        "used_count",
+        "context_retrieval",
+        "attempt_count",
     )
     _nullable_provenance_fields = frozenset(
         {

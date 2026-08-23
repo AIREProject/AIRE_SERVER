@@ -38,6 +38,7 @@ from app.db.models import (
     SourceRetentionReferenceModel,
 )
 from app.db.source_repository import SOURCE_EVENT, SOURCE_MESSAGE, SourceRepository, SourceScope
+from app.memory_candidate_service import expire_pending_candidates
 from app.relationship_service import RelationshipService
 
 if TYPE_CHECKING:
@@ -512,6 +513,9 @@ class RetentionService:
 
     async def sweep(self, *, now: datetime | None = None) -> RetentionSweepResult:
         moment = _utc(now)
+        async with self._database.session_factory() as session:
+            await expire_pending_candidates(session, now=moment)
+            await session.commit()
         await self._archive_memories_without_source(moment)
         message_count, event_count = await self._purge_canonical(moment)
         audit_count = await self._purge_expired_audit(moment)

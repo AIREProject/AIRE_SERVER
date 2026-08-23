@@ -20,13 +20,14 @@ def generated(
     purpose: DialogueScene,
     *,
     fact_references: tuple[int, ...] = (),
+    memory_references: tuple[int, ...] = (),
     accepts_command: bool = False,
 ) -> DialogueOutput:
     return DialogueOutput(
         text=text,
         purpose=purpose,
         fact_references=fact_references,
-        memory_references=(),
+        memory_references=memory_references,
         situation_references=(),
         accepts_command=accepts_command,
     )
@@ -177,6 +178,42 @@ def test_sanitize_allows_acceptance_with_a_real_candidate() -> None:
         ),
         spec,
     ) == "좋아, 따라갈게."
+
+
+def test_required_memory_rejects_missing_numeric_and_negation_distortion() -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="아직 확실히 기억나지 않아.",
+        memories=("[M0] 플레이어는 겨울 여행을 좋아하고 12월에 간다",),
+        memory_use_policy="Required",
+    )
+
+    assert sanitize(generated("다른 얘기를 하자.", "conversation"), spec) is None
+    assert sanitize("겨울 여행을 기억해.", spec) is None
+    assert sanitize(
+        generated(
+            "너는 겨울 여행을 좋아하고 11월에 가.",
+            "conversation",
+            memory_references=(0,),
+        ),
+        spec,
+    ) is None
+    assert sanitize(
+        generated(
+            "너는 겨울 여행을 좋아하지 않고 12월에 가.",
+            "conversation",
+            memory_references=(0,),
+        ),
+        spec,
+    ) is None
+    assert sanitize(
+        generated(
+            "너는 겨울 여행을 좋아하고 12월에 가.",
+            "conversation",
+            memory_references=(0,),
+        ),
+        spec,
+    ) is not None
 
 
 @pytest.mark.asyncio

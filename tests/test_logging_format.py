@@ -54,3 +54,28 @@ def test_conversation_text_is_never_formatted() -> None:
 
     assert "user_message" not in payload
     assert "display_text" not in payload
+
+
+def test_memory_observability_keeps_counts_but_never_raw_content() -> None:
+    payload = format_record(
+        event="memory_retrieval",
+        retrieved_count=2,
+        required_count=1,
+        used_count=1,
+        context_retrieval=True,
+        reason="LowConfidence",
+        attempt_count=2,
+        memory_text="private memory",
+        source_id="private-source",
+        confidence=0.79,
+    )
+
+    assert payload["retrieved_count"] == 2
+    assert payload["required_count"] == 1
+    assert payload["used_count"] == 1
+    assert payload["context_retrieval"] is True
+    assert payload["reason"] == "LowConfidence"
+    assert payload["attempt_count"] == 2
+    assert "memory_text" not in payload
+    assert "source_id" not in payload
+    assert "confidence" not in payload

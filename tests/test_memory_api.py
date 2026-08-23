@@ -1,6 +1,6 @@
 """Scoped user-facing source-backed memory controls."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -11,11 +11,13 @@ from sqlalchemy import select
 from app.credentials import CredentialProtector
 from app.db.models import (
     ConversationModel,
+    MemoryCandidateModel,
     MemoryCorrectionModel,
     MemoryModel,
     MemorySourceModel,
     MessageModel,
     SaveSlotModel,
+    SourceRetentionReferenceModel,
 )
 from app.main import create_app
 from tests.conftest import make_authenticated_device, make_database, make_settings
@@ -108,6 +110,74 @@ async def memory_client() -> Any:
                 created_at=now,
             )
         )
+        for index, (candidate_id, text) in enumerate(
+            (
+                ("memory-candidate-1", "나는 겨울을 싫어해"),
+                ("memory-candidate-2", "나는 여름을 좋아해"),
+            ),
+            start=2,
+        ):
+            source_id = f"private-candidate-source-{index}"
+            session.add(
+                MessageModel(
+                    row_id=source_id,
+                    message_id=f"candidate-message-{index}",
+                    conversation_row_id="memory-conversation-1",
+                    profile_id=identity.profile_id,
+                    save_slot_row_id=slot.row_id,
+                    companion_id="mako",
+                    request_id=f"candidate-request-{index}",
+                    sequence=index,
+                    speaker="player",
+                    source_mode="RealWorld",
+                    content=text,
+                    content_digest=str(index) * 64,
+                    time_context={"source": "RealWorld"},
+                    storage_class="MemorySource",
+                    retention_reason="MemoryReference",
+                    expires_at=None,
+                    audit_expires_at=now + timedelta(days=30),
+                    content_deleted_at=None,
+                    created_at=now,
+                    delivered_at=now,
+                )
+            )
+            session.add(
+                MemoryCandidateModel(
+                    candidate_id=candidate_id,
+                    profile_id=identity.profile_id,
+                    save_slot_row_id=slot.row_id,
+                    companion_id="mako",
+                    memory_type="Preference",
+                    text=text,
+                    normalized_text=text,
+                    importance=6,
+                    pinned=False,
+                    confidence=0.7,
+                    embedding=None,
+                    embedding_model=None,
+                    source_type="Message",
+                    source_id=source_id,
+                    source_mode="RealWorld",
+                    occurred_at=now,
+                    review_reason="LowConfidence",
+                    status="PendingReview",
+                    created_at=now,
+                    expires_at=now + timedelta(days=30),
+                    decided_at=None,
+                    decision_reason=None,
+                    approved_memory_id=None,
+                )
+            )
+            session.add(
+                SourceRetentionReferenceModel(
+                    row_id=f"candidate-reference-{index}",
+                    source_type="Message",
+                    source_id=source_id,
+                    reference_id=candidate_id,
+                    created_at=now,
+                )
+            )
         await session.commit()
     with TestClient(create_app(settings)) as client:
         yield client, database, token, other_token
@@ -202,3 +272,64 @@ async def test_memory_reset_is_scoped_and_idempotent(memory_client: Any) -> None
     second = client.post("/api/v1/memories/reset", headers=_auth(token), json=body)
     assert first.status_code == 200 and first.json()["archived_count"] == 1
     assert second.status_code == 200 and second.json()["archived_count"] == 0
+
+
+async def test_memory_candidate_review_is_scoped_and_idempotent(memory_client: Any) -> None:
+    client, _database, token, other_token = memory_client
+    path = "/api/v1/memory-candidates?save_slot_id=slot-1&companion_id=mako"
+    listed = client.get(path, headers=_auth(token))
+    assert listed.status_code == 200
+    assert len(listed.json()["candidates"]) == 2
+    assert "confidence" not in listed.text
+    assert "private-candidate-source" not in listed.text
+    assert client.get(path, headers=_auth(other_token)).json()["candidates"] == []
+    assert client.get(
+        "/api/v1/memory-candidates/memory-candidate-1"
+        "?save_slot_id=slot-1&companion_id=mako",
+        headers=_auth(other_token),
+    ).status_code == 404
+    assert client.get(
+        "/api/v1/memory-candidates/memory-candidate-1"
+        "?save_slot_id=slot-1&companion_id=other",
+        headers=_auth(token),
+    ).status_code == 404
+
+    body = {
+        "decision": "Approve",
+        "memory_type": "Preference",
+        "importance": 8,
+        "pinned": True,
+        "corrected_text": "나는 추운 날씨를 싫어해",
+        "reason": "user-reviewed",
+    }
+    approved = client.patch(
+        "/api/v1/memory-candidates/memory-candidate-1"
+        "?save_slot_id=slot-1&companion_id=mako",
+        headers=_auth(token),
+        json=body,
+    )
+    assert approved.status_code == 200
+    assert approved.json()["memory"]["text"] == "나는 추운 날씨를 싫어해"
+    repeated = client.patch(
+        "/api/v1/memory-candidates/memory-candidate-1"
+        "?save_slot_id=slot-1&companion_id=mako",
+        headers=_auth(token),
+        json=body,
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["memory"] is None
+    conflict = client.patch(
+        "/api/v1/memory-candidates/memory-candidate-1"
+        "?save_slot_id=slot-1&companion_id=mako",
+        headers=_auth(token),
+        json={"decision": "Reject", "reason": "changed-mind"},
+    )
+    assert conflict.status_code == 409
+    rejected = client.patch(
+        "/api/v1/memory-candidates/memory-candidate-2"
+        "?save_slot_id=slot-1&companion_id=mako",
+        headers=_auth(token),
+        json={"decision": "Reject", "reason": "not-a-memory"},
+    )
+    assert rejected.status_code == 200 and rejected.json()["memory"] is None
+    assert client.get(path, headers=_auth(token)).json()["candidates"] == []

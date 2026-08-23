@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
@@ -28,7 +30,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.db.source_repository import SourceScope
 from app.models import TimeContext
 from app.relationship_service import RelationshipPresentationStore, RelationshipState
-from app.source_memory_store import SourceBackedMemoryStore
+from app.source_memory_store import (
+    RecalledMemory,
+    SourceBackedMemoryStore,
+    render_prompt_memory,
+)
 
 from .contract import (
     BrainProvenance,
@@ -39,8 +45,15 @@ from .contract import (
     MemoryScope,
     ProviderCallProvenance,
     SituationTurn,
+    WorldContextFacts,
 )
-from .dialogue import begin_sanitizer_trace, finish_sanitizer_trace, render
+from .dialogue import (
+    begin_memory_reference_trace,
+    begin_sanitizer_trace,
+    finish_memory_reference_trace,
+    finish_sanitizer_trace,
+    render,
+)
 from .embedding import EmbeddingProvider
 from .enemies import EnemyRepository
 from .graph import CompanionState, build_companion_graph, selected_route
@@ -98,6 +111,7 @@ _EMBEDDING_QUERY_CACHE_SIZE = 64
 
 # 전사 정리 주기. 보존 기간이 날 단위라 이보다 자주 돌 이유가 없다.
 _SWEEP_INTERVAL_SECONDS = 3600.0
+logger = logging.getLogger("aire.backend")
 
 
 def _build_provenance(
@@ -177,6 +191,15 @@ class PreparedCompanionReply:
     saved_memory: ConversationMemory
     turns: tuple[ConversationTurn, ...]
     reply: CompanionReply
+    used_memory_ids: tuple[str, ...] = ()
+    memory_scope: MemoryScope | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PromptMemory:
+    text: str
+    memory_id: str | None = None
+    required: bool = False
 
 
 class CompanionBrain:
@@ -274,7 +297,13 @@ class CompanionBrain:
 
     async def respond(self, turn: CompanionTurn) -> CompanionReply:
         turn = replace(turn, relationship_state=await self._relationship_state(turn.memory_scope))
-        recalled = await self._recall(turn.memory_scope, turn.player_key, turn.text, turn.game_time)
+        recalled = await self._recall(
+            turn.memory_scope,
+            turn.player_key,
+            turn.text,
+            turn.game_time,
+            turn.world_context,
+        )
         async with self._conversation_lock(turn.conversation_key):
             prepared = await self._prepare_response_locked(
                 turn,
@@ -287,6 +316,7 @@ class CompanionBrain:
             prepared.player_key,
             prepared.turns,
         )
+        await self._record_used(prepared.memory_scope, prepared.used_memory_ids)
         return prepared.reply
 
     async def prepare_response(
@@ -300,7 +330,13 @@ class CompanionBrain:
         turn = replace(turn, relationship_state=await self._relationship_state(turn.memory_scope))
         # 회수는 락 밖에서 한다. 이 발화만 보고 고르므로 대화 기억과 경합할 것이 없고,
         # 파일을 읽는 동안 같은 대화의 다음 턴을 막을 이유도 없다.
-        recalled = await self._recall(turn.memory_scope, turn.player_key, turn.text, turn.game_time)
+        recalled = await self._recall(
+            turn.memory_scope,
+            turn.player_key,
+            turn.text,
+            turn.game_time,
+            turn.world_context,
+        )
         async with self._conversation_lock(turn.conversation_key):
             return await self._prepare_response_locked(
                 turn,
@@ -313,7 +349,7 @@ class CompanionBrain:
         turn: CompanionTurn,
         *,
         history: Sequence[ConversationTurn] | None,
-        recalled: tuple[str, ...],
+        recalled: tuple[_PromptMemory, ...],
     ) -> PreparedCompanionReply:
         memory = self._store.load(turn.conversation_key)
         prompt_memory = (
@@ -321,6 +357,7 @@ class CompanionBrain:
         )
         provider_token = begin_provider_trace()
         sanitizer_token = begin_sanitizer_trace()
+        memory_reference_token = begin_memory_reference_trace()
         try:
             final = cast(
                 CompanionState,
@@ -331,13 +368,15 @@ class CompanionBrain:
                         "pending": prompt_memory.pending,
                         "recipe_reference": prompt_memory.recipe_reference,
                         "history": prompt_memory.recent_turns,
-                        "long_term": recalled,
+                        "long_term": tuple(item.text for item in recalled),
+                        "memory_required": bool(recalled and recalled[0].required),
                     }
                 ),
             )
         finally:
             provider_calls = finish_provider_trace(provider_token)
             sanitizer_results = finish_sanitizer_trace(sanitizer_token)
+            memory_reference_results = finish_memory_reference_trace(memory_reference_token)
         display_text: str = final["display_text"]
         saved = replace(
             prompt_memory.appended(turn.text, display_text),
@@ -364,6 +403,13 @@ class CompanionBrain:
                     route=selected_route(final),
                 ),
             ),
+            used_memory_ids=tuple(
+                cast(str, recalled[index].memory_id)
+                for references in memory_reference_results
+                for index in references
+                if index < len(recalled) and recalled[index].memory_id is not None
+            ),
+            memory_scope=turn.memory_scope,
         )
 
     async def commit_response(self, prepared: PreparedCompanionReply) -> None:
@@ -377,6 +423,7 @@ class CompanionBrain:
             prepared.turns,
             enqueue_memory=False,
         )
+        await self._record_used(prepared.memory_scope, prepared.used_memory_ids)
 
     async def react(self, turn: SituationTurn) -> str:
         """기존 내부 호출자를 위해 대사 문자열만 반환한다."""
@@ -393,17 +440,23 @@ class CompanionBrain:
 
         turn = replace(turn, relationship_state=await self._relationship_state(turn.memory_scope))
         query = " ".join(turn.situation)
-        recalled = await self._recall(turn.memory_scope, turn.player_key, query, turn.game_time)
+        recalled = await self._recall(
+            turn.memory_scope, turn.player_key, query, turn.game_time, WorldContextFacts()
+        )
         async with self._conversation_lock(turn.conversation_key):
             memory = self._store.load(turn.conversation_key)
-            spec = build_situation_spec(turn, history=memory.recent_turns, memories=recalled)
+            spec = build_situation_spec(
+                turn, history=memory.recent_turns, memories=tuple(item.text for item in recalled)
+            )
             provider_token = begin_provider_trace()
             sanitizer_token = begin_sanitizer_trace()
+            memory_reference_token = begin_memory_reference_trace()
             try:
                 display_text = await render(self._llm, spec)
             finally:
                 provider_calls = finish_provider_trace(provider_token)
                 sanitizer_results = finish_sanitizer_trace(sanitizer_token)
+                memory_reference_results = finish_memory_reference_trace(memory_reference_token)
             self._store.save(turn.conversation_key, memory.reacted(turn.situation, display_text))
 
         await self._record(
@@ -415,6 +468,15 @@ class CompanionBrain:
             ),
         )
         self._ensure_loop()
+        await self._record_used(
+            turn.memory_scope,
+            tuple(
+                cast(str, recalled[index].memory_id)
+                for references in memory_reference_results
+                for index in references
+                if index < len(recalled) and recalled[index].memory_id is not None
+            ),
+        )
         return CompanionReply(
             text=display_text,
             provenance=_build_provenance(
@@ -458,7 +520,8 @@ class CompanionBrain:
         player_key: str,
         query: str,
         game_time: TimeContext | None,
-    ) -> tuple[str, ...]:
+        world_context: WorldContextFacts,
+    ) -> tuple[_PromptMemory, ...]:
         """이번 발화(또는 상황)와 관련 있는 장기기억을 문장으로만 꺼낸다.
 
         그래프에는 저장소가 아니라 이미 고른 문장만 들어간다. 노드가 저장소를 쥐고 있으면
@@ -476,15 +539,30 @@ class CompanionBrain:
                 memory_scope.companion_id,
             )
             source_mode = None if game_time is None else game_time.source.value
+            context_query = self._context_memory_query(game_time, world_context)
+            direct_recall = re.search(
+                r"(?:기억(?:해|나|하)|전에\s*말|내\s*(?:취향|약속|이름))", query
+            ) is not None
             source_recalled = await self._source_memory.recall(
                 scope,
                 query=query,
+                context_query=context_query,
+                direct_recall=direct_recall,
                 source_mode=source_mode,
                 query_embedding=await self._embed_text(query),
                 embedding_model=self._embedding_model,
                 limit=self._recall_limit,
             )
-            return tuple(f"[{memory.trace_id}] {memory.text}" for memory in source_recalled)
+            logger.info(
+                "memory_retrieval",
+                extra={
+                    "event": "memory_retrieval",
+                    "retrieved_count": len(source_recalled),
+                    "required_count": sum(item.required for item in source_recalled),
+                    "context_retrieval": bool(context_query),
+                },
+            )
+            return tuple(self._prompt_memory(memory) for memory in source_recalled)
         if self._long_term is None or not player_key:
             return ()
         query_embedding = await self._embed_text(query)
@@ -500,7 +578,51 @@ class CompanionBrain:
                 query_embedding=query_embedding,
                 embedding_model=self._embedding_model,
             )
-        return tuple(memory.text for memory in recalled)
+        return tuple(_PromptMemory(memory.text) for memory in recalled)
+
+    @staticmethod
+    def _context_memory_query(
+        game_time: TimeContext | None, context: WorldContextFacts
+    ) -> str:
+        parts: list[str] = []
+        if game_time is not None and game_time.source.value == "GameWorld":
+            parts.append(game_time.period)
+        if context.is_available:
+            if context.location_id:
+                parts.append(context.location_id)
+            if context.threat is not None and context.threat.present:
+                parts.append("위협")
+                if context.threat.nearest_kind:
+                    parts.append(context.threat.nearest_kind)
+            if context.current_work is not None:
+                parts.extend((context.current_work.type, context.current_work.state))
+        return " ".join(parts)
+
+    @staticmethod
+    def _prompt_memory(memory: RecalledMemory) -> _PromptMemory:
+        return _PromptMemory(
+            text=render_prompt_memory(memory),
+            memory_id=memory.memory_id,
+            required=memory.required,
+        )
+
+    async def _record_used(
+        self, memory_scope: MemoryScope | None, memory_ids: tuple[str, ...]
+    ) -> None:
+        if self._source_memory is None or memory_scope is None or not memory_ids:
+            return
+        scope = SourceScope(
+            memory_scope.profile_id,
+            memory_scope.save_slot_row_id,
+            memory_scope.companion_id,
+        )
+        await self._source_memory.record_used(
+            scope, tuple(dict.fromkeys(memory_ids)), datetime.now(UTC)
+        )
+        logger.info(
+            "memory_used",
+            extra={"event": "memory_used", "used_count": len(set(memory_ids))},
+        )
 
     async def _relationship_state(self, memory_scope: MemoryScope | None) -> RelationshipState:
         if self._relationship_presentation is None or memory_scope is None:

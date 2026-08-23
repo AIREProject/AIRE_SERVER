@@ -27,6 +27,7 @@ from .enemies import EnemyRepository
 from .gametime import describe
 from .intent import (
     CommandLabel,
+    ConversationMode,
     RecipeQueryMode,
     RequestQueryMode,
     ResourceSlot,
@@ -102,10 +103,11 @@ class CompanionState(TypedDict):
     # 같은 규칙이 그대로 적용된다 — **대사 생성에만** 쓰고 분류 노드는 읽지 않는다.
     # 저장소가 아니라 이미 회수된 문장만 들어오므로 노드는 기억이 어디서 왔는지 모른다.
     long_term: NotRequired[tuple[str, ...]]
+    memory_required: NotRequired[bool]
     # 라우팅 중간값
     pending_answered: NotRequired[bool]
     top_intent: NotRequired[TopIntent]
-    query_mode: NotRequired[RecipeQueryMode | RequestQueryMode | None]
+    query_mode: NotRequired[RecipeQueryMode | RequestQueryMode | ConversationMode | None]
     recipe_query: NotRequired[RecipeQuery | None]
     command_label: NotRequired[CommandLabel]
     resource: NotRequired[ResourceSlot]
@@ -128,7 +130,7 @@ class CompanionUpdate(TypedDict, total=False):
     """노드가 반환하는 부분 상태. LangGraph 가 `CompanionState` 에 병합한다."""
 
     top_intent: TopIntent
-    query_mode: RecipeQueryMode | RequestQueryMode | None
+    query_mode: RecipeQueryMode | RequestQueryMode | ConversationMode | None
     recipe_query: RecipeQuery | None
     command_label: CommandLabel
     resource: ResourceSlot
@@ -160,20 +162,36 @@ _TOP_ROUTES: dict[TopIntent, TopRoute] = {
 }
 
 _PREFERENCE_SHARE_PATTERN = re.compile(r"(?:좋아해|좋아하|싫어해|싫어하|선호해|선호하)")
+_MEMORY_RECALL_PATTERN = re.compile(r"(?:기억(?:해|나|하)|전에\s*말|내\s*(?:취향|약속|이름))")
+_EMOTIONAL_PATTERN = re.compile(r"(?:힘들|우울|속상|슬퍼|외로|불안|지쳤|피곤|괴로)")
+_OPINION_PATTERN = re.compile(r"(?:어떻게\s*생각|네\s*생각|조언|추천|뭐가\s*(?:좋|나)|어떡할까)")
+_QUESTION_PATTERN = re.compile(r"(?:뭐|무엇|왜|어떻게|언제|어디|누구|알려|설명|인가|일까|\?)")
 
 
 def _request_query_mode(
     intent: TopIntent,
     text: str,
-) -> RequestQueryMode | None:
+) -> RequestQueryMode | ConversationMode | None:
     if intent is TopIntent.CONVERSATION:
+        if _MEMORY_RECALL_PATTERN.search(text) is not None:
+            return ConversationMode.MEMORY_RECALL
+        if _EMOTIONAL_PATTERN.search(text) is not None:
+            return ConversationMode.EMOTIONAL_SUPPORT
+        if _OPINION_PATTERN.search(text) is not None:
+            return ConversationMode.OPINION_ADVICE
         if _PREFERENCE_SHARE_PATTERN.search(text) is not None:
-            return RequestQueryMode.PREFERENCE_SHARE
-        return RequestQueryMode.CONVERSATION
+            return ConversationMode.PREFERENCE_SHARE
+        if _QUESTION_PATTERN.search(text) is not None:
+            return ConversationMode.GENERAL_KNOWLEDGE
+        if len(text.strip()) <= 1:
+            return ConversationMode.AMBIGUOUS
+        return ConversationMode.SMALL_TALK
     if intent in (TopIntent.ENEMY, TopIntent.LORE):
         return RequestQueryMode.INFORMATION_QUESTION
     if intent is TopIntent.UNKNOWN and GENERAL_QUESTION_PATTERN.search(text.strip()) is not None:
         return RequestQueryMode.UNSUPPORTED_FACT
+    if intent is TopIntent.UNKNOWN:
+        return ConversationMode.NOT_APPLICABLE
     return None
 
 
@@ -309,6 +327,13 @@ def build_companion_graph(
         꺼내면, 새 장면을 추가할 때 문맥을 빠뜨릴 수 없다.
         """
 
+        context_memory_required = bool(
+            state.get("memory_required")
+            and scene == "conversation"
+            and "고마" not in state["text"]
+            and "감사" not in state["text"]
+            and re.search(r"(?:안녕|반가워|하이)", state["text"]) is None
+        )
         return await render(
             llm,
             DialogueSpec(
@@ -319,6 +344,13 @@ def build_companion_graph(
                 facts=(*facts, *_describe_world_context(state["turn"].world_context)),
                 history=state.get("history", ()),
                 memories=state.get("long_term", ()),
+                memory_use_policy=(
+                    "Required"
+                    if context_memory_required
+                    else "Optional"
+                    if state.get("long_term")
+                    else "None"
+                ),
                 situation=describe(state["turn"].game_time),
                 relationship_state=state["turn"].relationship_state,
                 command_candidate_present=command_candidate_present,
@@ -412,7 +444,7 @@ def build_companion_graph(
                 )
         if intent is TopIntent.RECIPE and recipe_query is None:
             recipe_query = RecipeQuery(RecipeQueryMode.AMBIGUOUS)
-        query_mode: RecipeQueryMode | RequestQueryMode | None = (
+        query_mode: RecipeQueryMode | RequestQueryMode | ConversationMode | None = (
             recipe_query.mode
             if intent is TopIntent.RECIPE and recipe_query is not None
             else _request_query_mode(intent, state["text"])
@@ -720,8 +752,23 @@ def build_companion_graph(
             fallback = surface.thanks
         elif re.search(r"(?:안녕|반가워|하이)", text) is not None:
             fallback = surface.greeting
-        else:
+        elif state.get("query_mode") is ConversationMode.EMOTIONAL_SUPPORT:
+            fallback = "많이 버거웠겠다. 지금은 해결책보다 네 얘기를 먼저 들어줄게."
+        elif state.get("query_mode") is ConversationMode.OPINION_ADVICE:
+            fallback = "상황을 조금만 더 알려 주면, 내가 생각하는 선택지와 이유를 솔직히 말해볼게."
+        elif state.get("query_mode") is ConversationMode.GENERAL_KNOWLEDGE:
+            fallback = (
+                "그건 내가 아는 범위에서 설명할 수 있어. "
+                "다만 최신 정보라면 지금 확인할 수는 없어."
+            )
+        elif state.get("query_mode") is ConversationMode.MEMORY_RECALL:
+            fallback = "그 부분은 아직 확실히 기억나는 게 없어. 네가 다시 알려 주면 좋겠어."
+        elif state.get("query_mode") is ConversationMode.PREFERENCE_SHARE:
+            fallback = "그걸 좋아하는구나. 지금 대화에서는 잘 새겨들을게."
+        elif state.get("query_mode") is ConversationMode.AMBIGUOUS:
             fallback = "그 말은 내가 제대로 이해했는지 조금 애매해. 한마디만 더 이어서 말해 줄래?"
+        else:
+            fallback = "응, 계속 말해 줘. 같이 이야기해보자."
         return {"display_text": await say(state, "conversation", fallback)}
 
     async def unsupported_node(state: CompanionState) -> CompanionUpdate:

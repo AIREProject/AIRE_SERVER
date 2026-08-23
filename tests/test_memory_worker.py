@@ -21,7 +21,7 @@ from tests.conftest import make_database, make_settings
 class _Classifier:
     async def classify_memory(self, text: str) -> MemoryClassification:
         assert text == "나는 비 오는 날을 좋아해"
-        return MemoryClassification(decision="Preference", importance=7)
+        return MemoryClassification(decision="Preference", importance=7, confidence=0.95)
 
     async def embed_memory_text(
         self, text: str

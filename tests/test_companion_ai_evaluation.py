@@ -54,6 +54,14 @@ QueryMode = Literal[
     "preference_share",
     "unsupported_fact",
     "information_question",
+    "SmallTalk",
+    "EmotionalSupport",
+    "OpinionAdvice",
+    "GeneralKnowledge",
+    "PreferenceShare",
+    "MemoryRecall",
+    "Ambiguous",
+    "NotApplicable",
     "not_observed",
 ]
 

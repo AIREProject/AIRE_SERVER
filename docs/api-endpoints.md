@@ -55,7 +55,8 @@ HTTP/WS에서 같은 payload를 재전송하면 최초 응답을 재생하며, �
 | GET | `/api/v1/game-state` | GameClient/WebClient가 마지막 승인 Snapshot 조회 |
 | POST | `/api/v1/events` | GameClient가 allowlist GameEvent 저장 |
 | POST | `/api/v1/command-results` | GameClient가 Command 실행 결과 상태 전이 저장 |
-| GET/POST/PATCH/DELETE | `/api/v1/memories/*` | WebClient 기억 조회·검색·정정·고정·삭제·초기화 |
+| GET/POST/PATCH/DELETE | `/api/v1/memories/*` | 기억 조회·검색·정정·고정·삭제·초기화 |
+| GET/PATCH | `/api/v1/memory-candidates/*` | 검토 대기 기억 후보 조회·승인·거절 |
 | `/api/v1/devices/*` | 여러 Method | 기존 random token/pairing 호환 경로 |
 | `/api/v1/admin/*` | 여러 Method | 운영자 CRUD, `ADMIN_API_TOKEN` 필요 |
 
@@ -313,7 +314,7 @@ Context는 대사 생성용 facts-only 입력이다. 이를 근거로 Backend가
   "ai_metadata": {
     "provider": "mock",
     "model_version": "mock-v1",
-    "prompt_version": "companion-v5"
+    "prompt_version": "companion-v7"
   }
 }
 ```
@@ -345,13 +346,36 @@ canonical Message/Event 원문은 변경하지 않습니다.
 각 `MemoryView.sources[]`는 내부 ID나 원문 없이 `source_type`, `source_mode`, `occurred_at`만
 제공합니다. 직접 발화는 Chat surface에 따라 `Message + RealWorld` 또는
 `Message + GameWorld`로 구분하며, `LegacyUnknown` Message는 공개 응답에서 `Legacy` source로
-표시됩니다. 최신 정정문은 목록·검색뿐 아니라 실제 Prompt 회상에도 동일하게 사용됩니다.
+표시됩니다. `last_used_at`과 `use_count`는 검색 후보가 아니라 sanitizer를 통과해 실제 대사에서
+참조된 경우에만 갱신됩니다. 최신 정정문은 목록·검색뿐 아니라 실제 Prompt 회상에도 동일하게
+사용됩니다.
 
 `DELETE /api/v1/memories/{memory_id}?reason={reason}`와
 `POST /api/v1/memories/reset`은 memory를 `Archived`로 전이합니다. 이는 legal erasure가 아니라
 durable 사용자 삭제 tombstone 정책입니다. retrieval/prompt에서 즉시 제외되고 연결 source outbox는
 Tombstone이 되어 restart 뒤 재증류되지 않습니다. shared source 원문은 마지막 Active reference가
 사라질 때까지 보존하며, 마지막 reference가 해제된 source는 retention purge 대상으로 전환됩니다.
+
+### 4.7 Memory 후보 검토
+
+confidence가 낮거나 기존 Active memory와 유사·모순 가능성이 있는 후보는 Active memory로
+바로 승격하지 않고 최대 30일 동안 `PendingReview`로 둡니다. 이 기간에는 candidate reference가
+canonical source를 보존합니다. 목록은 다음 scope query를 필수로 받으며 Pending 후보만
+반환합니다.
+
+```text
+GET   /api/v1/memory-candidates?save_slot_id={id}&companion_id={id}
+GET   /api/v1/memory-candidates/{candidate_id}?save_slot_id={id}&companion_id={id}
+PATCH /api/v1/memory-candidates/{candidate_id}?save_slot_id={id}&companion_id={id}
+```
+
+PATCH body는 `decision=Approve|Reject`와 `reason`을 필수로 받습니다. Approve에서만
+`memory_type`, `importance`, `pinned`, `corrected_text`를 선택적으로 지정할 수 있습니다.
+승인은 Memory 저장·source reference 승격·후보 종료를 한 transaction에서 처리하며 정정문은
+canonical 원문을 바꾸지 않고 append-only correction으로 남깁니다. 같은 결정의 재전송은 기존
+결과를 반환하고 다른 결정은 `409 MemoryCandidateTransitionNotAllowed`입니다. 다른 profile scope,
+만료·종료 후보는 목록과 상세에서 노출하지 않습니다. 공개 후보에는 confidence, Provider 정보,
+내부 source ID가 포함되지 않습니다.
 
 ## 5. GameEvent와 Command Result
 

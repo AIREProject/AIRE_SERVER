@@ -16,7 +16,7 @@
   },
   "expect": {
     "top_intent": "conversation",
-    "query_mode": "conversation",
+    "query_mode": "SmallTalk",
     "allowed_fact_ids": [],
     "forbidden_fact_ids": [],
     "allowed_command_types": [],

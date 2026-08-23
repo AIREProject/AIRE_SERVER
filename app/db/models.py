@@ -21,6 +21,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -264,6 +265,62 @@ class MemoryCorrectionModel(Base):
     corrected_text: Mapped[str] = mapped_column(Text)
     reason: Mapped[str] = mapped_column(String(512))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class MemoryCandidateModel(Base):
+    """A source-backed memory candidate awaiting an authenticated user decision."""
+
+    __tablename__ = "memory_candidates"
+    __table_args__ = (
+        UniqueConstraint("source_type", "source_id", name="uq_memory_candidates_source"),
+        CheckConstraint(
+            "memory_type IN ('ProfileFact', 'Preference', 'Episode', "
+            "'Promise', 'RelationshipEvidence')",
+            name="ck_memory_candidates_type",
+        ),
+        CheckConstraint(
+            "status IN ('PendingReview', 'Approved', 'Rejected', 'Expired')",
+            name="ck_memory_candidates_status",
+        ),
+        CheckConstraint(
+            "importance >= 1 AND importance <= 10",
+            name="ck_memory_candidates_importance",
+        ),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1",
+            name="ck_memory_candidates_confidence",
+        ),
+        CheckConstraint(
+            "source_type IN ('Message', 'Event')",
+            name="ck_memory_candidates_source_type",
+        ),
+    )
+
+    candidate_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.profile_id"), index=True)
+    save_slot_row_id: Mapped[str] = mapped_column(ForeignKey("save_slots.row_id"), index=True)
+    companion_id: Mapped[str] = mapped_column(String(128), index=True)
+    memory_type: Mapped[str] = mapped_column(String(32))
+    text: Mapped[str] = mapped_column(Text)
+    normalized_text: Mapped[str] = mapped_column(Text)
+    importance: Mapped[int] = mapped_column(Integer)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    confidence: Mapped[float] = mapped_column(Float)
+    embedding: Mapped[list[float] | None] = mapped_column(JSON)
+    embedding_model: Mapped[str | None] = mapped_column(String(128))
+    source_type: Mapped[str] = mapped_column(String(16), index=True)
+    source_id: Mapped[str] = mapped_column(String(128), index=True)
+    source_mode: Mapped[str] = mapped_column(String(16))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    review_reason: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_reason: Mapped[str | None] = mapped_column(String(512))
+    approved_memory_id: Mapped[str | None] = mapped_column(
+        ForeignKey("memories.memory_id"), index=True
+    )
 
 
 class MemoryMigrationReportModel(Base):

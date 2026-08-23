@@ -11,7 +11,7 @@ from app.db.models import (
     SaveSlotModel,
 )
 from app.db.source_repository import SOURCE_MESSAGE, SourceScope
-from app.source_memory_store import SourceBackedMemoryStore
+from app.source_memory_store import SourceBackedMemoryStore, render_prompt_memory
 from tests.conftest import make_database, make_settings
 
 _NOW = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
@@ -241,7 +241,7 @@ async def test_prompt_memory_budget_never_exceeds_three_entries_or_360_character
     )
 
     assert len(recalled) <= 3
-    assert sum(len(f"[{item.trace_id}] {item.text}") for item in recalled) <= 360
+    assert sum(len(render_prompt_memory(item)) for item in recalled) <= 360
 
 
 async def test_recall_counter_is_capped_in_scoring_and_archive_candidates_do_not_mutate() -> None:
@@ -251,7 +251,9 @@ async def test_recall_counter_is_capped_in_scoring_and_archive_candidates_do_not
     store = SourceBackedMemoryStore(database)
     scope = SourceScope("profile-a", "slot-a", "mako")
     for _ in range(7):
-        assert await store.recall(scope, query="밤이", source_mode="RealWorld")
+        recalled = await store.recall(scope, query="밤이", source_mode="RealWorld")
+        assert recalled
+        await store.record_used(scope, ("memory-old",), _NOW)
 
     async with database.session_factory() as session:
         memory = await session.get(MemoryModel, "memory-old")
@@ -263,3 +265,43 @@ async def test_recall_counter_is_capped_in_scoring_and_archive_candidates_do_not
     async with database.session_factory() as session:
         statuses = tuple((await session.execute(select(MemoryModel.status))).scalars())
     assert statuses == ("Active", "Active")
+
+
+async def test_context_only_recall_uses_importance_gate_cooldown_and_actual_use_tracking() -> None:
+    database = await make_database(make_settings())
+    await _memory(
+        database,
+        memory_id="memory-night-cave",
+        text="동굴의 밤은 무서워",
+        importance=6,
+    )
+    await _memory(
+        database,
+        memory_id="memory-low-night",
+        text="밤에는 조용히 걷고 싶어",
+        importance=5,
+    )
+    store = SourceBackedMemoryStore(database)
+    scope = SourceScope("profile-a", "slot-a", "mako")
+
+    recalled = await store.recall(
+        scope,
+        query="안녕",
+        context_query="동굴 밤",
+        source_mode="GameWorld",
+        now=_NOW,
+    )
+    assert [item.memory_id for item in recalled] == ["memory-night-cave"]
+    assert recalled[0].required is True
+    async with database.session_factory() as session:
+        memory = await session.get(MemoryModel, "memory-night-cave")
+        assert memory is not None and memory.recall_count == 0
+
+    await store.record_used(scope, ("memory-night-cave",), _NOW)
+    assert await store.recall(
+        scope,
+        query="안녕",
+        context_query="동굴 밤",
+        source_mode="GameWorld",
+        now=_NOW + timedelta(minutes=5),
+    ) == ()

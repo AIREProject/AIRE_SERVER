@@ -166,7 +166,8 @@ TRANSCRIPT_RETENTION_DAYS=1
 
 ### 마코 대사 Persona
 
-`companion-v5`부터 마코는 오래 알고 지낸 밝고 생동감 있는 동료를 기본 Persona로 사용합니다.
+`companion-v7`에서 마코는 오래 알고 지낸 밝고 생동감 있는 동료 Persona를 유지하면서,
+일상대화·일반 지식과 검증된 기억 회상의 경계를 구분합니다.
 관계 단계가 낮아도 처음 만난 사람처럼 딱딱하게 말하지 않으며, 단계가 높아질수록 장난과 익숙한
 호흡을 조금 더 자연스럽게 표현합니다. `ㅋㅋ`, `ㅎㅎ`와 이모지는 상황에 맞을 때만 제한적으로
 사용합니다.
@@ -195,7 +196,7 @@ Memory 후보가 있어야 하고, Memory를 실제 답변에 사용하면 `memo
   "ai_metadata": {
     "provider": "local",
     "model_version": "your-model-name",
-    "prompt_version": "companion-v5"
+    "prompt_version": "companion-v7"
   }
 }
 ```
