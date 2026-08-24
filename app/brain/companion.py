@@ -113,6 +113,10 @@ _EMBEDDING_QUERY_CACHE_SIZE = 64
 _SWEEP_INTERVAL_SECONDS = 3600.0
 logger = logging.getLogger("aire.backend")
 
+_DIRECT_MEMORY_RECALL_PATTERN = re.compile(
+    r"(?:기억(?:해|나|하)|전에\s*말|내\s*(?:취향|약속|이름)|\?)"
+)
+
 
 def _build_provenance(
     final: CompanionState | None,
@@ -540,9 +544,7 @@ class CompanionBrain:
             )
             source_mode = None if game_time is None else game_time.source.value
             context_query = self._context_memory_query(game_time, world_context)
-            direct_recall = re.search(
-                r"(?:기억(?:해|나|하)|전에\s*말|내\s*(?:취향|약속|이름))", query
-            ) is not None
+            direct_recall = _DIRECT_MEMORY_RECALL_PATTERN.search(query) is not None
             source_recalled = await self._source_memory.recall(
                 scope,
                 query=query,

@@ -128,7 +128,7 @@ systemctl --user status aire-server.service --no-pager
 journalctl --user -u aire-server.service -n 150 --no-pager
 ```
 
-정상 revision은 `0016 (head)`입니다. migration 실패 시 downgrade하지 말고 service를 중지한 뒤
+정상 revision은 `0017 (head)`입니다. migration 실패 시 downgrade하지 말고 service를 중지한 뒤
 백업과 첫 오류를 보존합니다.
 
 ## 6. Legacy Transcript 이관
@@ -195,7 +195,7 @@ curl -fsS https://traip.mtvs2026.work/openapi.json -o /tmp/aire-openapi.json
 
 - HTTP 200
 - `database=ready`
-- `database_revision=0016`
+- `database_revision=0017`
 - `status=ready`, 또는 Mock fallback을 의도적으로 허용한 경우에만 `degraded`
 
 OpenAPI 경로를 검사합니다.
@@ -246,7 +246,7 @@ Recipe 응답은 검증된 돌도끼 재료·수량·작업대·시간을 직접
 ## 10. 서버 작업 완료 조건
 
 - `aire-server.service`가 `active`
-- Alembic `0016 (head)`
+- Alembic `0017 (head)`
 - 내부·공개 `/ready` HTTP 200
 - 실제 LLM 행렬 `passed`
 - 공개 OpenAPI의 필수 경로 누락 없음

@@ -444,11 +444,14 @@ def build_companion_graph(
                 )
         if intent is TopIntent.RECIPE and recipe_query is None:
             recipe_query = RecipeQuery(RecipeQueryMode.AMBIGUOUS)
-        query_mode: RecipeQueryMode | RequestQueryMode | ConversationMode | None = (
-            recipe_query.mode
-            if intent is TopIntent.RECIPE and recipe_query is not None
-            else _request_query_mode(intent, state["text"])
-        )
+        if intent is TopIntent.RECIPE and recipe_query is not None:
+            query_mode: RecipeQueryMode | RequestQueryMode | ConversationMode | None = (
+                recipe_query.mode
+            )
+        elif intent is TopIntent.CONVERSATION and state.get("memory_required"):
+            query_mode = ConversationMode.MEMORY_RECALL
+        else:
+            query_mode = _request_query_mode(intent, state["text"])
         return {
             "top_intent": intent,
             "query_mode": query_mode,

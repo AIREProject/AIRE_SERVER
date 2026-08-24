@@ -4,6 +4,8 @@
 그래프 실행은 모든 터미널 노드가 대사를 채운다는 불변식을 확인한다.
 """
 
+from datetime import UTC, datetime
+
 import pytest
 from langgraph.graph.state import CompiledStateGraph
 
@@ -11,6 +13,7 @@ from app.brain import CompanionBrain, CompanionReply, CompanionTurn
 from app.brain.contract import (
     InventoryFacts,
     InventoryItemFacts,
+    MemoryScope,
     ResourceFacts,
     ThreatFacts,
     WorkFacts,
@@ -52,6 +55,7 @@ from app.brain.store import (
 )
 from app.gamedata.dataset import ITEMS
 from app.models import CommandType, Surface, TimeContext, TimeSource
+from app.source_memory_store import RecalledMemory
 
 
 @pytest.mark.parametrize(
@@ -509,6 +513,80 @@ class MemoryAnswerProvider(MockLLMProvider):
             situation_references=(),
             accepts_command=False,
         )
+
+
+class RecordingMemoryProvider(MockLLMProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.dialogue_specs: list[DialogueSpec] = []
+
+    async def generate_dialogue(self, spec: DialogueSpec) -> DialogueOutput:
+        self.dialogue_specs.append(spec)
+        return await super().generate_dialogue(spec)
+
+
+class RecalledMemoryStoreStub:
+    def __init__(self) -> None:
+        self.direct_recall_values: list[bool] = []
+        self.used_memory_ids: list[str] = []
+
+    async def recall(
+        self,
+        _scope: object,
+        *,
+        query: str,
+        context_query: str = "",
+        direct_recall: bool = False,
+        source_mode: str | None,
+        query_embedding: object | None = None,
+        embedding_model: str | None = None,
+        limit: int = 3,
+    ) -> tuple[RecalledMemory, ...]:
+        del context_query, source_mode, query_embedding, embedding_model, limit
+        assert query == "출근시간은?"
+        self.direct_recall_values.append(direct_recall)
+        return (
+            RecalledMemory(
+                trace_id="M0",
+                memory_id="memory-commute-time",
+                text="출근시간은 9시 반이야",
+                memory_type="ProfileFact",
+                source_modes=("RealWorld",),
+                occurred_at=datetime(2026, 8, 24, 2, 21, tzinfo=UTC),
+                priority="Normal",
+                required=direct_recall,
+            ),
+        )
+
+    async def record_used(
+        self, _scope: object, memory_ids: tuple[str, ...], _now: datetime
+    ) -> None:
+        self.used_memory_ids.extend(memory_ids)
+
+
+async def test_specific_memory_question_uses_recalled_memory_as_required() -> None:
+    provider = RecordingMemoryProvider()
+    source_memory = RecalledMemoryStoreStub()
+    brain = CompanionBrain(provider, source_memory=source_memory)  # type: ignore[arg-type]
+
+    reply = await brain.respond(
+        CompanionTurn(
+            text="출근시간은?",
+            conversation_key="memory-question",
+            player_key="player-a",
+            companion_id="mako",
+            surface=Surface.MOBILE,
+            allowed_actions=frozenset(CommandType),
+            memory_scope=MemoryScope("profile-a", "slot-a", "mako"),
+        )
+    )
+
+    assert source_memory.direct_recall_values == [True]
+    assert provider.dialogue_specs[-1].memories[0].endswith("출근시간은 9시 반이야")
+    assert provider.dialogue_specs[-1].memory_use_policy == "Required"
+    assert reply.text == "기억하고 있어. 출근시간은 9시 반이야"
+    assert reply.provenance is not None
+    assert reply.provenance.query_mode == "MemoryRecall"
 
 
 async def test_llm_can_answer_from_a_declared_long_term_memory_candidate() -> None:

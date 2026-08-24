@@ -76,7 +76,7 @@ GET /health
 
 Health는 DB migration, DB query와 실제 LLM 호출을 검사하지 않습니다.
 
-`GET /ready`는 DB 연결과 Alembic `0016` head를 검사합니다. 연결 실패나 revision 불일치는
+`GET /ready`는 DB 연결과 Alembic `0017` head를 검사합니다. 연결 실패나 revision 불일치는
 HTTP 503 `not_ready`입니다. DB가 준비된 상태에서 Memory worker의 최근 LLM 분류가 실패하면
 Mock fallback이 가능한 HTTP 200 `degraded`로 반환합니다.
 
