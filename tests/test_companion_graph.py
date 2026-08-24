@@ -67,6 +67,12 @@ from app.source_memory_store import RecalledMemory
         (TopIntent.CONVERSATION, "파이썬이 뭐야?", ConversationMode.GENERAL_KNOWLEDGE),
         (TopIntent.CONVERSATION, "나는 겨울을 좋아해", ConversationMode.PREFERENCE_SHARE),
         (TopIntent.CONVERSATION, "내 취향 기억해?", ConversationMode.MEMORY_RECALL),
+        (TopIntent.MEMORY, "출근시간 몇시야", ConversationMode.MEMORY_RECALL),
+        (
+            TopIntent.MEMORY_SHARE,
+            "퇴근은 언제나 6시 반이야",
+            ConversationMode.MEMORY_SHARE,
+        ),
         (TopIntent.CONVERSATION, "음", ConversationMode.AMBIGUOUS),
         (TopIntent.UNKNOWN, "...", ConversationMode.NOT_APPLICABLE),
     ),
@@ -220,6 +226,8 @@ class ForcedRecipeTopProvider(MockLLMProvider):
         (TopIntent.RECIPE, "recipe"),
         (TopIntent.ENEMY, "enemy"),
         (TopIntent.LORE, "lore"),
+        (TopIntent.MEMORY, "conversation"),
+        (TopIntent.MEMORY_SHARE, "conversation"),
         (TopIntent.CONVERSATION, "conversation"),
         (TopIntent.UNKNOWN, "unsupported"),
     ],
@@ -525,8 +533,46 @@ class RecordingMemoryProvider(MockLLMProvider):
         return await super().generate_dialogue(spec)
 
 
+class InvalidRequiredMemoryProvider(RecordingMemoryProvider):
+    async def generate_dialogue(self, spec: DialogueSpec) -> DialogueOutput:
+        self.dialogue_specs.append(spec)
+        return DialogueOutput(
+            text="잘 모르겠어.",
+            purpose="conversation",
+            fact_references=(),
+            memory_references=(),
+            situation_references=(),
+            accepts_command=False,
+        )
+
+
+class LlmMemoryIntentProvider(InvalidRequiredMemoryProvider):
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
+        del text, clarification_pending, history
+        return TopIntent.MEMORY
+
+
+class LlmMemoryShareProvider(RecordingMemoryProvider):
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
+        del text, clarification_pending, history
+        return TopIntent.MEMORY_SHARE
+
+
 class RecalledMemoryStoreStub:
-    def __init__(self) -> None:
+    def __init__(self, expected_query: str = "출근시간은?") -> None:
+        self.expected_query = expected_query
         self.direct_recall_values: list[bool] = []
         self.used_memory_ids: list[str] = []
 
@@ -543,7 +589,7 @@ class RecalledMemoryStoreStub:
         limit: int = 3,
     ) -> tuple[RecalledMemory, ...]:
         del context_query, source_mode, query_embedding, embedding_model, limit
-        assert query == "출근시간은?"
+        assert query == self.expected_query
         self.direct_recall_values.append(direct_recall)
         return (
             RecalledMemory(
@@ -584,9 +630,83 @@ async def test_specific_memory_question_uses_recalled_memory_as_required() -> No
     assert source_memory.direct_recall_values == [True]
     assert provider.dialogue_specs[-1].memories[0].endswith("출근시간은 9시 반이야")
     assert provider.dialogue_specs[-1].memory_use_policy == "Required"
-    assert reply.text == "기억하고 있어. 출근시간은 9시 반이야"
+    assert reply.text == "전에 네가 이렇게 알려줬어: “출근시간은 9시 반이야”"
     assert reply.provenance is not None
     assert reply.provenance.query_mode == "MemoryRecall"
+
+
+async def test_rejected_required_memory_reply_uses_and_records_the_recalled_memory() -> None:
+    provider = InvalidRequiredMemoryProvider()
+    source_memory = RecalledMemoryStoreStub()
+    brain = CompanionBrain(provider, source_memory=source_memory)  # type: ignore[arg-type]
+
+    reply = await brain.respond(
+        CompanionTurn(
+            text="출근시간은?",
+            conversation_key="rejected-memory-answer",
+            player_key="player-a",
+            companion_id="mako",
+            surface=Surface.MOBILE,
+            allowed_actions=frozenset(CommandType),
+            memory_scope=MemoryScope("profile-a", "slot-a", "mako"),
+        )
+    )
+
+    assert reply.text == "전에 네가 이렇게 알려줬어: “출근시간은 9시 반이야”"
+    assert source_memory.used_memory_ids == ["memory-commute-time"]
+    assert reply.provenance is not None
+    assert reply.provenance.final_fallback_reason == "sanitizer_rejection"
+
+
+async def test_llm_memory_intent_does_not_require_a_hardcoded_question_shape() -> None:
+    provider = LlmMemoryIntentProvider()
+    source_memory = RecalledMemoryStoreStub("출근시간 몇시야")
+    brain = CompanionBrain(provider, source_memory=source_memory)  # type: ignore[arg-type]
+
+    reply = await brain.respond(
+        CompanionTurn(
+            text="출근시간 몇시야",
+            conversation_key="llm-memory-intent",
+            player_key="player-a",
+            companion_id="mako",
+            surface=Surface.MOBILE,
+            allowed_actions=frozenset(CommandType),
+            memory_scope=MemoryScope("profile-a", "slot-a", "mako"),
+        )
+    )
+
+    assert source_memory.direct_recall_values == [False]
+    assert provider.dialogue_specs[-1].memory_use_policy == "Required"
+    assert reply.text == "기억하고 있어. 출근시간은 9시 반이야"
+    assert source_memory.used_memory_ids == ["memory-commute-time"]
+    assert reply.provenance is not None
+    assert reply.provenance.query_mode == "MemoryRecall"
+
+
+async def test_llm_memory_share_does_not_receive_an_old_memory_as_reply_material() -> None:
+    provider = LlmMemoryShareProvider()
+    source_memory = RecalledMemoryStoreStub("퇴근은 언제나 6시반이야")
+    brain = CompanionBrain(provider, source_memory=source_memory)  # type: ignore[arg-type]
+
+    reply = await brain.respond(
+        CompanionTurn(
+            text="퇴근은 언제나 6시반이야",
+            conversation_key="llm-memory-share",
+            player_key="player-a",
+            companion_id="mako",
+            surface=Surface.MOBILE,
+            allowed_actions=frozenset(CommandType),
+            memory_scope=MemoryScope("profile-a", "slot-a", "mako"),
+        )
+    )
+
+    assert source_memory.direct_recall_values == [False]
+    assert provider.dialogue_specs[-1].memories == ()
+    assert provider.dialogue_specs[-1].memory_use_policy == "None"
+    assert reply.text == "그렇구나. 네 이야기로 잘 새겨들을게."
+    assert source_memory.used_memory_ids == []
+    assert reply.provenance is not None
+    assert reply.provenance.query_mode == "MemoryShare"
 
 
 async def test_llm_can_answer_from_a_declared_long_term_memory_candidate() -> None:

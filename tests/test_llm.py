@@ -387,6 +387,8 @@ async def test_local_provider_parses_structured_top_classification() -> None:
         "recipe",
         "enemy",
         "lore",
+        "memory",
+        "memory_share",
         "conversation",
         "unknown",
     ]
@@ -440,10 +442,10 @@ async def test_local_provider_parses_structured_command_classification() -> None
     assert schema["$defs"]["CommandLabel"]["enum"] == [
         "follow_player",
         "wait",
-            "stop_current_task",
-            "gather_resource",
-            "craft_item",
-            "attack",
+        "stop_current_task",
+        "gather_resource",
+        "craft_item",
+        "attack",
         "return_to_player",
         "unknown",
     ]
@@ -560,9 +562,7 @@ async def test_local_memory_conversation_requires_declared_memory_references() -
     assert result.text == "네 이름은 대통령 윤 석열이야."
     assert result.memory_references == (0,)
     call = client.chat.completions.create.await_args.kwargs
-    assert call["response_format"]["json_schema"]["name"] == (
-        "memory_conversation_dialogue_output"
-    )
+    assert call["response_format"]["json_schema"]["name"] == ("memory_conversation_dialogue_output")
 
 
 @pytest.mark.asyncio

@@ -230,11 +230,48 @@ SURFACE_PROFILES: dict[Surface, SurfaceProfile] = {
 }
 
 
-def provider_failure_fallback(spec: DialogueSpec, reason: FallbackReason) -> str:
-    """Provider 실패는 관측성에 남기고 사용자에게는 안전한 장면 폴백을 반환한다."""
+def _fallback_memory_references(spec: DialogueSpec, references: tuple[int, ...]) -> tuple[int, ...]:
+    """LLM이 고른 유효한 기억, 또는 Required 기억의 안전한 대체 근거를 고른다."""
+
+    valid = tuple(dict.fromkeys(index for index in references if 0 <= index < len(spec.memories)))
+    if valid:
+        return valid
+    if spec.memory_use_policy == "Required" and spec.memories:
+        return (0,)
+    return ()
+
+
+def _memory_grounded_fallback(spec: DialogueSpec, references: tuple[int, ...]) -> str | None:
+    """Metadata를 노출하지 않고 검증된 기억 본문으로 대체 응답을 만든다."""
+
+    selected = _fallback_memory_references(spec, references)
+    if not selected:
+        return None
+    # Source-backed 기억은 metadata 필드 네 개 뒤에 본문이 오고 legacy 기억은 본문만 있다.
+    source = spec.memories[selected[0]]
+    memory_text = (
+        source.split("; ", maxsplit=4)[-1].strip()
+        if source.startswith("[M") and " type=" in source
+        else source.strip()
+    )
+    fallback = f"전에 네가 이렇게 알려줬어: “{memory_text}”"
+    return fallback if memory_text and len(fallback) <= 200 else None
+
+
+def provider_failure_fallback(
+    spec: DialogueSpec,
+    reason: FallbackReason,
+    *,
+    memory_references: tuple[int, ...] = (),
+) -> str:
+    """Provider 실패는 관측성에 남기고 검증된 근거로 안전하게 복구한다.
+
+    LLM이 기억 후보를 실제로 선택했거나 Backend가 Required로 지정한 직접 회상
+    질문이면, 생성 문장의 검증 실패를 "기억 없음"으로 바꿔 말하지 않는다.
+    """
 
     del reason
-    return spec.fallback
+    return _memory_grounded_fallback(spec, memory_references) or spec.fallback
 
 
 _NUMBER_PATTERN = re.compile(r"\d+")
@@ -360,8 +397,10 @@ def _has_lexical_anchor(text: str, source: str) -> bool:
 
 
 _ROOT_PATTERN = re.compile(r"[가-힣A-Za-z]+")
-_ROOT_SUFFIX = re.compile(r"(?:으로|에서|에게|처럼|보다|까지|하고|이랑|했어|한다|하다|였어|이다|"
-                          r"을|를|은|는|이|가|도|만|와|과|랑|로|의|에)$")
+_ROOT_SUFFIX = re.compile(
+    r"(?:으로|에서|에게|처럼|보다|까지|하고|이랑|했어|한다|하다|였어|이다|"
+    r"을|를|은|는|이|가|도|만|와|과|랑|로|의|에)$"
+)
 _NEGATION_PATTERN = re.compile(r"(?:아니|않|못|없|싫|안\s|\bnot\b|\bnever\b|\bno\b)", re.I)
 
 
@@ -393,7 +432,9 @@ def _memory_claims_are_valid(
                 for response_root in response_roots
             )
         }
-        required = min(2, len(source_roots))
+        # 숫자·부정은 아래에서 별도로 엄격히 검사한다. 짧은 직접 답변("9시 반이야")에
+        # 두 개의 어휘 반복을 요구하면 올바른 기억 답변까지 불필요하게 거절한다.
+        required = min(1, len(source_roots))
         if required and len(overlap) < required:
             return False
         if bool(_NEGATION_PATTERN.search(source)) != bool(_NEGATION_PATTERN.search(response)):
@@ -426,17 +467,32 @@ async def render_observed(llm: LLMProvider, spec: DialogueSpec) -> RenderedDialo
             if isinstance(error, TimeoutError) or "timeout" in type(error).__name__.casefold()
             else "provider_unavailable"
         )
+        fallback_references = _fallback_memory_references(spec, ())
+        grounded_fallback = _memory_grounded_fallback(spec, fallback_references)
         result = RenderedDialogue(
-            text=provider_failure_fallback(spec, reason),
+            text=grounded_fallback or provider_failure_fallback(spec, reason),
             sanitizer_succeeded=None,
         )
+        if grounded_fallback is not None:
+            _record_memory_references(fallback_references)
         return result
     sanitized = sanitize(generated, spec)
     sanitizer_succeeded = sanitized is not None
+    generated_references = (
+        generated.memory_references if isinstance(generated, DialogueOutput) else ()
+    )
+    fallback_references = (
+        () if sanitizer_succeeded else _fallback_memory_references(spec, generated_references)
+    )
+    grounded_fallback = _memory_grounded_fallback(spec, fallback_references)
     result = RenderedDialogue(
-        text=sanitized or provider_failure_fallback(spec, "sanitizer_rejection"),
+        text=sanitized
+        or grounded_fallback
+        or provider_failure_fallback(spec, "sanitizer_rejection"),
         sanitizer_succeeded=sanitizer_succeeded,
     )
+    if grounded_fallback is not None:
+        _record_memory_references(fallback_references)
     _record_sanitizer_result(sanitizer_succeeded)
     return result
 
@@ -445,6 +501,14 @@ def _record_sanitizer_result(succeeded: bool) -> None:
     results = _sanitizer_context.get()
     if results is not None and len(results) < 8:
         results.append(succeeded)
+
+
+def _record_memory_references(references: tuple[int, ...]) -> None:
+    if not references:
+        return
+    traces = _memory_reference_context.get()
+    if traces is not None and len(traces) < 8:
+        traces.append(references)
 
 
 async def render(llm: LLMProvider, spec: DialogueSpec) -> str:
