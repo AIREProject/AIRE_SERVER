@@ -630,7 +630,7 @@ async def test_specific_memory_question_uses_recalled_memory_as_required() -> No
     assert source_memory.direct_recall_values == [True]
     assert provider.dialogue_specs[-1].memories[0].endswith("출근시간은 9시 반이야")
     assert provider.dialogue_specs[-1].memory_use_policy == "Required"
-    assert reply.text == "전에 네가 이렇게 알려줬어: “출근시간은 9시 반이야”"
+    assert reply.text == "출근시간은 9시 반이야"
     assert reply.provenance is not None
     assert reply.provenance.query_mode == "MemoryRecall"
 
@@ -652,7 +652,9 @@ async def test_rejected_required_memory_reply_uses_and_records_the_recalled_memo
         )
     )
 
-    assert reply.text == "전에 네가 이렇게 알려줬어: “출근시간은 9시 반이야”"
+    assert reply.text == (
+        "관련된 기억은 있는데, 지금 답을 정확하게 정리하지 못했어. 한 번만 다시 물어봐 줄래?"
+    )
     assert source_memory.used_memory_ids == ["memory-commute-time"]
     assert reply.provenance is not None
     assert reply.provenance.final_fallback_reason == "sanitizer_rejection"
@@ -677,7 +679,7 @@ async def test_llm_memory_intent_does_not_require_a_hardcoded_question_shape() -
 
     assert source_memory.direct_recall_values == [False]
     assert provider.dialogue_specs[-1].memory_use_policy == "Required"
-    assert reply.text == "기억하고 있어. 출근시간은 9시 반이야"
+    assert reply.text == "출근시간은 9시 반이야"
     assert source_memory.used_memory_ids == ["memory-commute-time"]
     assert reply.provenance is not None
     assert reply.provenance.query_mode == "MemoryRecall"

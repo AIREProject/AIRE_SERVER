@@ -242,20 +242,12 @@ def _fallback_memory_references(spec: DialogueSpec, references: tuple[int, ...])
 
 
 def _memory_grounded_fallback(spec: DialogueSpec, references: tuple[int, ...]) -> str | None:
-    """Metadata를 노출하지 않고 검증된 기억 본문으로 대체 응답을 만든다."""
+    """기억 원문을 대사로 복사하지 않는 안전한 마지막 폴백을 만든다."""
 
     selected = _fallback_memory_references(spec, references)
     if not selected:
         return None
-    # Source-backed 기억은 metadata 필드 네 개 뒤에 본문이 오고 legacy 기억은 본문만 있다.
-    source = spec.memories[selected[0]]
-    memory_text = (
-        source.split("; ", maxsplit=4)[-1].strip()
-        if source.startswith("[M") and " type=" in source
-        else source.strip()
-    )
-    fallback = f"전에 네가 이렇게 알려줬어: “{memory_text}”"
-    return fallback if memory_text and len(fallback) <= 200 else None
+    return "관련된 기억은 있는데, 지금 답을 정확하게 정리하지 못했어. 한 번만 다시 물어봐 줄래?"
 
 
 def provider_failure_fallback(
@@ -343,17 +335,20 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
         return None
 
     if isinstance(output, DialogueOutput):
+        memory_references = output.memory_references
+        if spec.memory_use_policy == "Required" and not memory_references:
+            memory_references = _infer_memory_references(normalized, spec.memories)
         if output.purpose != spec.scene:
             return None
         if output.accepts_command != spec.command_candidate_present:
             return None
         if not _references_are_valid(output.fact_references, spec.facts, normalized):
             return None
-        if not _references_are_valid(output.memory_references, spec.memories, normalized):
+        if not _references_are_valid(memory_references, spec.memories, normalized):
             return None
-        if spec.memory_use_policy == "Required" and 0 not in output.memory_references:
+        if spec.memory_use_policy == "Required" and not memory_references:
             return None
-        if not _memory_claims_are_valid(output.memory_references, spec.memories, normalized):
+        if not _memory_claims_are_valid(memory_references, spec.memories, normalized):
             return None
         if not _references_are_valid(output.situation_references, spec.situation, normalized):
             return None
@@ -374,8 +369,30 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
     if isinstance(output, DialogueOutput):
         traces = _memory_reference_context.get()
         if traces is not None and len(traces) < 8:
-            traces.append(output.memory_references)
+            traces.append(memory_references)
     return normalized
+
+
+def _infer_memory_references(response: str, sources: tuple[str, ...]) -> tuple[int, ...]:
+    """Local LLM이 빠뜨린 reference를 답변 본문에서 엄격하게 복구한다.
+
+    어휘 근거가 있고 숫자·부정의 의미가 원문과 일치하는 기억만 선택하므로,
+    모델이 새 사실을 만든 답변은 이 보정을 통과하지 못한다.
+    """
+
+    response_numbers = set(_NUMBER_PATTERN.findall(response))
+    response_negated = bool(_NEGATION_PATTERN.search(response))
+    inferred: list[int] = []
+    for index, source in enumerate(sources):
+        if not _has_lexical_anchor(response, source):
+            continue
+        source_numbers = set(_NUMBER_PATTERN.findall(source))
+        if not response_numbers.issubset(source_numbers):
+            continue
+        if response_negated != bool(_NEGATION_PATTERN.search(source)):
+            continue
+        inferred.append(index)
+    return tuple(inferred)
 
 
 def _references_are_valid(
@@ -396,21 +413,7 @@ def _has_lexical_anchor(text: str, source: str) -> bool:
     return bool(text_anchors.intersection(_bigrams(source)))
 
 
-_ROOT_PATTERN = re.compile(r"[가-힣A-Za-z]+")
-_ROOT_SUFFIX = re.compile(
-    r"(?:으로|에서|에게|처럼|보다|까지|하고|이랑|했어|한다|하다|였어|이다|"
-    r"을|를|은|는|이|가|도|만|와|과|랑|로|의|에)$"
-)
 _NEGATION_PATTERN = re.compile(r"(?:아니|않|못|없|싫|안\s|\bnot\b|\bnever\b|\bno\b)", re.I)
-
-
-def _meaningful_roots(text: str) -> set[str]:
-    return {
-        root
-        for token in _ROOT_PATTERN.findall(text.casefold())
-        if len(root := _ROOT_SUFFIX.sub("", token)) >= 2
-        and root not in {"memory", "type", "source", "priority", "normal", "high"}
-    }
 
 
 def _memory_claims_are_valid(
@@ -418,25 +421,11 @@ def _memory_claims_are_valid(
 ) -> bool:
     if not references:
         return True
-    response_roots = _meaningful_roots(response)
     referenced = tuple(sources[index] for index in references if index < len(sources))
     for source in referenced:
-        source_roots = _meaningful_roots(source)
-        overlap = {
-            source_root
-            for source_root in source_roots
-            if any(
-                source_root == response_root
-                or source_root in response_root
-                or response_root in source_root
-                for response_root in response_roots
-            )
-        }
-        # 숫자·부정은 아래에서 별도로 엄격히 검사한다. 짧은 직접 답변("9시 반이야")에
-        # 두 개의 어휘 반복을 요구하면 올바른 기억 답변까지 불필요하게 거절한다.
-        required = min(1, len(source_roots))
-        if required and len(overlap) < required:
-            return False
+        # 어휘 근거는 `_references_are_valid`의 한국어 2-gram이 이미 검사한다.
+        # 여기서 어근을 다시 비교하면 `반이야` -> `반이잖아` 같은 자연스러운
+        # 활용형을 잘못 거절하므로 의미 변조와 직접 연결된 숫자·부정만 여기서 검사한다.
         if bool(_NEGATION_PATTERN.search(source)) != bool(_NEGATION_PATTERN.search(response)):
             return False
     allowed_numbers = set(_NUMBER_PATTERN.findall(" ".join(referenced)))

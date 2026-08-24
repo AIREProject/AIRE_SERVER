@@ -157,9 +157,7 @@ async def test_explicit_memory_question_recalls_preferences_without_embeddings()
         source_mode="RealWorld",
     )
 
-    assert [(item.trace_id, item.text) for item in recalled] == [
-        ("M0", "나는 나무가 너무좋아")
-    ]
+    assert [(item.trace_id, item.text) for item in recalled] == [("M0", "나는 나무가 너무좋아")]
 
     second = await SourceBackedMemoryStore(database).recall(
         SourceScope("profile-a", "slot-a", "mako"),
@@ -226,6 +224,33 @@ async def test_attached_name_word_ranks_the_profile_memory_first() -> None:
 
     assert recalled[0].memory_id == "memory-name"
     assert recalled[0].text == "제이름은 대통령 윤 석열입니다"
+
+
+async def test_compound_commute_query_recalls_both_start_and_end_times() -> None:
+    database = await make_database(make_settings())
+    await _memory(
+        database,
+        memory_id="memory-work-start",
+        text="출근시간은 9시 반이야",
+        memory_type="ProfileFact",
+    )
+    await _memory(
+        database,
+        memory_id="memory-work-end",
+        text="퇴근은 언제나 6시 반이야",
+        memory_type="ProfileFact",
+    )
+
+    recalled = await SourceBackedMemoryStore(database).recall(
+        SourceScope("profile-a", "slot-a", "mako"),
+        query="출퇴근 다 하면 하루 몇시간이지",
+        source_mode="RealWorld",
+    )
+
+    assert {item.memory_id for item in recalled} == {
+        "memory-work-start",
+        "memory-work-end",
+    }
 
 
 async def test_prompt_memory_budget_never_exceeds_three_entries_or_360_characters() -> None:
@@ -298,10 +323,13 @@ async def test_context_only_recall_uses_importance_gate_cooldown_and_actual_use_
         assert memory is not None and memory.recall_count == 0
 
     await store.record_used(scope, ("memory-night-cave",), _NOW)
-    assert await store.recall(
-        scope,
-        query="안녕",
-        context_query="동굴 밤",
-        source_mode="GameWorld",
-        now=_NOW + timedelta(minutes=5),
-    ) == ()
+    assert (
+        await store.recall(
+            scope,
+            query="안녕",
+            context_query="동굴 밤",
+            source_mode="GameWorld",
+            now=_NOW + timedelta(minutes=5),
+        )
+        == ()
+    )

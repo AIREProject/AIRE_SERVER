@@ -262,6 +262,28 @@ def test_required_memory_accepts_a_concise_grounded_answer() -> None:
     )
 
 
+def test_required_memory_infers_an_omitted_reference_from_a_grounded_answer() -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="기억나는 게 없어.",
+        memories=("[M0] 출근시간은 9시 반이야 기억해",),
+        memory_use_policy="Required",
+    )
+
+    assert sanitize(generated("9시 반이야.", "conversation"), spec) == "9시 반이야."
+
+
+def test_required_memory_does_not_infer_a_reference_for_a_changed_number() -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="기억나는 게 없어.",
+        memories=("[M0] 출근시간은 9시 반이야",),
+        memory_use_policy="Required",
+    )
+
+    assert sanitize(generated("출근시간은 8시야.", "conversation"), spec) is None
+
+
 @pytest.mark.asyncio
 async def test_render_uses_fallback_for_invalid_dialogue() -> None:
     provider = AsyncMock()
@@ -295,12 +317,14 @@ async def test_required_memory_rejection_falls_back_to_the_recalled_memory() -> 
         finish_memory_reference_trace(token)
         raise
 
-    assert response == "전에 네가 이렇게 알려줬어: “출근시간은 9시 반이야”"
+    assert response == (
+        "관련된 기억은 있는데, 지금 답을 정확하게 정리하지 못했어. 한 번만 다시 물어봐 줄래?"
+    )
     assert references == ((0,),)
 
 
 @pytest.mark.asyncio
-async def test_memory_fallback_quotes_a_raw_storage_request_instead_of_concatenating_it() -> None:
+async def test_memory_fallback_does_not_repeat_a_raw_storage_request() -> None:
     provider = AsyncMock()
     provider.generate_dialogue.return_value = generated("모르겠어.", "conversation")
     spec = DialogueSpec(
@@ -313,9 +337,12 @@ async def test_memory_fallback_quotes_a_raw_storage_request_instead_of_concatena
         memory_use_policy="Required",
     )
 
-    assert await render(provider, spec) == (
-        "전에 네가 이렇게 알려줬어: “출근시간은 9시 반이야 기억해”"
+    response = await render(provider, spec)
+
+    assert response == (
+        "관련된 기억은 있는데, 지금 답을 정확하게 정리하지 못했어. 한 번만 다시 물어봐 줄래?"
     )
+    assert "기억해”" not in response
 
 
 @pytest.mark.asyncio
@@ -342,7 +369,9 @@ async def test_optional_memory_rejection_respects_the_llm_memory_selection() -> 
         finish_memory_reference_trace(token)
         raise
 
-    assert response == "전에 네가 이렇게 알려줬어: “출근시간은 9시 반이야”"
+    assert response == (
+        "관련된 기억은 있는데, 지금 답을 정확하게 정리하지 못했어. 한 번만 다시 물어봐 줄래?"
+    )
     assert references == ((0,),)
 
 

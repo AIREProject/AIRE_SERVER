@@ -45,6 +45,11 @@ _PARTICLE_SUFFIX = re.compile(
 )
 _TOKEN_STOPWORDS = frozenset({"나는", "내가", "나를", "마코", "그리고", "하지만"})
 _TOKEN_STEM_STOPWORDS = frozenset({"나", "내", "너"})
+_QUERY_TERM_EXPANSIONS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    # 한국어에서 두 단어를 앞글자로 줄인 합성어는 각 기억과 직접 매칭되지
+    # 않을 수 있다. 질문 문장을 하드코딩하지 않고 검색어 의미만 확장한다.
+    (re.compile(r"출퇴근"), ("출근", "퇴근")),
+)
 _EXPLICIT_MEMORY_TYPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("Promise", re.compile(r"(?:약속|하기로\s*한|하겠다고\s*한)")),
     ("Preference", re.compile(r"(?:취향|선호|좋아하는|싫어하는)")),
@@ -104,14 +109,12 @@ def _tokens(text: str) -> tuple[str, ...]:
     tokens: list[str] = []
     for token in normalized.split():
         stem = _PARTICLE_SUFFIX.sub("", token)
-        if (
-            not stem
-            or token in _TOKEN_STOPWORDS
-            or stem in _TOKEN_STEM_STOPWORDS
-            or stem in tokens
-        ):
+        if not stem or token in _TOKEN_STOPWORDS or stem in _TOKEN_STEM_STOPWORDS or stem in tokens:
             continue
         tokens.append(stem)
+    for pattern, expansions in _QUERY_TERM_EXPANSIONS:
+        if pattern.search(normalized) is not None:
+            tokens.extend(expansion for expansion in expansions if expansion not in tokens)
     return tuple(tokens)
 
 
@@ -231,8 +234,11 @@ class SourceBackedMemoryStore:
                 and moment - _utc(memory.recalled_at) < _CONTEXT_COOLDOWN
             ):
                 continue
-            if not keyword_hits and not type_match and not context_only and (
-                semantic is None or semantic < MIN_SEMANTIC_RELEVANCE
+            if (
+                not keyword_hits
+                and not type_match
+                and not context_only
+                and (semantic is None or semantic < MIN_SEMANTIC_RELEVANCE)
             ):
                 continue
             semantic_score = (
@@ -245,11 +251,7 @@ class SourceBackedMemoryStore:
                 keyword_hits * 10.0
                 + semantic_score * 5.0
                 + (8.0 if type_match else 0.0)
-                + (
-                    memory.importance * 0.5
-                    if direct_recall
-                    else _decayed_strength(memory, moment)
-                )
+                + (memory.importance * 0.5 if direct_recall else _decayed_strength(memory, moment))
             )
             score += context_hits * 8.0 + mode_bonus + (1.5 if memory.pinned else 0.0)
             ranked.append((score, memory, context_only))
