@@ -88,7 +88,7 @@ Chat은 profile/save/companion/request ID와 canonical JSON digest를 durable op
 
 따라서 Task 완료를 보고 UE Inventory에 보상을 적용하는 exact-once 계약으로 사용하지 않습니다.
 
-## 6. World Context v1 (AX-I05 확정 로컬 계약)
+## 6. World Context v1
 
 `ChatRequest.game_context`는 더 이상 임의 key를 받는 generic object가 아니다. `surface=game`
 에서는 다음 7개 최상위 field가 모두 필요한 `GameContextV1`이고, `surface=mobile`에서는
@@ -116,13 +116,10 @@ Context는 관측 facts를 대사 생성에 제공하는 경계일 뿐이며, Ba
 Command 후보를 추가·제거하거나 `CraftItem`/gameplay를 실행하지 않는다. Command 통합과
 실행 권한은 AX-I06 범위다.
 
-이 계약은 현재 `AIRE_SERVER/` 로컬 구현 문서의 목표다. 2026-08-13 현재 배포
-`/openapi.json`은 여전히 `game_context`를 generic object로 노출하므로 배포 반영이나 runtime
-smoke 성공을 의미하지 않는다.
-
-AX-I05 로컬 구현과 Backend test/lint/type Gate는 완료했다. 이후 서버에 접근할 수 없어 배포
-적용은 별도 운영 체크로 남겼다. strict 전환은 기존 `{}` Game 요청과 호환되지 않으므로 AX-I04
-producer 준비 없이 Backend만 선배포하지 않는다.
+2026-08-25 배포 `/openapi.json`과 현재 source가 생성한 OpenAPI는 이 strict
+`GameContextV1`을 동일하게 노출합니다. strict 전환은 기존 `{}` Game 요청과 호환되지 않으므로
+클라이언트는 AX-I04 full Context producer를 사용해야 합니다. 정상·오류·8KiB 초과 runtime
+smoke와 실제 UE 왕복은 별도 검증 항목입니다.
 
 현재 일반 플레이맵과 fallback 예시는 `forest_camp`다. 권위 센서가 없을 때 AX-I04가 보내는
 `nearest_kind=null`, resource/workstation 빈 배열은 정상이며, Backend가 향후 맵이나 센서 ID를

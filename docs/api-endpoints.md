@@ -1,16 +1,14 @@
 # AIRE Server API 사용법
 
-현행 로컬 HTTP 계약의 코드 권위는 `app/models.py`, `app/offline_task_models.py`,
+현행 HTTP 계약의 코드 권위는 `app/models.py`, `app/offline_task_models.py`,
 `app/pairing_models.py`와 `app/routes/`입니다. 실행 중인 서버에서는 `/openapi.json`과 `/docs`를
-최우선으로 확인합니다. 2026-08-13 현재 배포
-`https://traip.mtvs2026.work/openapi.json`은 `ChatRequest.game_context`를 아직 generic
-object로 노출하므로, 아래 World Context v1은 `AIRE_SERVER/`의 AX-I05 목표 계약이다. 배포
-OpenAPI 반영이나 배포 smoke 성공을 이 문서로 주장하지 않는다.
+최우선으로 확인합니다. 2026-08-25 배포 OpenAPI와 현재 source가 생성한 OpenAPI는 57개 path와
+121개 schema가 구조적으로 일치합니다. 배포 `ChatRequest.game_context`도 아래 strict
+`GameContextV1`을 노출합니다. 기존 Game client의 `{}` 요청은 거부되므로 full Context v1을
+생성해야 합니다.
 
-AX-I05 로컬 구현은 2026-08-13 전체 Backend pytest 574건, Ruff와 mypy를
-통과했다. 이후
-서버에 접근할 수 없어 배포 적용과 runtime smoke는 미확인이다. 기존 Game client의 `{}` 요청은
-새 계약에서 거부되므로 full Context v1을 생성하는 AX-I04 client와 서버 적용 시점을 조정한다.
+이 OpenAPI 정합성 확인은 모든 endpoint의 정상·오류 runtime smoke, 실제 LLM 또는 UE/Web
+왕복 검증을 대신하지 않습니다.
 
 ## 1. 공통 규칙
 
@@ -552,12 +550,12 @@ PATCH /api/v1/admin/offline-task-policies/{policy_id}
 `offline_tasks.seconds_per_item`에 snapshot하므로 정책 변경은 이후 생성 Task에만 적용되고
 이미 존재하는 Task의 계산은 바뀌지 않습니다.
 
-## 8. Game State Snapshot (AX-I09 local Review 계약)
+## 8. Game State Snapshot
 
-AX-I09의 다음 계약은 로컬 구현과 사전 배포 Review 기준입니다. 아직 공개 배포 서버의
-`/openapi.json`에는 이 경로가 없으며, 이 문서만으로 배포 런타임 지원을 주장하지 않습니다.
-서버 Snapshot은 UE가 검증하고 로컬 저장한 상태의 조회용 복사본이며 gameplay 실행 권위가
-아닙니다.
+2026-08-25 공개 배포 `/openapi.json`은 `GET/PUT /api/v1/game-state`와 아래 DTO를 노출합니다.
+GET runtime smoke도 HTTP 200으로 확인했습니다. PUT, version conflict와 stale overwrite의
+전체 runtime matrix는 별도 검증 항목입니다. 서버 Snapshot은 UE가 검증하고 로컬 저장한 상태의
+조회용 복사본이며 gameplay 실행 권위가 아닙니다.
 
 ### 7.1 역할과 Header
 
