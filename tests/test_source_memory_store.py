@@ -300,6 +300,8 @@ async def test_prompt_memory_budget_never_exceeds_three_entries_or_360_character
 
     assert len(recalled) <= 3
     assert sum(len(render_prompt_memory(item)) for item in recalled) <= 360
+    assert all("owner=Player" in render_prompt_memory(item) for item in recalled)
+    assert all("player_statement=" in render_prompt_memory(item) for item in recalled)
 
 
 async def test_recall_counter_is_capped_in_scoring_and_archive_candidates_do_not_mutate() -> None:

@@ -28,6 +28,7 @@ from .dialogue import (
     DialogueSpec,
     PromptMemoryValue,
     SurfaceProfile,
+    is_companion_name_query,
     prompt_memory_claim,
     render,
 )
@@ -176,6 +177,10 @@ _MEMORY_RECALL_PATTERN = re.compile(r"(?:기억(?:해|나|하)|전에\s*말|내\
 _EMOTIONAL_PATTERN = re.compile(r"(?:힘들|우울|속상|슬퍼|외로|불안|지쳤|피곤|괴로)")
 _OPINION_PATTERN = re.compile(r"(?:어떻게\s*생각|네\s*생각|조언|추천|뭐가\s*(?:좋|나)|어떡할까)")
 _QUESTION_PATTERN = re.compile(r"(?:뭐|무엇|왜|어떻게|언제|어디|누구|알려|설명|인가|일까|\?)")
+_CHOICE_OR_COMPARISON_PATTERN = re.compile(
+    r"(?:\bvs\.?\b|\s대\s|(?:둘|여럿)\s*중|\s중(?:에|에서)?|아니면|골라|선택|비교)",
+    re.IGNORECASE,
+)
 
 
 def _request_query_mode(
@@ -341,8 +346,18 @@ def build_companion_graph(
         꺼내면, 새 장면을 추가할 때 문맥을 빠뜨릴 수 없다.
         """
 
+        suppress_optional_memories = bool(
+            is_companion_name_query(state["text"])
+            or (
+                _CHOICE_OR_COMPARISON_PATTERN.search(state["text"]) is not None
+                and not state.get("memory_required")
+                and state.get("query_mode") is not ConversationMode.MEMORY_RECALL
+            )
+        )
         prompt_memories = (
-            () if state.get("top_intent") is TopIntent.MEMORY_SHARE else state.get("long_term", ())
+            ()
+            if state.get("top_intent") is TopIntent.MEMORY_SHARE or suppress_optional_memories
+            else state.get("long_term", ())
         )
         real_world_now = (
             datetime.now(KST)
@@ -796,7 +811,9 @@ def build_companion_graph(
     async def conversation_node(state: CompanionState) -> CompanionUpdate:
         text = state["text"]
         surface = profile(state)
-        if "고마" in text or "감사" in text:
+        if is_companion_name_query(text):
+            fallback = "내 이름은 마코야."
+        elif "고마" in text or "감사" in text:
             fallback = surface.thanks
         elif re.search(r"(?:안녕|반가워|하이)", text) is not None:
             fallback = surface.greeting

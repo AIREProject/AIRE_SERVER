@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     memory_summary_max_tokens: int = Field(default=256, ge=1)
     # 통합은 상한만큼의 줄을 다시 쓸 수 있어 가장 크다.
     memory_consolidate_max_tokens: int = Field(default=1024, ge=1)
-    companion_prompt_version: Literal["companion-v8"] = "companion-v8"
+    companion_prompt_version: Literal["companion-v9"] = "companion-v9"
     companion_command_ttl_seconds: float = Field(default=30.0, gt=0)
     # 되묻기 슬롯의 수명. 정상 흐름에서는 다음 턴에 소비되거나 버려지므로, 이 값은
     # 대화를 그냥 떠난 경우를 정리하는 안전망이다.
@@ -148,11 +148,12 @@ class Settings(BaseSettings):
     @field_validator("companion_prompt_version", mode="before")
     @classmethod
     def _upgrade_legacy_prompt_version(cls, value: object) -> object:
-        """Keep existing server env files bootable while reporting the active v8 prompt."""
+        """Keep existing server env files bootable while reporting the active v9 prompt."""
 
         return (
-            "companion-v8"
-            if value in {"companion-v4", "companion-v5", "companion-v6", "companion-v7"}
+            "companion-v9"
+            if value
+            in {"companion-v4", "companion-v5", "companion-v6", "companion-v7", "companion-v8"}
             else value
         )
 

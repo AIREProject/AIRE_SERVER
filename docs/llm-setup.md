@@ -159,15 +159,17 @@ TRANSCRIPT_RETENTION_DAYS=1
 - delete/reset된 기억과 source가 삭제된 기억은 Prompt에 들어가지 않습니다.
 - 기억은 확정 게임 사실이 아니라 대화 참고 정보로만 Prompt에 들어갑니다.
 - Embedding이 없어도 Active 기억을 중요도·고정·최근성 순으로 제한해 Prompt에 전달합니다.
-  질문별 하드코딩 category로 기억을 차단하지 않으며, 관련 없는 후보는 LLM이 참조하지 않습니다.
+  플레이어 기억은 소유자를 명시해 전달하며, 일반 비교·선택이나 마코 자신의 이름 질문에는
+  단순 단어 일치로 회수된 선택적 기억을 대사 재료로 제공하지 않습니다.
 - Memory worker는 새로 승인하는 canonical 원문에 query와 같은 embedding model을 적용해 저장합니다.
   이 변경 전에 만들어져 embedding이 비어 있는 기존 Memory는 키워드·bounded 후보 방식으로 계속
   동작하며, 의미 검색까지 적용하려면 별도 backfill이 필요합니다.
 
 ### 마코 대사 Persona
 
-`companion-v8`에서 마코는 오래 알고 지낸 밝고 생동감 있는 동료 Persona를 유지하면서,
-일상대화·일반 지식과 검증된 기억 회상의 경계를 구분합니다.
+`companion-v9`에서 마코는 오래 알고 지낸 밝고 생동감 있는 동료 Persona를 유지하면서,
+일상대화·일반 지식과 검증된 기억 회상의 경계를 구분합니다. 기억 원문의 1인칭은 플레이어를
+가리키며, 플레이어의 이름·취향·일정·약속을 마코 자신의 것으로 바꿔 말하지 않습니다.
 관계 단계가 낮아도 처음 만난 사람처럼 딱딱하게 말하지 않으며, 단계가 높아질수록 장난과 익숙한
 호흡을 조금 더 자연스럽게 표현합니다. `ㅋㅋ`, `ㅎㅎ`와 이모지는 상황에 맞을 때만 제한적으로
 사용합니다.
@@ -196,7 +198,7 @@ Memory 후보가 있어야 하고, Memory를 실제 답변에 사용하면 `memo
   "ai_metadata": {
     "provider": "local",
     "model_version": "your-model-name",
-    "prompt_version": "companion-v8"
+    "prompt_version": "companion-v9"
   }
 }
 ```

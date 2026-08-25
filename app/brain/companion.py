@@ -435,8 +435,9 @@ class CompanionBrain:
                 recent.append(
                     PromptMemory(
                         prompt_text=(
-                            f"[{trace_id}] type=RecentEvidence; source=RecentConversation; "
-                            f"priority=High; {turn.text}"
+                            f"[{trace_id}] owner=Player; type=RecentEvidence; "
+                            f"source=RecentConversation; priority=High; "
+                            f"player_statement={turn.text}"
                         ),
                         claim_text=turn.text,
                         required=True,

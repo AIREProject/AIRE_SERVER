@@ -312,7 +312,7 @@ Context는 대사 생성용 facts-only 입력이다. 이를 근거로 Backend가
   "ai_metadata": {
     "provider": "mock",
     "model_version": "mock-v1",
-    "prompt_version": "companion-v8"
+    "prompt_version": "companion-v9"
   }
 }
 ```

@@ -116,6 +116,25 @@ def prompt_memory_claim(memory: PromptMemoryValue) -> str:
     return body
 
 
+_COMPANION_NAME_QUERY_PATTERN = re.compile(r"(?:니|네|너(?:의)?)\s*이름")
+_COMPANION_NAME_QUESTION_TAIL_PATTERN = re.compile(
+    r"(?:뭐|무엇|뭔|누구|맞|이라고|라고|이야|인가|알려|\?)"
+)
+
+
+def is_companion_name_query(text: str) -> bool:
+    """사용자가 플레이어가 아니라 마코의 이름을 묻는지 판정한다."""
+
+    match = _COMPANION_NAME_QUERY_PATTERN.search(text)
+    if match is None:
+        return False
+    tail = text[match.end() :].strip()
+    return (
+        tail in {"", "은", "이"}
+        or _COMPANION_NAME_QUESTION_TAIL_PATTERN.search(tail) is not None
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class DialogueSpec:
     """LLM에 전달할 장면과 코드가 확정한 사실, 실패 시 복구 대사를 묶는다."""
@@ -278,6 +297,15 @@ def _memory_body(memory: PromptMemoryValue) -> str | None:
 
     body = prompt_memory_claim(memory).strip()
     body = re.sub(r"\s*기억(?:해|해줘|해\s*줘)\s*[.!?]*$", "", body).strip()
+    name_match = re.match(r"^(?:내|제)\s*이름(?:은|이)?\s*(?P<name>.+)$", body)
+    if name_match is not None:
+        name = re.sub(
+            r"\s*(?:입니다|이에요|예요|이야|야)\s*[.!?]*$",
+            "",
+            name_match.group("name"),
+        ).strip()
+        if name:
+            return f"네 이름은 {name}이야."[:200]
     return body[:160] or None
 
 
@@ -335,8 +363,13 @@ _HTML_ENTITY_PATTERN = re.compile(r"&(?:#[xX]?[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+)
 _HTML_TAG_PATTERN = re.compile(r"<\s*/?\s*[A-Za-z][^>]*>")
 _INTERNAL_OUTPUT_PATTERN = re.compile(
     r"(?:\[(?:기억|최근\s*대화|확정\s*사실|계산된\s*사실|상황|지시|플레이어|(?:M)?\d+)\]|"
-    r"\b(?:type|source|occurred_at|priority)\s*=|\bmemory\s*[:=]|Command\s+Candidate)",
+    r"\b(?:owner|type|source|occurred_at|priority|player_statement)\s*=|"
+    r"\bmemory\s*[:=]|Command\s+Candidate)",
     re.IGNORECASE,
+)
+_COMPANION_SELF_NAME_PATTERN = re.compile(r"(?:내|제)\s*이름(?:은|이)\s*")
+_COMPANION_REVERSE_SELF_NAME_PATTERN = re.compile(
+    r"[0-9A-Za-z가-힣][^.!?]{0,20}(?:내|제)\s*이름(?:이야|입니다|이다)"
 )
 _sanitizer_context: ContextVar[list[bool] | None] = ContextVar("sanitizer_results", default=None)
 _memory_reference_context: ContextVar[list[tuple[int, ...]] | None] = ContextVar(
@@ -399,6 +432,15 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
     normalized = _WHITESPACE_PATTERN.sub(" ", normalized).strip()
     if not normalized or len(normalized) > 200:
         return None
+    claims_companion_name = bool(
+        _COMPANION_SELF_NAME_PATTERN.search(normalized)
+        or _COMPANION_REVERSE_SELF_NAME_PATTERN.search(normalized)
+    )
+    if claims_companion_name and "마코" not in normalized:
+        return None
+    if spec.user_text is not None and is_companion_name_query(spec.user_text):
+        if "마코" not in normalized:
+            return None
     if spec.memory_use_policy == "Required" and not isinstance(output, DialogueOutput):
         return None
 

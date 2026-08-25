@@ -716,7 +716,7 @@ async def test_recent_player_statement_is_required_evidence_when_worker_is_unava
         ),
     )
 
-    assert prepared.reply.text == "내 이름 이재명"
+    assert prepared.reply.text == "네 이름은 이재명이야."
     assert prepared.used_memory_ids == ()
 
 
@@ -770,6 +770,79 @@ class RepeatingScheduleProvider(MemoryAnswerProvider):
             situation_references=(),
             accepts_command=False,
         )
+
+
+class PlayerMemoryIsolationProvider(MemoryAnswerProvider):
+    def __init__(self, response: str, memory_references: tuple[int, ...] = ()) -> None:
+        super().__init__()
+        self.response = response
+        self.memory_references = memory_references
+        self.dialogue_specs: list[DialogueSpec] = []
+
+    async def generate_dialogue(self, spec: DialogueSpec) -> DialogueOutput:
+        self.dialogue_specs.append(spec)
+        return DialogueOutput(
+            text=self.response,
+            purpose="conversation",
+            fact_references=(),
+            memory_references=self.memory_references,
+            situation_references=(),
+            accepts_command=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["이재명 vs 윤석열", "이재명 vs 윤석열 골라", "이재명 대 윤석열 중 골라"],
+)
+async def test_choice_question_does_not_receive_a_matching_player_name_memory(
+    text: str,
+) -> None:
+    provider = PlayerMemoryIsolationProvider("둘 중 하나를 고르라면 이유부터 들어볼래.")
+    memory = PromptMemory(
+        prompt_text="[M0] owner=Player; type=ProfileFact; player_statement=내 이름은 윤석열입니다",
+        claim_text="내 이름은 윤석열입니다",
+    )
+    final = await make_graph(provider).ainvoke(
+        {"turn": make_turn(text, surface=Surface.MOBILE), "text": text, "long_term": (memory,)}
+    )
+
+    assert provider.dialogue_specs[-1].memories == ()
+    assert final["display_text"] == "둘 중 하나를 고르라면 이유부터 들어볼래."
+
+
+async def test_explicit_player_preference_keeps_memory_for_a_choice_question() -> None:
+    provider = PlayerMemoryIsolationProvider("네 취향이면 딸기가 더 잘 맞아.", (0,))
+    memory = PromptMemory(
+        prompt_text="[M0] owner=Player; type=Preference; player_statement=나는 딸기를 좋아해",
+        claim_text="나는 딸기를 좋아해",
+    )
+    text = "내 취향 기준으로 딸기 vs 사과 골라"
+
+    final = await make_graph(provider).ainvoke(
+        {"turn": make_turn(text, surface=Surface.MOBILE), "text": text, "long_term": (memory,)}
+    )
+
+    assert provider.dialogue_specs[-1].memories == (memory,)
+    assert final["display_text"] == "네 취향이면 딸기가 더 잘 맞아."
+
+
+async def test_companion_name_question_rejects_player_name_as_self_identity() -> None:
+    provider = PlayerMemoryIsolationProvider(
+        "아, 네가 그렇게 부르라고 했잖아! 진짜 내 이름이 윤석열인 줄 알았나 보네."
+    )
+    memory = PromptMemory(
+        prompt_text="[M0] owner=Player; type=ProfileFact; player_statement=내 이름은 윤석열입니다",
+        claim_text="내 이름은 윤석열입니다",
+    )
+    text = "니 이름이 윤석열이라고?"
+
+    final = await make_graph(provider).ainvoke(
+        {"turn": make_turn(text, surface=Surface.MOBILE), "text": text, "long_term": (memory,)}
+    )
+
+    assert provider.dialogue_specs[-1].memories == ()
+    assert final["display_text"] == "내 이름은 마코야."
 
 
 async def test_remaining_time_rejects_schedule_repetition_and_uses_exact_fallback() -> None:

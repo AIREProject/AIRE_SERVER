@@ -2,7 +2,7 @@
 
 ## 고정 정책
 
-- `COMPANION_PROMPT_VERSION=companion-v8`
+- `COMPANION_PROMPT_VERSION=companion-v9`
 - `TRANSCRIPT_ENABLED=false`, opt-in 개발 Transcript는 최대 1일
 - 일반 player/companion Message와 GameEvent 원문은 7일
 - content가 제거된 audit/idempotency ledger는 30일

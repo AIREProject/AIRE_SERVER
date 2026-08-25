@@ -24,10 +24,11 @@ from app.settings import Settings
 from tests.conftest import make_settings
 
 
-def test_legacy_prompt_version_is_upgraded_to_the_active_persona() -> None:
-    settings = Settings(_env_file=None, companion_prompt_version="companion-v4")  # type: ignore[arg-type]
+@pytest.mark.parametrize("version", ["companion-v4", "companion-v8"])
+def test_legacy_prompt_version_is_upgraded_to_the_active_persona(version: str) -> None:
+    settings = Settings(_env_file=None, companion_prompt_version=version)  # type: ignore[arg-type]
 
-    assert settings.companion_prompt_version == "companion-v8"
+    assert settings.companion_prompt_version == "companion-v9"
 
 
 def dialogue_json(
@@ -603,7 +604,7 @@ async def test_dialogue_system_prompt_switches_with_the_surface() -> None:
     assert prompts[Surface.GAME] != prompts[Surface.MOBILE]
     # 사실 규칙은 창구와 무관하다. 말투를 바꾸다 가드가 창구마다 달라지면 안 된다.
     for prompt in prompts.values():
-        assert "[prompt_version] companion-v8" in prompt
+        assert "[prompt_version] companion-v9" in prompt
         assert "오랫동안 여러 일을 함께해 온 친근한 동료" in prompt
         assert "존재하지 않는 공동 경험" in prompt
         assert "이모지는 꼭 감정 전달에 필요할 때 하나만" in prompt
@@ -614,6 +615,8 @@ async def test_dialogue_system_prompt_switches_with_the_surface() -> None:
         assert "[확정 사실]에 적힌 내용만 게임 사실로 사용하고" in prompt
         assert '"네가 알려준 내용/정보"' in prompt
         assert "이름을 넣어 인사한다" in prompt
+        assert "원문의 '나/내/제'는 항상 플레이어" in prompt
+        assert "마코의 이름은 마코다" in prompt
 
 
 def test_dialogue_message_omits_the_history_block_when_there_is_none() -> None:

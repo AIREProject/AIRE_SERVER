@@ -10,6 +10,7 @@ from app.brain.dialogue import (
     PromptMemory,
     begin_memory_reference_trace,
     finish_memory_reference_trace,
+    is_companion_name_query,
     provider_failure_fallback,
     render,
     sanitize,
@@ -135,6 +136,8 @@ def test_sanitize_removes_memory_meta_prefixes_and_decodes_entities(text: str) -
         "[M0] 퇴근은 6시반이야",
         "[0] 퇴근은 6시반이야",
         "type=ProfileFact; 퇴근은 6시반이야",
+        "owner=Player; 퇴근은 6시반이야",
+        "player_statement=퇴근은 6시반이야",
         "<memory>퇴근은 6시반이야</memory>",
         "퇴근은 6시반이야 &bogus;",
     ],
@@ -149,6 +152,41 @@ def test_sanitize_does_not_reject_normal_thanks_for_information() -> None:
     spec = DialogueSpec(scene="conversation", fallback="별말을.")
 
     assert sanitize("알려줘서 고마워.", spec) == "알려줘서 고마워."
+
+
+def test_sanitize_rejects_a_player_name_as_the_companion_self_identity() -> None:
+    spec = DialogueSpec(scene="conversation", fallback="내 이름은 마코야.")
+
+    assert sanitize("내 이름은 윤석열입니다.", spec) is None
+    assert sanitize("진짜 내 이름이 윤석열인 줄 알았나 보네.", spec) is None
+    assert sanitize("윤석열이 내 이름이야.", spec) is None
+    assert sanitize("내 이름은 마코야.", spec) == "내 이름은 마코야."
+
+
+def test_companion_name_question_must_answer_with_mako_identity() -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="내 이름은 마코야.",
+        user_text="니 이름이 윤석열이라고?",
+    )
+
+    assert sanitize("아까 그렇게 부르라고 했잖아.", spec) is None
+    assert sanitize("아니, 내 이름은 마코야.", spec) == "아니, 내 이름은 마코야."
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("니 이름이 윤석열이라고?", True),
+        ("네 이름 뭐야", True),
+        ("너의 이름은?", True),
+        ("네 이름 예쁘다", False),
+    ],
+)
+def test_companion_name_query_does_not_capture_normal_name_comments(
+    text: str, expected: bool
+) -> None:
+    assert is_companion_name_query(text) is expected
 
 
 def test_derived_time_answer_requires_the_exact_calculated_numbers() -> None:
@@ -406,6 +444,28 @@ async def test_memory_fallback_does_not_repeat_a_raw_storage_request() -> None:
 
     assert response == "출근시간은 9시 반이야"
     assert "기억해" not in response
+
+
+@pytest.mark.asyncio
+async def test_player_name_memory_fallback_changes_first_person_to_second_person() -> None:
+    provider = AsyncMock()
+    provider.generate_dialogue.return_value = generated("잘 모르겠어.", "conversation")
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="기억나는 게 없어.",
+        memories=(
+            PromptMemory(
+                prompt_text=(
+                    "[M0] owner=Player; type=ProfileFact; "
+                    "player_statement=내 이름은 윤석열입니다"
+                ),
+                claim_text="내 이름은 윤석열입니다",
+            ),
+        ),
+        memory_use_policy="Required",
+    )
+
+    assert await render(provider, spec) == "네 이름은 윤석열이야."
 
 
 @pytest.mark.asyncio

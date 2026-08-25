@@ -91,9 +91,9 @@ class RecalledMemory:
 def render_prompt_memory(memory: RecalledMemory) -> str:
     modes = ",".join(memory.source_modes)
     return (
-        f"[{memory.trace_id}] type={memory.memory_type}; source={modes}; "
+        f"[{memory.trace_id}] owner=Player; type={memory.memory_type}; source={modes}; "
         f"occurred_at={memory.occurred_at.isoformat()}; priority={memory.priority}; "
-        f"{memory.text}"
+        f"player_statement={memory.text}"
     )
 
 
@@ -101,8 +101,9 @@ def _prompt_memory_length(index: int, memory: SourceBackedMemory) -> int:
     modes = ",".join(memory.source_modes)
     priority = "High" if memory.pinned or memory.importance >= 8 else "Normal"
     return len(
-        f"[M{index}] type={memory.memory_type}; source={modes}; "
-        f"occurred_at={memory.occurred_at.isoformat()}; priority={priority}; {memory.text}"
+        f"[M{index}] owner=Player; type={memory.memory_type}; source={modes}; "
+        f"occurred_at={memory.occurred_at.isoformat()}; priority={priority}; "
+        f"player_statement={memory.text}"
     )
 
 
