@@ -53,7 +53,9 @@ _QUERY_TERM_EXPANSIONS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
 _EXPLICIT_MEMORY_TYPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("Promise", re.compile(r"(?:약속|하기로\s*한|하겠다고\s*한)")),
     ("Preference", re.compile(r"(?:취향|선호|좋아하는|싫어하는)")),
-    ("ProfileFact", re.compile(r"(?:내\s*(?:이름|정보|프로필)|나에\s*대해)")),
+    # 이름처럼 특정 필드를 묻는 질문은 실제 어휘 또는 embedding 근거가 있어야 한다.
+    # 타입 전체 검색은 사용자가 프로필 전반을 명시적으로 물은 경우에만 허용한다.
+    ("ProfileFact", re.compile(r"(?:내\s*(?:정보|프로필)|나에\s*대해)")),
     ("Episode", re.compile(r"(?:전에\s*(?:있었던|겪었던)|지난\s*일|추억)")),
 )
 
@@ -132,6 +134,12 @@ def _lexical_hits(query_tokens: set[str], memory_text: str) -> int:
             for memory_token in memory_tokens
         )
     )
+
+
+def has_memory_lexical_overlap(query: str, memory_text: str) -> bool:
+    """Return whether a concrete query term overlaps a candidate memory statement."""
+
+    return _lexical_hits(set(_tokens(query)), memory_text) > 0
 
 
 def _explicit_memory_types(query: str) -> frozenset[str]:

@@ -226,6 +226,39 @@ async def test_attached_name_word_ranks_the_profile_memory_first() -> None:
     assert recalled[0].text == "제이름은 대통령 윤 석열입니다"
 
 
+async def test_name_question_excludes_other_profile_facts_and_does_not_count_them() -> None:
+    database = await make_database(make_settings())
+    await _memory(
+        database,
+        memory_id="memory-name-specific",
+        text="내 이름은 이재명이야",
+        memory_type="ProfileFact",
+    )
+    await _memory(
+        database,
+        memory_id="memory-commute-specific",
+        text="출근시간은 9시 반이야",
+        memory_type="ProfileFact",
+    )
+    store = SourceBackedMemoryStore(database)
+    scope = SourceScope("profile-a", "slot-a", "mako")
+
+    recalled = await store.recall(
+        scope,
+        query="내 이름 뭐라고?",
+        direct_recall=True,
+        source_mode="RealWorld",
+    )
+    await store.record_used(scope, tuple(item.memory_id for item in recalled), _NOW)
+
+    assert [item.memory_id for item in recalled] == ["memory-name-specific"]
+    async with database.session_factory() as session:
+        name = await session.get(MemoryModel, "memory-name-specific")
+        commute = await session.get(MemoryModel, "memory-commute-specific")
+    assert name is not None and name.recall_count == 1
+    assert commute is not None and commute.recall_count == 0
+
+
 async def test_compound_commute_query_recalls_both_start_and_end_times() -> None:
     database = await make_database(make_settings())
     await _memory(

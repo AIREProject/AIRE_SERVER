@@ -26,6 +26,21 @@ apply 성공 원본은 hash·cursor·건수 report와 함께 `data/transcript_qu
 않으므로 저장소는 Private 접근 제한을 유지하고, history 보존 예외는 운영 개인정보 목록에
 기록합니다.
 
+## 최근 Message 재분류 복구
+
+Memory worker 장애 중 `Completed` 처리됐지만 Memory 또는 Candidate가 생기지 않은 최근 player
+Message는 다음 명령으로 확인하고 재분류합니다. Active Memory/Candidate에 이미 연결된 source와
+tombstone은 제외하며, `--apply`는 outbox 재대기와 memory cursor 되감기를 한 transaction에서
+수행합니다.
+
+```powershell
+uv run python -m scripts.recover_recent_memory_sources --dry-run --days 7
+uv run python -m scripts.recover_recent_memory_sources --apply --days 7
+```
+
+Local LLM 장애가 계속되면 source는 lease 만료 뒤 재시도되며 최대 시도 횟수를 넘었다는 이유만으로
+`Completed` 처리되지 않습니다. 복구 전에는 classifier 실제 호출 성공을 먼저 확인합니다.
+
 ## 배포 순서
 
 1. 서비스와 DB/WAL 백업

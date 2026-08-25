@@ -546,7 +546,7 @@ class InvalidRequiredMemoryProvider(RecordingMemoryProvider):
         )
 
 
-class LlmMemoryIntentProvider(InvalidRequiredMemoryProvider):
+class LlmMemoryIntentProvider(RecordingMemoryProvider):
     async def classify_top(
         self,
         text: str,
@@ -556,6 +556,17 @@ class LlmMemoryIntentProvider(InvalidRequiredMemoryProvider):
     ) -> TopIntent:
         del text, clarification_pending, history
         return TopIntent.MEMORY
+
+    async def generate_dialogue(self, spec: DialogueSpec) -> DialogueOutput:
+        self.dialogue_specs.append(spec)
+        return DialogueOutput(
+            text="출근시간은 9시 반이야",
+            purpose="conversation",
+            fact_references=(),
+            memory_references=(0,),
+            situation_references=(),
+            accepts_command=False,
+        )
 
 
 class LlmMemoryShareProvider(RecordingMemoryProvider):
@@ -652,9 +663,7 @@ async def test_rejected_required_memory_reply_uses_and_records_the_recalled_memo
         )
     )
 
-    assert reply.text == (
-        "관련된 기억은 있는데, 지금 답을 정확하게 정리하지 못했어. 한 번만 다시 물어봐 줄래?"
-    )
+    assert reply.text == "네가 알려준 내용: 출근시간은 9시 반이야"
     assert source_memory.used_memory_ids == ["memory-commute-time"]
     assert reply.provenance is not None
     assert reply.provenance.final_fallback_reason == "sanitizer_rejection"
@@ -683,6 +692,28 @@ async def test_llm_memory_intent_does_not_require_a_hardcoded_question_shape() -
     assert source_memory.used_memory_ids == ["memory-commute-time"]
     assert reply.provenance is not None
     assert reply.provenance.query_mode == "MemoryRecall"
+
+
+async def test_recent_player_statement_is_required_evidence_when_worker_is_unavailable() -> None:
+    brain = CompanionBrain(InvalidRequiredMemoryProvider())
+
+    prepared = await brain.prepare_response(
+        CompanionTurn(
+            text="내 이름 뭐라고?",
+            conversation_key="recent-name",
+            player_key="player-a",
+            companion_id="mako",
+            surface=Surface.MOBILE,
+            allowed_actions=frozenset(CommandType),
+        ),
+        history=(
+            ConversationTurn(speaker="player", text="내 이름 이재명"),
+            ConversationTurn(speaker="companion", text="그렇구나. 잘 새겨들을게."),
+        ),
+    )
+
+    assert prepared.reply.text == "네가 알려준 내용: 내 이름 이재명"
+    assert prepared.used_memory_ids == ()
 
 
 async def test_llm_memory_share_does_not_receive_an_old_memory_as_reply_material() -> None:

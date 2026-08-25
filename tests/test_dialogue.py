@@ -317,9 +317,7 @@ async def test_required_memory_rejection_falls_back_to_the_recalled_memory() -> 
         finish_memory_reference_trace(token)
         raise
 
-    assert response == (
-        "관련된 기억은 있는데, 지금 답을 정확하게 정리하지 못했어. 한 번만 다시 물어봐 줄래?"
-    )
+    assert response == "네가 알려준 내용: 출근시간은 9시 반이야"
     assert references == ((0,),)
 
 
@@ -339,10 +337,8 @@ async def test_memory_fallback_does_not_repeat_a_raw_storage_request() -> None:
 
     response = await render(provider, spec)
 
-    assert response == (
-        "관련된 기억은 있는데, 지금 답을 정확하게 정리하지 못했어. 한 번만 다시 물어봐 줄래?"
-    )
-    assert "기억해”" not in response
+    assert response == "네가 알려준 내용: 출근시간은 9시 반이야"
+    assert "기억해" not in response
 
 
 @pytest.mark.asyncio
@@ -369,9 +365,7 @@ async def test_optional_memory_rejection_respects_the_llm_memory_selection() -> 
         finish_memory_reference_trace(token)
         raise
 
-    assert response == (
-        "관련된 기억은 있는데, 지금 답을 정확하게 정리하지 못했어. 한 번만 다시 물어봐 줄래?"
-    )
+    assert response == "네가 알려준 내용: 출근시간은 9시 반이야"
     assert references == ((0,),)
 
 

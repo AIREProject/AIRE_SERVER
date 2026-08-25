@@ -14,11 +14,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import CursorResult, delete, select, update
+from sqlalchemy import CursorResult, delete, exists, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     GameEventModel,
+    MemoryCandidateModel,
+    MemorySourceModel,
     MessageModel,
     SourceCursorModel,
     SourceOutboxModel,
@@ -369,6 +371,67 @@ class SourceRepository:
     async def cursor(self, consumer: str = "memory") -> int:
         row = await self._session.get(SourceCursorModel, consumer)
         return 0 if row is None else row.last_completed_seq
+
+    async def recover_unprocessed_messages(
+        self,
+        *,
+        since: datetime,
+        consumer: str = "memory",
+        now: datetime | None = None,
+        apply: bool = False,
+    ) -> tuple[int, ...]:
+        """Find recent player sources completed without a memory or candidate.
+
+        Applying the recovery requeues the existing outbox rows and rewinds the
+        consumer cursor in the same transaction. Tombstones and already-linked
+        sources are deliberately ineligible.
+        """
+
+        result = await self._session.execute(
+            select(SourceOutboxModel)
+            .join(
+                MessageModel,
+                MessageModel.row_id == SourceOutboxModel.source_id,
+            )
+            .where(
+                SourceOutboxModel.source_type == SOURCE_MESSAGE,
+                SourceOutboxModel.state == OUTBOX_COMPLETED,
+                MessageModel.speaker == "player",
+                MessageModel.content.is_not(None),
+                MessageModel.content_deleted_at.is_(None),
+                or_(MessageModel.created_at >= since, MessageModel.delivered_at >= since),
+                ~exists(
+                    select(MemorySourceModel.row_id).where(
+                        MemorySourceModel.source_type == SOURCE_MESSAGE,
+                        MemorySourceModel.source_id == MessageModel.row_id,
+                    )
+                ),
+                ~exists(
+                    select(MemoryCandidateModel.candidate_id).where(
+                        MemoryCandidateModel.source_type == SOURCE_MESSAGE,
+                        MemoryCandidateModel.source_id == MessageModel.row_id,
+                    )
+                ),
+            )
+            .order_by(SourceOutboxModel.source_seq)
+        )
+        rows = tuple(result.scalars())
+        sequences = tuple(row.source_seq for row in rows)
+        if not apply or not rows:
+            return sequences
+
+        moment = _utc(now)
+        for row in rows:
+            row.state = OUTBOX_PENDING
+            row.lease_token = None
+            row.lease_expires_at = None
+            row.attempt_count = 0
+            row.completed_at = None
+        cursor = await self._get_cursor(consumer, moment)
+        cursor.last_completed_seq = min(cursor.last_completed_seq, sequences[0] - 1)
+        cursor.updated_at = moment
+        await self._session.flush()
+        return sequences
 
     async def _get_cursor(self, consumer: str, now: datetime) -> SourceCursorModel:
         row = await self._session.get(SourceCursorModel, consumer)

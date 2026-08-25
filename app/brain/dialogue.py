@@ -241,13 +241,29 @@ def _fallback_memory_references(spec: DialogueSpec, references: tuple[int, ...])
     return ()
 
 
+def _memory_body(memory: str) -> str | None:
+    """프롬프트 메타데이터를 제거하고 검증된 근거 본문만 돌려준다."""
+
+    body = memory.rsplit("; ", maxsplit=1)[-1].strip()
+    if body.startswith("[") and "]" in body:
+        body = body.split("]", maxsplit=1)[1].strip()
+    body = re.sub(r"\s*기억(?:해|해줘|해\s*줘)\s*[.!?]*$", "", body).strip()
+    return body[:160] or None
+
+
 def _memory_grounded_fallback(spec: DialogueSpec, references: tuple[int, ...]) -> str | None:
-    """기억 원문을 대사로 복사하지 않는 안전한 마지막 폴백을 만든다."""
+    """Provider 실패 시 선택된 근거를 그대로 드러내는 안전한 마지막 폴백을 만든다."""
 
     selected = _fallback_memory_references(spec, references)
     if not selected:
         return None
-    return "관련된 기억은 있는데, 지금 답을 정확하게 정리하지 못했어. 한 번만 다시 물어봐 줄래?"
+    bodies = tuple(
+        body for index in selected if (body := _memory_body(spec.memories[index])) is not None
+    )
+    if not bodies:
+        return None
+    joined = " / ".join(bodies)
+    return f"네가 알려준 내용: {joined}"[:200]
 
 
 def provider_failure_fallback(
