@@ -8,6 +8,8 @@ from app.brain.dialogue import (
     DialogueScene,
     DialogueSpec,
     PromptMemory,
+    begin_memory_reference_trace,
+    finish_memory_reference_trace,
     provider_failure_fallback,
     render,
     sanitize,
@@ -76,9 +78,7 @@ def test_sanitize_rejects_empty_or_overlong_dialogue(text: str) -> None:
 
 
 def test_sanitize_folds_newlines_and_repeated_whitespace() -> None:
-    spec = DialogueSpec(
-        scene="wait", fallback="기다릴게.", command_candidate_present=True
-    )
+    spec = DialogueSpec(scene="wait", fallback="기다릴게.", command_candidate_present=True)
 
     assert sanitize("  여기서\n  기다릴게.  ", spec) == "여기서 기다릴게."
 
@@ -185,51 +185,70 @@ def test_sanitize_exempts_conversation_from_number_guard() -> None:
 def test_sanitize_rejects_mismatched_purpose_and_out_of_range_reference() -> None:
     spec = DialogueSpec(scene="enemy", fallback="확인된 정보가 없어.", facts=("약점은 다리다",))
 
-    assert sanitize(
-        generated("다리를 노려.", "conversation", fact_references=(0,)),
-        spec,
-    ) is None
-    assert sanitize(
-        generated("다리를 노려.", "enemy", fact_references=(1,)),
-        spec,
-    ) is None
+    assert (
+        sanitize(
+            generated("다리를 노려.", "conversation", fact_references=(0,)),
+            spec,
+        )
+        is None
+    )
+    assert (
+        sanitize(
+            generated("다리를 노려.", "enemy", fact_references=(1,)),
+            spec,
+        )
+        is None
+    )
 
 
 def test_sanitize_requires_a_lexical_anchor_for_each_reference() -> None:
     spec = DialogueSpec(scene="enemy", fallback="확인된 정보가 없어.", facts=("약점은 다리다",))
 
-    assert sanitize(
-        generated("불로 공격해.", "enemy", fact_references=(0,)),
-        spec,
-    ) is None
-    assert sanitize(
-        generated("다리를 노려.", "enemy", fact_references=(0,)),
-        spec,
-    ) == "다리를 노려."
+    assert (
+        sanitize(
+            generated("불로 공격해.", "enemy", fact_references=(0,)),
+            spec,
+        )
+        is None
+    )
+    assert (
+        sanitize(
+            generated("다리를 노려.", "enemy", fact_references=(0,)),
+            spec,
+        )
+        == "다리를 노려."
+    )
 
 
 def test_sanitize_rejects_fact_claim_without_a_fact_reference() -> None:
     spec = DialogueSpec(scene="conversation", fallback="안녕!")
 
-    assert sanitize(
-        generated("그 적의 약점은 불이야.", "conversation"),
-        spec,
-    ) is None
+    assert (
+        sanitize(
+            generated("그 적의 약점은 불이야.", "conversation"),
+            spec,
+        )
+        is None
+    )
 
 
 def test_sanitize_rejects_command_acceptance_without_a_candidate() -> None:
     spec = DialogueSpec(scene="conversation", fallback="안녕!")
 
-    assert sanitize(
-        generated(
-            text="알겠어. 따라갈게.", purpose="conversation", accepts_command=True
-        ),
-        spec,
-    ) is None
-    assert sanitize(
-        generated("알겠어. 따라갈게.", "conversation"),
-        spec,
-    ) is None
+    assert (
+        sanitize(
+            generated(text="알겠어. 따라갈게.", purpose="conversation", accepts_command=True),
+            spec,
+        )
+        is None
+    )
+    assert (
+        sanitize(
+            generated("알겠어. 따라갈게.", "conversation"),
+            spec,
+        )
+        is None
+    )
 
 
 def test_sanitize_allows_acceptance_with_a_real_candidate() -> None:
@@ -239,12 +258,13 @@ def test_sanitize_allows_acceptance_with_a_real_candidate() -> None:
         command_candidate_present=True,
     )
 
-    assert sanitize(
-        generated(
-            text="좋아, 따라갈게.", purpose="follow_player", accepts_command=True
-        ),
-        spec,
-    ) == "좋아, 따라갈게."
+    assert (
+        sanitize(
+            generated(text="좋아, 따라갈게.", purpose="follow_player", accepts_command=True),
+            spec,
+        )
+        == "좋아, 따라갈게."
+    )
 
 
 def test_required_memory_rejects_missing_numeric_and_negation_distortion() -> None:
@@ -257,30 +277,78 @@ def test_required_memory_rejects_missing_numeric_and_negation_distortion() -> No
 
     assert sanitize(generated("다른 얘기를 하자.", "conversation"), spec) is None
     assert sanitize("겨울 여행을 기억해.", spec) is None
-    assert sanitize(
-        generated(
-            "너는 겨울 여행을 좋아하고 11월에 가.",
-            "conversation",
-            memory_references=(0,),
-        ),
-        spec,
-    ) is None
-    assert sanitize(
-        generated(
-            "너는 겨울 여행을 좋아하지 않고 12월에 가.",
-            "conversation",
-            memory_references=(0,),
-        ),
-        spec,
-    ) is None
-    assert sanitize(
-        generated(
-            "너는 겨울 여행을 좋아하고 12월에 가.",
-            "conversation",
-            memory_references=(0,),
-        ),
-        spec,
-    ) is not None
+    assert (
+        sanitize(
+            generated(
+                "너는 겨울 여행을 좋아하고 11월에 가.",
+                "conversation",
+                memory_references=(0,),
+            ),
+            spec,
+        )
+        is None
+    )
+    assert (
+        sanitize(
+            generated(
+                "너는 겨울 여행을 좋아하지 않고 12월에 가.",
+                "conversation",
+                memory_references=(0,),
+            ),
+            spec,
+        )
+        is None
+    )
+    assert (
+        sanitize(
+            generated(
+                "너는 겨울 여행을 좋아하고 12월에 가.",
+                "conversation",
+                memory_references=(0,),
+            ),
+            spec,
+        )
+        is not None
+    )
+
+
+def test_required_memory_accepts_a_concise_grounded_answer() -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="기억나는 게 없어.",
+        memories=("[M0] 출근시간은 9시 반이야 기억해",),
+        memory_use_policy="Required",
+    )
+
+    assert (
+        sanitize(
+            generated("9시 반이야.", "conversation", memory_references=(0,)),
+            spec,
+        )
+        == "9시 반이야."
+    )
+
+
+def test_required_memory_infers_an_omitted_reference_from_a_grounded_answer() -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="기억나는 게 없어.",
+        memories=("[M0] 출근시간은 9시 반이야 기억해",),
+        memory_use_policy="Required",
+    )
+
+    assert sanitize(generated("9시 반이야.", "conversation"), spec) == "9시 반이야."
+
+
+def test_required_memory_does_not_infer_a_reference_for_a_changed_number() -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="기억나는 게 없어.",
+        memories=("[M0] 출근시간은 9시 반이야",),
+        memory_use_policy="Required",
+    )
+
+    assert sanitize(generated("출근시간은 8시야.", "conversation"), spec) is None
 
 
 @pytest.mark.asyncio
@@ -291,6 +359,92 @@ async def test_render_uses_fallback_for_invalid_dialogue() -> None:
         scene="event_completed",
         fallback="돌 10개를 모았어.",
         facts=("돌 10개를 채집했다",),
+    )
+
+    assert await render(provider, spec) == spec.fallback
+
+
+@pytest.mark.asyncio
+async def test_required_memory_rejection_falls_back_to_the_recalled_memory() -> None:
+    provider = AsyncMock()
+    provider.generate_dialogue.return_value = generated("잘 모르겠어.", "conversation")
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="기억나는 게 없어.",
+        memories=(
+            "[M0] type=ProfileFact; source=RealWorld; priority=Normal; 출근시간은 9시 반이야",
+        ),
+        memory_use_policy="Required",
+    )
+    token = begin_memory_reference_trace()
+    try:
+        response = await render(provider, spec)
+        references = finish_memory_reference_trace(token)
+    except BaseException:
+        finish_memory_reference_trace(token)
+        raise
+
+    assert response == "출근시간은 9시 반이야"
+    assert references == ((0,),)
+
+
+@pytest.mark.asyncio
+async def test_memory_fallback_does_not_repeat_a_raw_storage_request() -> None:
+    provider = AsyncMock()
+    provider.generate_dialogue.return_value = generated("모르겠어.", "conversation")
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="기억나는 게 없어.",
+        memories=(
+            "[M0] type=ProfileFact; source=RealWorld; priority=Normal; "
+            "출근시간은 9시 반이야 기억해",
+        ),
+        memory_use_policy="Required",
+    )
+
+    response = await render(provider, spec)
+
+    assert response == "출근시간은 9시 반이야"
+    assert "기억해" not in response
+
+
+@pytest.mark.asyncio
+async def test_optional_memory_rejection_respects_the_llm_memory_selection() -> None:
+    provider = AsyncMock()
+    provider.generate_dialogue.return_value = generated(
+        "출근시간은 8시야.",
+        "conversation",
+        memory_references=(0,),
+    )
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="일반 대화 폴백",
+        memories=(
+            "[M0] type=ProfileFact; source=RealWorld; priority=Normal; 출근시간은 9시 반이야",
+        ),
+        memory_use_policy="Optional",
+    )
+    token = begin_memory_reference_trace()
+    try:
+        response = await render(provider, spec)
+        references = finish_memory_reference_trace(token)
+    except BaseException:
+        finish_memory_reference_trace(token)
+        raise
+
+    assert response == "출근시간은 9시 반이야"
+    assert references == ((0,),)
+
+
+@pytest.mark.asyncio
+async def test_optional_memory_rejection_without_llm_selection_keeps_scene_fallback() -> None:
+    provider = AsyncMock()
+    provider.generate_dialogue.return_value = generated("레시피는 나무 3개야.", "conversation")
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="일반 대화 폴백",
+        memories=("[M0] type=ProfileFact; 출근시간은 9시 반이야",),
+        memory_use_policy="Optional",
     )
 
     assert await render(provider, spec) == spec.fallback

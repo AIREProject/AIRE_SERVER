@@ -165,6 +165,8 @@ _TOP_ROUTES: dict[TopIntent, TopRoute] = {
     TopIntent.RECIPE: "recipe",
     TopIntent.ENEMY: "enemy",
     TopIntent.LORE: "lore",
+    TopIntent.MEMORY: "conversation",
+    TopIntent.MEMORY_SHARE: "conversation",
     TopIntent.CONVERSATION: "conversation",
     TopIntent.UNKNOWN: "unsupported",
 }
@@ -180,6 +182,10 @@ def _request_query_mode(
     intent: TopIntent,
     text: str,
 ) -> RequestQueryMode | ConversationMode | None:
+    if intent is TopIntent.MEMORY:
+        return ConversationMode.MEMORY_RECALL
+    if intent is TopIntent.MEMORY_SHARE:
+        return ConversationMode.MEMORY_SHARE
     if intent is TopIntent.CONVERSATION:
         if _MEMORY_RECALL_PATTERN.search(text) is not None:
             return ConversationMode.MEMORY_RECALL
@@ -335,7 +341,9 @@ def build_companion_graph(
         꺼내면, 새 장면을 추가할 때 문맥을 빠뜨릴 수 없다.
         """
 
-        prompt_memories = state.get("long_term", ())
+        prompt_memories = (
+            () if state.get("top_intent") is TopIntent.MEMORY_SHARE else state.get("long_term", ())
+        )
         real_world_now = (
             datetime.now(KST)
             if state["turn"].game_time is not None
@@ -354,7 +362,10 @@ def build_companion_graph(
         if derived is not None:
             fallback = derived.fallback
         context_memory_required = bool(
-            state.get("memory_required")
+            (
+                state.get("memory_required")
+                or (state.get("query_mode") is ConversationMode.MEMORY_RECALL and prompt_memories)
+            )
             and scene == "conversation"
             and "고마" not in state["text"]
             and "감사" not in state["text"]
@@ -373,7 +384,7 @@ def build_companion_graph(
                 memory_use_policy=(
                     "Required"
                     if context_memory_required
-                    or (derived is not None and derived.memory_index == 0)
+                    or (derived is not None and derived.memory_index is not None)
                     else "Optional"
                     if prompt_memories
                     else "None"
@@ -381,6 +392,11 @@ def build_companion_graph(
                 derived_facts=() if derived is None else (derived.fact,),
                 required_derived_numbers=(
                     () if derived is None else derived.required_numbers
+                ),
+                derived_memory_references=(
+                    ()
+                    if derived is None or derived.memory_index is None
+                    else (derived.memory_index,)
                 ),
                 situation=describe(state["turn"].game_time, now=real_world_now),
                 relationship_state=state["turn"].relationship_state,
@@ -475,11 +491,14 @@ def build_companion_graph(
                 )
         if intent is TopIntent.RECIPE and recipe_query is None:
             recipe_query = RecipeQuery(RecipeQueryMode.AMBIGUOUS)
-        query_mode: RecipeQueryMode | RequestQueryMode | ConversationMode | None = (
-            recipe_query.mode
-            if intent is TopIntent.RECIPE and recipe_query is not None
-            else _request_query_mode(intent, state["text"])
-        )
+        if intent is TopIntent.RECIPE and recipe_query is not None:
+            query_mode: RecipeQueryMode | RequestQueryMode | ConversationMode | None = (
+                recipe_query.mode
+            )
+        elif intent in (TopIntent.CONVERSATION, TopIntent.MEMORY) and state.get("memory_required"):
+            query_mode = ConversationMode.MEMORY_RECALL
+        else:
+            query_mode = _request_query_mode(intent, state["text"])
         return {
             "top_intent": intent,
             "query_mode": query_mode,
@@ -499,9 +518,7 @@ def build_companion_graph(
             mobile_craft = recipes.mobile_craft_request_for(state["text"])
             if mobile_craft is None:
                 selection = await llm.resolve_recipe(state["text"], recipes.selection_options())
-                mobile_craft = recipes.mobile_craft_request_from_selection(
-                    state["text"], selection
-                )
+                mobile_craft = recipes.mobile_craft_request_from_selection(state["text"], selection)
             if mobile_craft is not None:
                 craft_recipe_id = mobile_craft.recipe_id
                 craft_quantity = mobile_craft.quantity
@@ -789,13 +806,14 @@ def build_companion_graph(
             fallback = "상황을 조금만 더 알려 주면, 내가 생각하는 선택지와 이유를 솔직히 말해볼게."
         elif state.get("query_mode") is ConversationMode.GENERAL_KNOWLEDGE:
             fallback = (
-                "그건 내가 아는 범위에서 설명할 수 있어. "
-                "다만 최신 정보라면 지금 확인할 수는 없어."
+                "그건 내가 아는 범위에서 설명할 수 있어. 다만 최신 정보라면 지금 확인할 수는 없어."
             )
         elif state.get("query_mode") is ConversationMode.MEMORY_RECALL:
             fallback = "그 부분은 아직 확실히 기억나는 게 없어. 네가 다시 알려 주면 좋겠어."
         elif state.get("query_mode") is ConversationMode.PREFERENCE_SHARE:
             fallback = "그걸 좋아하는구나. 지금 대화에서는 잘 새겨들을게."
+        elif state.get("query_mode") is ConversationMode.MEMORY_SHARE:
+            fallback = "그렇구나. 네 이야기로 잘 새겨들을게."
         elif state.get("query_mode") is ConversationMode.AMBIGUOUS:
             fallback = "그 말은 내가 제대로 이해했는지 조금 애매해. 한마디만 더 이어서 말해 줄래?"
         else:

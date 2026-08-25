@@ -157,9 +157,7 @@ async def test_explicit_memory_question_recalls_preferences_without_embeddings()
         source_mode="RealWorld",
     )
 
-    assert [(item.trace_id, item.text) for item in recalled] == [
-        ("M0", "나는 나무가 너무좋아")
-    ]
+    assert [(item.trace_id, item.text) for item in recalled] == [("M0", "나는 나무가 너무좋아")]
 
     second = await SourceBackedMemoryStore(database).recall(
         SourceScope("profile-a", "slot-a", "mako"),
@@ -226,6 +224,66 @@ async def test_attached_name_word_ranks_the_profile_memory_first() -> None:
 
     assert recalled[0].memory_id == "memory-name"
     assert recalled[0].text == "제이름은 대통령 윤 석열입니다"
+
+
+async def test_name_question_excludes_other_profile_facts_and_does_not_count_them() -> None:
+    database = await make_database(make_settings())
+    await _memory(
+        database,
+        memory_id="memory-name-specific",
+        text="내 이름은 이재명이야",
+        memory_type="ProfileFact",
+    )
+    await _memory(
+        database,
+        memory_id="memory-commute-specific",
+        text="출근시간은 9시 반이야",
+        memory_type="ProfileFact",
+    )
+    store = SourceBackedMemoryStore(database)
+    scope = SourceScope("profile-a", "slot-a", "mako")
+
+    recalled = await store.recall(
+        scope,
+        query="내 이름 뭐라고?",
+        direct_recall=True,
+        source_mode="RealWorld",
+    )
+    await store.record_used(scope, tuple(item.memory_id for item in recalled), _NOW)
+
+    assert [item.memory_id for item in recalled] == ["memory-name-specific"]
+    async with database.session_factory() as session:
+        name = await session.get(MemoryModel, "memory-name-specific")
+        commute = await session.get(MemoryModel, "memory-commute-specific")
+    assert name is not None and name.recall_count == 1
+    assert commute is not None and commute.recall_count == 0
+
+
+async def test_compound_commute_query_recalls_both_start_and_end_times() -> None:
+    database = await make_database(make_settings())
+    await _memory(
+        database,
+        memory_id="memory-work-start",
+        text="출근시간은 9시 반이야",
+        memory_type="ProfileFact",
+    )
+    await _memory(
+        database,
+        memory_id="memory-work-end",
+        text="퇴근은 언제나 6시 반이야",
+        memory_type="ProfileFact",
+    )
+
+    recalled = await SourceBackedMemoryStore(database).recall(
+        SourceScope("profile-a", "slot-a", "mako"),
+        query="출퇴근 다 하면 하루 몇시간이지",
+        source_mode="RealWorld",
+    )
+
+    assert {item.memory_id for item in recalled} == {
+        "memory-work-start",
+        "memory-work-end",
+    }
 
 
 async def test_prompt_memory_budget_never_exceeds_three_entries_or_360_characters() -> None:
@@ -298,10 +356,13 @@ async def test_context_only_recall_uses_importance_gate_cooldown_and_actual_use_
         assert memory is not None and memory.recall_count == 0
 
     await store.record_used(scope, ("memory-night-cave",), _NOW)
-    assert await store.recall(
-        scope,
-        query="안녕",
-        context_query="동굴 밤",
-        source_mode="GameWorld",
-        now=_NOW + timedelta(minutes=5),
-    ) == ()
+    assert (
+        await store.recall(
+            scope,
+            query="안녕",
+            context_query="동굴 밤",
+            source_mode="GameWorld",
+            now=_NOW + timedelta(minutes=5),
+        )
+        == ()
+    )

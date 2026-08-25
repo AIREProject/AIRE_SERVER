@@ -108,7 +108,12 @@ def prompt_memory_text(memory: PromptMemoryValue) -> str:
 
 
 def prompt_memory_claim(memory: PromptMemoryValue) -> str:
-    return memory.claim_text if isinstance(memory, PromptMemory) else memory
+    if isinstance(memory, PromptMemory):
+        return memory.claim_text
+    body = memory.rsplit("; ", maxsplit=1)[-1].strip()
+    if body.startswith("[") and "]" in body:
+        body = body.split("]", maxsplit=1)[1].strip()
+    return body
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +138,7 @@ class DialogueSpec:
     # 계산 대신 기억 원문만 되풀이하면 아래 fallback으로 복구한다.
     derived_facts: tuple[str, ...] = ()
     required_derived_numbers: tuple[str, ...] = ()
+    derived_memory_references: tuple[int, ...] = ()
     # 게임이 현재 턴에 알려 준 상황. 게임 시계는 서버가 신뢰하는 값이지만 장면의 확정
     # 사실과는 다른 블록으로 보여 준다.
     situation: tuple[str, ...] = ()
@@ -256,11 +262,55 @@ SURFACE_PROFILES: dict[Surface, SurfaceProfile] = {
 }
 
 
-def provider_failure_fallback(spec: DialogueSpec, reason: FallbackReason) -> str:
-    """Provider 실패는 관측성에 남기고 사용자에게는 안전한 장면 폴백을 반환한다."""
+def _fallback_memory_references(spec: DialogueSpec, references: tuple[int, ...]) -> tuple[int, ...]:
+    """LLM이 고른 유효한 기억, 또는 Required 기억의 안전한 대체 근거를 고른다."""
+
+    valid = tuple(dict.fromkeys(index for index in references if 0 <= index < len(spec.memories)))
+    if valid:
+        return valid
+    if spec.memory_use_policy == "Required" and spec.memories:
+        return (0,)
+    return ()
+
+
+def _memory_body(memory: PromptMemoryValue) -> str | None:
+    """프롬프트 메타데이터를 제거하고 검증된 근거 본문만 돌려준다."""
+
+    body = prompt_memory_claim(memory).strip()
+    body = re.sub(r"\s*기억(?:해|해줘|해\s*줘)\s*[.!?]*$", "", body).strip()
+    return body[:160] or None
+
+
+def _memory_grounded_fallback(spec: DialogueSpec, references: tuple[int, ...]) -> str | None:
+    """Provider 실패 시 선택된 근거를 그대로 드러내는 안전한 마지막 폴백을 만든다."""
+
+    selected = _fallback_memory_references(spec, references)
+    if not selected:
+        return None
+    bodies = tuple(
+        body for index in selected if (body := _memory_body(spec.memories[index])) is not None
+    )
+    if not bodies:
+        return None
+    return " / ".join(bodies)[:200]
+
+
+def provider_failure_fallback(
+    spec: DialogueSpec,
+    reason: FallbackReason,
+    *,
+    memory_references: tuple[int, ...] = (),
+) -> str:
+    """Provider 실패는 관측성에 남기고 검증된 근거로 안전하게 복구한다.
+
+    LLM이 기억 후보를 실제로 선택했거나 Backend가 Required로 지정한 직접 회상
+    질문이면, 생성 문장의 검증 실패를 "기억 없음"으로 바꿔 말하지 않는다.
+    """
 
     del reason
-    return spec.fallback
+    if spec.derived_facts:
+        return spec.fallback
+    return _memory_grounded_fallback(spec, memory_references) or spec.fallback
 
 
 _NUMBER_PATTERN = re.compile(r"\d+")
@@ -353,6 +403,9 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
         return None
 
     if isinstance(output, DialogueOutput):
+        memory_references = output.memory_references
+        if spec.memory_use_policy == "Required" and not memory_references:
+            memory_references = _infer_memory_references(normalized, spec.memories)
         if output.purpose != spec.scene:
             return None
         if output.accepts_command != spec.command_candidate_present:
@@ -360,11 +413,11 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
         if not _references_are_valid(output.fact_references, spec.facts, normalized):
             return None
         memory_claims = tuple(prompt_memory_claim(memory) for memory in spec.memories)
-        if not _references_are_valid(output.memory_references, memory_claims, normalized):
+        if not _references_are_valid(memory_references, memory_claims, normalized):
             return None
-        if spec.memory_use_policy == "Required" and 0 not in output.memory_references:
+        if spec.memory_use_policy == "Required" and not memory_references:
             return None
-        if not _memory_claims_are_valid(output.memory_references, memory_claims, normalized):
+        if not _memory_claims_are_valid(memory_references, memory_claims, normalized):
             return None
         if not _references_are_valid(output.situation_references, spec.situation, normalized):
             return None
@@ -395,8 +448,51 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
     if isinstance(output, DialogueOutput):
         traces = _memory_reference_context.get()
         if traces is not None and len(traces) < 8:
-            traces.append(output.memory_references)
+            traces.append(memory_references)
     return normalized
+
+
+def _finalize_display_text(text: str, fallback: str) -> str:
+    """최종 반환 직전 내부 표현 불변식을 다시 적용한다."""
+
+    for candidate in (text, fallback):
+        normalized = unescape(candidate)
+        normalized = _META_PREFIX_PATTERN.sub("", normalized)
+        normalized = _WHITESPACE_PATTERN.sub(" ", normalized).strip()
+        if (
+            normalized
+            and len(normalized) <= 200
+            and _HTML_ENTITY_PATTERN.search(normalized) is None
+            and _HTML_TAG_PATTERN.search(normalized) is None
+            and _INTERNAL_OUTPUT_PATTERN.search(normalized) is None
+        ):
+            return normalized
+    return "잠깐, 다시 말해 줄래?"
+
+
+def _infer_memory_references(
+    response: str, sources: tuple[PromptMemoryValue, ...]
+) -> tuple[int, ...]:
+    """Local LLM이 빠뜨린 reference를 답변 본문에서 엄격하게 복구한다.
+
+    어휘 근거가 있고 숫자·부정의 의미가 원문과 일치하는 기억만 선택하므로,
+    모델이 새 사실을 만든 답변은 이 보정을 통과하지 못한다.
+    """
+
+    response_numbers = set(_NUMBER_PATTERN.findall(response))
+    response_negated = bool(_NEGATION_PATTERN.search(response))
+    inferred: list[int] = []
+    for index, memory in enumerate(sources):
+        source = prompt_memory_claim(memory)
+        if not _has_lexical_anchor(response, source):
+            continue
+        source_numbers = set(_NUMBER_PATTERN.findall(source))
+        if not response_numbers.issubset(source_numbers):
+            continue
+        if response_negated != bool(_NEGATION_PATTERN.search(source)):
+            continue
+        inferred.append(index)
+    return tuple(inferred)
 
 
 def _references_are_valid(
@@ -417,19 +513,7 @@ def _has_lexical_anchor(text: str, source: str) -> bool:
     return bool(text_anchors.intersection(_bigrams(source)))
 
 
-_ROOT_PATTERN = re.compile(r"[가-힣A-Za-z]+")
-_ROOT_SUFFIX = re.compile(r"(?:으로|에서|에게|처럼|보다|까지|하고|이랑|했어|한다|하다|였어|이다|"
-                          r"을|를|은|는|이|가|도|만|와|과|랑|로|의|에)$")
 _NEGATION_PATTERN = re.compile(r"(?:아니|않|못|없|싫|안\s|\bnot\b|\bnever\b|\bno\b)", re.I)
-
-
-def _meaningful_roots(text: str) -> set[str]:
-    return {
-        root
-        for token in _ROOT_PATTERN.findall(text.casefold())
-        if len(root := _ROOT_SUFFIX.sub("", token)) >= 2
-        and root not in {"memory", "type", "source", "priority", "normal", "high"}
-    }
 
 
 def _memory_claims_are_valid(
@@ -437,23 +521,11 @@ def _memory_claims_are_valid(
 ) -> bool:
     if not references:
         return True
-    response_roots = _meaningful_roots(response)
     referenced = tuple(sources[index] for index in references if index < len(sources))
     for source in referenced:
-        source_roots = _meaningful_roots(source)
-        overlap = {
-            source_root
-            for source_root in source_roots
-            if any(
-                source_root == response_root
-                or source_root in response_root
-                or response_root in source_root
-                for response_root in response_roots
-            )
-        }
-        required = min(2, len(source_roots))
-        if required and len(overlap) < required:
-            return False
+        # 어휘 근거는 `_references_are_valid`의 한국어 2-gram이 이미 검사한다.
+        # 여기서 어근을 다시 비교하면 `반이야` -> `반이잖아` 같은 자연스러운
+        # 활용형을 잘못 거절하므로 의미 변조와 직접 연결된 숫자·부정만 여기서 검사한다.
         if bool(_NEGATION_PATTERN.search(source)) != bool(_NEGATION_PATTERN.search(response)):
             return False
     allowed_numbers = set(_NUMBER_PATTERN.findall(" ".join(referenced)))
@@ -484,25 +556,66 @@ async def render_observed(llm: LLMProvider, spec: DialogueSpec) -> RenderedDialo
             if isinstance(error, TimeoutError) or "timeout" in type(error).__name__.casefold()
             else "provider_unavailable"
         )
+        fallback_references = (
+            spec.derived_memory_references
+            if spec.derived_facts
+            else _fallback_memory_references(spec, ())
+        )
+        grounded_fallback = (
+            None if spec.derived_facts else _memory_grounded_fallback(spec, fallback_references)
+        )
         result = RenderedDialogue(
-            text=provider_failure_fallback(spec, reason),
+            text=grounded_fallback or provider_failure_fallback(spec, reason),
             sanitizer_succeeded=None,
         )
-        return result
+        if fallback_references:
+            _record_memory_references(fallback_references)
+        return RenderedDialogue(
+            text=_finalize_display_text(result.text, spec.fallback),
+            sanitizer_succeeded=result.sanitizer_succeeded,
+        )
     sanitized = sanitize(generated, spec)
     sanitizer_succeeded = sanitized is not None
+    generated_references = (
+        generated.memory_references if isinstance(generated, DialogueOutput) else ()
+    )
+    fallback_references = ()
+    if not sanitizer_succeeded:
+        fallback_references = (
+            spec.derived_memory_references
+            if spec.derived_facts
+            else _fallback_memory_references(spec, generated_references)
+        )
+    grounded_fallback = (
+        None if spec.derived_facts else _memory_grounded_fallback(spec, fallback_references)
+    )
     result = RenderedDialogue(
-        text=sanitized or provider_failure_fallback(spec, "sanitizer_rejection"),
+        text=sanitized
+        or grounded_fallback
+        or provider_failure_fallback(spec, "sanitizer_rejection"),
         sanitizer_succeeded=sanitizer_succeeded,
     )
+    if fallback_references:
+        _record_memory_references(fallback_references)
     _record_sanitizer_result(sanitizer_succeeded)
-    return result
+    return RenderedDialogue(
+        text=_finalize_display_text(result.text, spec.fallback),
+        sanitizer_succeeded=result.sanitizer_succeeded,
+    )
 
 
 def _record_sanitizer_result(succeeded: bool) -> None:
     results = _sanitizer_context.get()
     if results is not None and len(results) < 8:
         results.append(succeeded)
+
+
+def _record_memory_references(references: tuple[int, ...]) -> None:
+    if not references:
+        return
+    traces = _memory_reference_context.get()
+    if traces is not None and len(traces) < 8:
+        traces.append(references)
 
 
 async def render(llm: LLMProvider, spec: DialogueSpec) -> str:

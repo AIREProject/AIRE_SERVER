@@ -10,6 +10,8 @@ class TopIntent(StrEnum):
     RECIPE = "recipe"
     ENEMY = "enemy"
     LORE = "lore"
+    MEMORY = "memory"
+    MEMORY_SHARE = "memory_share"
     CONVERSATION = "conversation"
     UNKNOWN = "unknown"
 
@@ -40,6 +42,7 @@ class ConversationMode(StrEnum):
     OPINION_ADVICE = "OpinionAdvice"
     GENERAL_KNOWLEDGE = "GeneralKnowledge"
     PREFERENCE_SHARE = "PreferenceShare"
+    MEMORY_SHARE = "MemoryShare"
     MEMORY_RECALL = "MemoryRecall"
     AMBIGUOUS = "Ambiguous"
     NOT_APPLICABLE = "NotApplicable"

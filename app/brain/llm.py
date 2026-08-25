@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable
 from contextvars import ContextVar, Token
@@ -139,6 +140,13 @@ _TOP_ROUTER_PROMPT = """사용자의 한국어 발화를 다음 의도 중 정�
   적을 상대하는 방법은 enemy다.
 - enemy: 적의 약점, 공략법, 상대하는 방법을 **묻는 질문**. 공격하라는 명령 자체는 command다.
 - lore: 장소의 역사, 유래, 세계관 질문
+- memory: 플레이어가 이전에 알려 준 본인의 일정·이름·취향·약속·과거 사건을
+  다시 묻는 질문. '기억'이나 물음표가 없어도 예전에 알려 준 개인 정보로 답해야 하면
+  memory다. 두 개 이상의 개인 정보를 비교·계산·조합해야 답할 수 있는 질문도 memory다.
+  현재 시간이나 일반 지식을 묻는 것은 memory가 아니다.
+- memory_share: 플레이어가 본인의 일정·이름·취향·약속·과거 사건을 새로 알려 주거나
+  기존 개인 정보를 정정하는 진술. 질문이 아니라 "나는 ...이야", "언제나 ...해"처럼
+  다음 대화에서도 의미가 있을 자기 정보를 직접 말하면 memory_share다.
 - conversation: 인사, 감사, 일반 질문, 일상 이야기, 감정이나 선호 공유. 아이템 이름이 우연히
   포함됐을 뿐 제작법·의미·실행을 묻지 않은 말도 conversation이다.
 - unknown: 위 범주에 속하지 않거나 확인되지 않은 게임 사실을 요구해 판단할 수 없음
@@ -151,6 +159,11 @@ _TOP_ROUTER_PROMPT = """사용자의 한국어 발화를 다음 의도 중 정�
 - '엉붕 제작법' -> recipe
 - '엉붕 만들어 줘' -> command
 - '내가 지지하는 것은' -> conversation
+- '출근시간 몇시야' -> memory
+- '내가 좋아하는 게 뭐였지' -> memory
+- '출퇴근 다 하면 하루 몇 시간이지' -> memory
+- '퇴근은 언제나 6시 반이야' -> memory_share
+- '사실 나는 민트초코를 싫어해' -> memory_share
 애매한 일상 발화는 unknown으로 버리지 말고 conversation에서 자연스럽게 맥락을 확인한다."""
 
 _COMMAND_ROUTER_PROMPT = """사용자의 한국어 명령형 발화를 다음 명령 중 정확히 하나로 분류한다.
@@ -272,6 +285,12 @@ occurred_at, priority 같은 내부 표기도 대사에 노출하지 않는다. 
 있으면 실제 이름을 넣어 인사한다.
 플레이어가 자신의 취향이나 과거에 대해 무엇을 기억하는지 직접 물었고 [기억]이 있으면,
 그 기억의 내용으로 먼저 답한다. [기억]에 없는 내용을 기억한다고 지어내지 않는다.
+기억으로 답할 때 숫자 표현은 원문 그대로 유지한다. 예를 들어 '9시 반'을 '9시 30분'으로
+바꾸지 않는다. 원문 끝의 '기억해', '저장해 줘' 같은 저장 요청은 답변에 반복하지 않는다.
+기억 원문을 인용하거나 '전에 네가 이렇게 알려줬어'라고 서두를 붙이지 말고,
+현재 질문에 맞는 자연스러운 답으로 바꿔 말한다. 여러 기억을 비교·계산·조합해야 하면
+관련된 기억을 모두 사용해 질문의 결론을 내고, 결과만 말하지 말고 사용한 값도 짧게 보여 준다.
+답에 필요한 정보가 충분하면 추가 조건을 되묻거나 추측성 질문을 덧붙이지 않는다.
 플레이어 자신에 관한 답을 물었는데 관련 [기억]이 없으면 이름·취향·지지 대상·약속을 추측하지
 말고, 아직 기억하지 못한다고 자연스럽게 말한다.
 Command Candidate가 없으면 행동을 수락하거나 실행하겠다고 약속하지 않는다.
@@ -693,13 +712,15 @@ class MockLLMProvider(LLMProvider):
             else provider_failure_fallback(spec, fallback_reason)
         )
         memory_references: tuple[int, ...] = ()
-        if (
-            fallback_reason is None
-            and spec.memory_use_policy == "Required"
-            and spec.memories
-        ):
+        if fallback_reason is None and spec.memory_use_policy == "Required" and spec.memories:
             memory_text = prompt_memory_claim(spec.memories[0])
-            text = f"기억하고 있어. {memory_text}"
+            # Mock은 개발용 결정론 대체물이다. 사용자가 저장한 문장을
+            # 접두어와 연결하거나 저장 요청까지 반복하지 않는다.
+            text = re.sub(
+                r"\s*(?:기억해(?:\s*줘)?|저장해(?:\s*줘)?)\s*[.!?]?$",
+                "",
+                memory_text,
+            ).strip()
             memory_references = (0,)
         grounded_scenes = {
             "recipe",

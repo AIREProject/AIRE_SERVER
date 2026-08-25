@@ -94,7 +94,7 @@ Admin 변경은 해당 DB에만 적용되며 새 서버의 빈 DB에는 자동 �
 - UE UObject 이름, Actor name, 배열 index를 서버 ID로 사용하지 않습니다.
 - ID를 변경하면 기존 Offline Task와 Recipe foreign key에 영향을 줄 수 있습니다.
 
-## 6. Game State Snapshot (AX-I09 local Review)
+## 6. Game State Snapshot
 
 AX-I09 로컬 구현은 UE가 검증·저장한 마지막 Game State Snapshot을 인증된
 `(profile_id, save_slot_id, companion_id)` scope에 보관합니다. `PUT /api/v1/game-state`는
@@ -119,15 +119,16 @@ capacity보다 많은 Stack을 가질 수 없습니다. 장착 ID는 서버 Item
 최신 값보다 크지 않으면 `409 GameStateVersionConflict`로 상태를 보존합니다. 자세한 header,
 wire shape와 오류는 [API 사용법](api-endpoints.md)을 따릅니다.
 
-이 계약은 **로컬 사전 배포 Review**입니다. 공개 배포 `/openapi.json`에는 아직 Game State
-경로가 없으므로 배포 지원이나 runtime 성공을 주장하지 않습니다.
+2026-08-25 공개 배포 `/openapi.json`은 Game State GET/PUT 경로와 DTO를 노출하며 GET runtime
+smoke는 HTTP 200으로 확인했습니다. PUT, version conflict와 stale overwrite의 전체 runtime
+matrix는 별도 검증 항목입니다.
 
 ## 7. 현재 제한
 
 - `locations`는 0행입니다.
 - `game_context.location_id`가 알려진 lore ID일 때만 현재 지역 사실을 직접 사용합니다.
 - World의 나무·적·작업대 instance를 식별하는 Entity registry는 없습니다.
-- Game State API는 로컬 Review 계약과 구현만 있으며 공개 배포 OpenAPI에는 아직 없습니다.
+- Game State API 배포 계약은 확인했지만 PUT과 충돌·재전송 runtime matrix는 아직 남아 있습니다.
 - Admin으로 추가한 새 Item이 Mock regex 분류 어휘에 자동 추가되는 것은 아닙니다.
 
 게임 데이터와 UE World 상태는 다른 것입니다. Item/Recipe/Enemy master data가 DB에 있어도 현재

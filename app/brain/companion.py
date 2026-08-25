@@ -31,8 +31,11 @@ from app.db.source_repository import SourceScope
 from app.models import TimeContext
 from app.relationship_service import RelationshipPresentationStore, RelationshipState
 from app.source_memory_store import (
+    MAX_PROMPT_MEMORIES,
+    MAX_PROMPT_MEMORY_CHARS,
     RecalledMemory,
     SourceBackedMemoryStore,
+    has_memory_lexical_overlap,
     render_prompt_memory,
 )
 
@@ -113,6 +116,10 @@ _EMBEDDING_QUERY_CACHE_SIZE = 64
 # 전사 정리 주기. 보존 기간이 날 단위라 이보다 자주 돌 이유가 없다.
 _SWEEP_INTERVAL_SECONDS = 3600.0
 logger = logging.getLogger("aire.backend")
+
+_DIRECT_MEMORY_RECALL_PATTERN = re.compile(
+    r"(?:기억(?:해|나|하)|전에\s*말|내\s*(?:취향|약속|이름)|\?)"
+)
 
 
 def _build_provenance(
@@ -349,6 +356,11 @@ class CompanionBrain:
         prompt_memory = (
             replace(memory, recent_turns=tuple(history)) if history is not None else memory
         )
+        prompt_sources = self._merge_recent_evidence(
+            turn.text,
+            prompt_memory.recent_turns,
+            recalled,
+        )
         provider_token = begin_provider_trace()
         sanitizer_token = begin_sanitizer_trace()
         memory_reference_token = begin_memory_reference_trace()
@@ -362,8 +374,8 @@ class CompanionBrain:
                         "pending": prompt_memory.pending,
                         "recipe_reference": prompt_memory.recipe_reference,
                         "history": prompt_memory.recent_turns,
-                        "long_term": recalled,
-                        "memory_required": bool(recalled and recalled[0].required),
+                        "long_term": prompt_sources,
+                        "memory_required": any(item.required for item in prompt_sources),
                     }
                 ),
             )
@@ -398,13 +410,53 @@ class CompanionBrain:
                 ),
             ),
             used_memory_ids=tuple(
-                cast(str, recalled[index].memory_id)
+                cast(str, prompt_sources[index].memory_id)
                 for references in memory_reference_results
                 for index in references
-                if index < len(recalled) and recalled[index].memory_id is not None
+                if index < len(prompt_sources) and prompt_sources[index].memory_id is not None
             ),
             memory_scope=turn.memory_scope,
         )
+
+    @staticmethod
+    def _merge_recent_evidence(
+        query: str,
+        history: Sequence[ConversationTurn],
+        recalled: tuple[PromptMemory, ...],
+    ) -> tuple[PromptMemory, ...]:
+        """Promote only directly relevant same-session player statements to evidence."""
+
+        recent: list[PromptMemory] = []
+        if _DIRECT_MEMORY_RECALL_PATTERN.search(query) is not None:
+            for turn in reversed(history):
+                if turn.speaker != "player" or not has_memory_lexical_overlap(query, turn.text):
+                    continue
+                trace_id = f"R{len(recent)}"
+                recent.append(
+                    PromptMemory(
+                        prompt_text=(
+                            f"[{trace_id}] type=RecentEvidence; source=RecentConversation; "
+                            f"priority=High; {turn.text}"
+                        ),
+                        claim_text=turn.text,
+                        required=True,
+                    )
+                )
+                if len(recent) == MAX_PROMPT_MEMORIES:
+                    break
+
+        merged: list[PromptMemory] = []
+        used_chars = 0
+        seen_text: set[str] = set()
+        for item in (*recent, *recalled):
+            if item.claim_text in seen_text or len(merged) == MAX_PROMPT_MEMORIES:
+                continue
+            if used_chars + len(item.prompt_text) > MAX_PROMPT_MEMORY_CHARS:
+                continue
+            merged.append(item)
+            seen_text.add(item.claim_text)
+            used_chars += len(item.prompt_text)
+        return tuple(merged)
 
     async def commit_response(self, prepared: PreparedCompanionReply) -> None:
         """Publish a prepared reply after canonical persistence succeeds."""
@@ -534,9 +586,7 @@ class CompanionBrain:
             )
             source_mode = None if game_time is None else game_time.source.value
             context_query = self._context_memory_query(game_time, world_context)
-            direct_recall = re.search(
-                r"(?:기억(?:해|나|하)|전에\s*말|내\s*(?:취향|약속|이름))", query
-            ) is not None
+            direct_recall = _DIRECT_MEMORY_RECALL_PATTERN.search(query) is not None
             source_recalled = await self._source_memory.recall(
                 scope,
                 query=query,
@@ -578,9 +628,7 @@ class CompanionBrain:
         )
 
     @staticmethod
-    def _context_memory_query(
-        game_time: TimeContext | None, context: WorldContextFacts
-    ) -> str:
+    def _context_memory_query(game_time: TimeContext | None, context: WorldContextFacts) -> str:
         parts: list[str] = []
         if game_time is not None and game_time.source.value == "GameWorld":
             parts.append(game_time.period)

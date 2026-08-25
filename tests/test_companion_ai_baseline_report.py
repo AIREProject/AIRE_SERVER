@@ -54,6 +54,8 @@ _EXPECTED_ROUTE = {
     "recipe": "recipe",
     "enemy": "enemy",
     "lore": "lore",
+    "memory": "conversation",
+    "memory_share": "conversation",
     "conversation": "conversation",
     "unknown": "unsupported",
 }
@@ -288,9 +290,7 @@ def _assess_fixture(
     )
 
 
-def _summarize(
-    fixtures: tuple[FixtureAssessment, ...], metric: MetricName
-) -> MetricSummary:
+def _summarize(fixtures: tuple[FixtureAssessment, ...], metric: MetricName) -> MetricSummary:
     statuses = [
         assessment.status
         for fixture in fixtures
@@ -491,9 +491,7 @@ def test_report_summary_is_deterministic(baseline_report: BaselineReport) -> Non
             "structured_output_failure",
         ),
     )
-    query_mode_statuses = tuple(
-        fixture.query_mode_status for fixture in baseline_report.fixtures
-    )
+    query_mode_statuses = tuple(fixture.query_mode_status for fixture in baseline_report.fixtures)
     assert query_mode_statuses.count("known_gap") == 0
     assert query_mode_statuses.count("not_observed") == 5
     assert query_mode_statuses.count("pass") == 8
@@ -502,19 +500,16 @@ def test_report_summary_is_deterministic(baseline_report: BaselineReport) -> Non
 
 def test_report_contains_only_deidentified_metadata(baseline_report: BaselineReport) -> None:
     serialized = repr(baseline_report)
-    forbidden = [
-        fixture.request.text
-        for fixture in FIXTURES
-    ] + [
-        text
-        for fixture in FIXTURES
-        for text in fixture.request.prior_turns
-    ] + [
-        response.result
-        for fixture in FIXTURES
-        for response in fixture.script.responses
-        if response.method == "generate_dialogue" and isinstance(response.result, str)
-    ]
+    forbidden = (
+        [fixture.request.text for fixture in FIXTURES]
+        + [text for fixture in FIXTURES for text in fixture.request.prior_turns]
+        + [
+            response.result
+            for fixture in FIXTURES
+            for response in fixture.script.responses
+            if response.method == "generate_dialogue" and isinstance(response.result, str)
+        ]
+    )
     if any(value and value in serialized for value in forbidden):
         raise AssertionError("baseline report contains forbidden conversation content")
     assert "fixture-only-pepper-not-for-production" not in serialized

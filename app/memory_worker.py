@@ -77,26 +77,25 @@ class MemoryWorker:
                 except Exception:
                     self._last_error_at = datetime.now(UTC)
                     if claim.attempt_count >= self._max_attempts:
-                        async with self._database.session_factory() as session:
-                            await SourceRepository(session).acknowledge(claim)
                         logger.exception(
-                            "memory_source_discarded_after_retries",
+                            "memory_source_retry_threshold_exceeded",
                             extra={
-                                "event": "memory_source_discarded_after_retries",
+                                "event": "memory_source_retry_threshold_exceeded",
                                 "source_type": claim.source_type,
                                 "attempt_count": claim.attempt_count,
                             },
                         )
-                        processed += 1
-                        continue
-                    logger.exception(
-                        "memory_source_retry_scheduled",
-                        extra={
-                            "event": "memory_source_retry_scheduled",
-                            "source_type": claim.source_type,
-                            "attempt_count": claim.attempt_count,
-                        },
-                    )
+                    else:
+                        logger.exception(
+                            "memory_source_retry_scheduled",
+                            extra={
+                                "event": "memory_source_retry_scheduled",
+                                "source_type": claim.source_type,
+                                "attempt_count": claim.attempt_count,
+                            },
+                        )
+                    # Claimed 상태를 유지한다. lease 만료 뒤 같은 source를 다시 시도하며,
+                    # LLM 장애를 처리 완료로 위장하거나 cursor를 전진시키지 않는다.
                     break
             return processed
         finally:
