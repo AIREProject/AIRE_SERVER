@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from app.brain import CompanionBrain, CompanionTurn
-from app.brain.dialogue import DialogueSpec, sanitize
+from app.brain.dialogue import DialogueSpec, prompt_memory_claim, sanitize
 from app.brain.llm import MockLLMProvider
 from app.brain.memory import (
     EMPTY_CONSOLIDATION,
@@ -661,7 +661,9 @@ async def test_recalled_memories_reach_the_dialogue_prompt(tmp_path: Path) -> No
 
     await brain.respond(make_turn())
 
-    assert llm.dialogue_specs[-1].memories == ("플레이어는 밤을 싫어한다",)
+    assert tuple(
+        prompt_memory_claim(memory) for memory in llm.dialogue_specs[-1].memories
+    ) == ("플레이어는 밤을 싫어한다",)
 
 
 async def test_memories_never_reach_the_classifiers(tmp_path: Path) -> None:
@@ -935,7 +937,9 @@ async def test_a_brain_without_a_transcript_never_extracts(tmp_path: Path) -> No
 
     assert llm.extraction_specs == []
     # 회수는 그대로 동작한다 — 이미 있는 기억은 쓰인다.
-    assert llm.dialogue_specs[-1].memories == ("플레이어는 밤을 싫어한다",)
+    assert tuple(
+        prompt_memory_claim(memory) for memory in llm.dialogue_specs[-1].memories
+    ) == ("플레이어는 밤을 싫어한다",)
 
 
 def test_semantic_similarity_can_out_rank_a_non_matching_memory() -> None:

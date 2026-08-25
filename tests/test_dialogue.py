@@ -7,6 +7,7 @@ from app.brain.dialogue import (
     DialogueOutput,
     DialogueScene,
     DialogueSpec,
+    PromptMemory,
     provider_failure_fallback,
     render,
     sanitize,
@@ -96,6 +97,72 @@ def test_sanitize_removes_unprompted_laughter_and_limits_prompted_laughter() -> 
 
     assert sanitize("헉, 벌써? ㅋㅋ 뭐 좀 먹어.", serious) == "헉, 벌써? 뭐 좀 먹어."
     assert sanitize("ㅋㅋㅋㅋ 맞아 ㅎㅎ 진짜 웃기네.", joking) == "ㅋㅋ 맞아 진짜 웃기네."
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "네가 알려준 내용: 퇴근은 언제나 6시반이야",
+        "네가 알려준 내용:&#x20;퇴근은 언제나 6시반이야",
+        "사용자가 말해 준 정보\uFF1A&nbsp;퇴근은 언제나 6시반이야",
+    ],
+)
+def test_sanitize_removes_memory_meta_prefixes_and_decodes_entities(text: str) -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="퇴근 시간을 다시 알려 줄래?",
+        memories=(
+            PromptMemory(
+                prompt_text=(
+                    "[M0] type=ProfileFact; source=RealWorld; "
+                    "occurred_at=2026-08-25T00:00:00+09:00; priority=Normal; "
+                    "퇴근은 언제나 6시반이야"
+                ),
+                claim_text="퇴근은 언제나 6시반이야",
+            ),
+        ),
+        memory_use_policy="Required",
+    )
+
+    assert sanitize(
+        generated(text, "conversation", memory_references=(0,)), spec
+    ) == "퇴근은 언제나 6시반이야"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[M0] 퇴근은 6시반이야",
+        "[0] 퇴근은 6시반이야",
+        "type=ProfileFact; 퇴근은 6시반이야",
+        "<memory>퇴근은 6시반이야</memory>",
+        "퇴근은 6시반이야 &bogus;",
+    ],
+)
+def test_sanitize_rejects_internal_prompt_markup(text: str) -> None:
+    spec = DialogueSpec(scene="conversation", fallback="다시 말해 줄래?")
+
+    assert sanitize(text, spec) is None
+
+
+def test_sanitize_does_not_reject_normal_thanks_for_information() -> None:
+    spec = DialogueSpec(scene="conversation", fallback="별말을.")
+
+    assert sanitize("알려줘서 고마워.", spec) == "알려줘서 고마워."
+
+
+def test_derived_time_answer_requires_the_exact_calculated_numbers() -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="출근까지 8시간 35분 남았어.",
+        derived_facts=("출근까지 8시간 35분 남았다.",),
+        required_derived_numbers=("8", "35"),
+    )
+
+    assert sanitize("출근은 9시 반이야.", spec) is None
+    assert sanitize("출근까지 8시간 35분 남았어.", spec) == (
+        "출근까지 8시간 35분 남았어."
+    )
 
 
 def test_sanitize_rejects_numbers_not_present_in_facts() -> None:

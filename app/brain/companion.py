@@ -48,6 +48,7 @@ from .contract import (
     WorldContextFacts,
 )
 from .dialogue import (
+    PromptMemory,
     begin_memory_reference_trace,
     begin_sanitizer_trace,
     finish_memory_reference_trace,
@@ -193,13 +194,6 @@ class PreparedCompanionReply:
     reply: CompanionReply
     used_memory_ids: tuple[str, ...] = ()
     memory_scope: MemoryScope | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _PromptMemory:
-    text: str
-    memory_id: str | None = None
-    required: bool = False
 
 
 class CompanionBrain:
@@ -349,7 +343,7 @@ class CompanionBrain:
         turn: CompanionTurn,
         *,
         history: Sequence[ConversationTurn] | None,
-        recalled: tuple[_PromptMemory, ...],
+        recalled: tuple[PromptMemory, ...],
     ) -> PreparedCompanionReply:
         memory = self._store.load(turn.conversation_key)
         prompt_memory = (
@@ -368,7 +362,7 @@ class CompanionBrain:
                         "pending": prompt_memory.pending,
                         "recipe_reference": prompt_memory.recipe_reference,
                         "history": prompt_memory.recent_turns,
-                        "long_term": tuple(item.text for item in recalled),
+                        "long_term": recalled,
                         "memory_required": bool(recalled and recalled[0].required),
                     }
                 ),
@@ -446,7 +440,7 @@ class CompanionBrain:
         async with self._conversation_lock(turn.conversation_key):
             memory = self._store.load(turn.conversation_key)
             spec = build_situation_spec(
-                turn, history=memory.recent_turns, memories=tuple(item.text for item in recalled)
+                turn, history=memory.recent_turns, memories=recalled
             )
             provider_token = begin_provider_trace()
             sanitizer_token = begin_sanitizer_trace()
@@ -521,7 +515,7 @@ class CompanionBrain:
         query: str,
         game_time: TimeContext | None,
         world_context: WorldContextFacts,
-    ) -> tuple[_PromptMemory, ...]:
+    ) -> tuple[PromptMemory, ...]:
         """이번 발화(또는 상황)와 관련 있는 장기기억을 문장으로만 꺼낸다.
 
         그래프에는 저장소가 아니라 이미 고른 문장만 들어간다. 노드가 저장소를 쥐고 있으면
@@ -578,7 +572,10 @@ class CompanionBrain:
                 query_embedding=query_embedding,
                 embedding_model=self._embedding_model,
             )
-        return tuple(_PromptMemory(memory.text) for memory in recalled)
+        return tuple(
+            PromptMemory(prompt_text=memory.text, claim_text=memory.text)
+            for memory in recalled
+        )
 
     @staticmethod
     def _context_memory_query(
@@ -599,9 +596,10 @@ class CompanionBrain:
         return " ".join(parts)
 
     @staticmethod
-    def _prompt_memory(memory: RecalledMemory) -> _PromptMemory:
-        return _PromptMemory(
-            text=render_prompt_memory(memory),
+    def _prompt_memory(memory: RecalledMemory) -> PromptMemory:
+        return PromptMemory(
+            prompt_text=render_prompt_memory(memory),
+            claim_text=memory.text,
             memory_id=memory.memory_id,
             required=memory.required,
         )

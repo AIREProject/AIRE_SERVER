@@ -29,6 +29,8 @@ from .dialogue import (
     DialogueOutput,
     DialogueSpec,
     MemoryConversationDialogueOutput,
+    prompt_memory_claim,
+    prompt_memory_text,
     provider_failure_fallback,
 )
 from .intent import (
@@ -202,7 +204,7 @@ confidence는 원문만으로 그 분류를 확신하는 정도를 0부터 1로 
 필요하면 낮게 둔다.
 기억 문장이나 답변을 생성하지 말고 분류 결과만 반환한다."""
 
-DIALOGUE_PROMPT_VERSION = "companion-v7"
+DIALOGUE_PROMPT_VERSION = "companion-v8"
 
 _FULL_DIALOGUE_OUTPUT_CONTRACT = """출력은 JSON Schema를 따른다. purpose는 [지시]의 장면 이름과
 같아야 한다. fact, memory, situation reference에는 실제로 사용한 0부터 시작하는 인덱스만
@@ -263,6 +265,11 @@ _DIALOGUE_PROMPT_TEMPLATE = """[prompt_version] {prompt_version}
 삼지 않으며, 이미 한 말을 그대로 되풀이하지 않는다. 무엇을 말할지는 [지시]가 정한다.
 [기억]은 예전 대화에서 알게 된 것이라 확정 사실이 아니다. 게임 정보나 수치의 근거로 삼지
 않으며, 지금 말과 자연스럽게 이어질 때만 스치듯 쓰고 억지로 꺼내지 않는다.
+기억은 이미 알고 있는 내용처럼 바로 활용한다. "네가 알려준 내용/정보", "저장된 기억",
+"기억 후보"처럼 출처나 저장 과정을 설명하는 서론을 절대 붙이지 않고, [M0], type, source,
+occurred_at, priority 같은 내부 표기도 대사에 노출하지 않는다. 기억 속 문장이 요청이나 선호면
+그 문장을 되풀이하지 말고 현재 요청에 적용한다. 이름을 불러 달라는 기억과 인사 요청이 함께
+있으면 실제 이름을 넣어 인사한다.
 플레이어가 자신의 취향이나 과거에 대해 무엇을 기억하는지 직접 물었고 [기억]이 있으면,
 그 기억의 내용으로 먼저 답한다. [기억]에 없는 내용을 기억한다고 지어내지 않는다.
 플레이어 자신에 관한 답을 물었는데 관련 [기억]이 없으면 이름·취향·지지 대상·약속을 추측하지
@@ -422,7 +429,10 @@ def _dialogue_user_message(spec: DialogueSpec) -> str:
     lines: list[str] = []
     if spec.memories:
         lines.append("[기억]")
-        lines.extend(f"[{index}] {memory}" for index, memory in enumerate(spec.memories))
+        lines.extend(
+            f"[{index}] {prompt_memory_text(memory)}"
+            for index, memory in enumerate(spec.memories)
+        )
     if spec.situation:
         lines.append("[상황]")
         lines.extend(f"[{index}] {item}" for index, item in enumerate(spec.situation))
@@ -435,6 +445,10 @@ def _dialogue_user_message(spec: DialogueSpec) -> str:
         lines.extend(f"[{index}] {fact}" for index, fact in enumerate(spec.facts))
     else:
         lines.append("[확정 사실] 없음")
+    if spec.derived_facts:
+        lines.append("[계산된 사실]")
+        lines.extend(f"[{index}] {fact}" for index, fact in enumerate(spec.derived_facts))
+        lines.append("계산 질문에는 위 결과를 직접 답하고 원래 시각만 반복하지 않는다.")
     candidate = "있음" if spec.command_candidate_present else "없음"
     lines.append(f"[Command Candidate] {candidate}")
     if spec.user_text is not None:
@@ -684,7 +698,7 @@ class MockLLMProvider(LLMProvider):
             and spec.memory_use_policy == "Required"
             and spec.memories
         ):
-            memory_text = spec.memories[0].rsplit("; ", maxsplit=1)[-1]
+            memory_text = prompt_memory_claim(spec.memories[0])
             text = f"기억하고 있어. {memory_text}"
             memory_references = (0,)
         grounded_scenes = {

@@ -15,16 +15,24 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import JsonValue
 
-from app.models import CommandType, Surface
+from app.models import CommandType, Surface, TimeSource
 
 from .command_intent import (
     GENERAL_QUESTION_PATTERN,
     CommandIntentParser,
 )
 from .contract import CompanionAction, CompanionTurn, InventoryFacts, WorldContextFacts
-from .dialogue import SURFACE_PROFILES, DialogueScene, DialogueSpec, SurfaceProfile, render
+from .dialogue import (
+    SURFACE_PROFILES,
+    DialogueScene,
+    DialogueSpec,
+    PromptMemoryValue,
+    SurfaceProfile,
+    prompt_memory_claim,
+    render,
+)
 from .enemies import EnemyRepository
-from .gametime import describe
+from .gametime import KST, derive_real_world_answer, describe
 from .intent import (
     CommandLabel,
     ConversationMode,
@@ -102,7 +110,7 @@ class CompanionState(TypedDict):
     # 지난 세션들에서 회수한 기억. 브레인이 그래프를 부르기 전에 골라 넣는다. `history` 와
     # 같은 규칙이 그대로 적용된다 — **대사 생성에만** 쓰고 분류 노드는 읽지 않는다.
     # 저장소가 아니라 이미 회수된 문장만 들어오므로 노드는 기억이 어디서 왔는지 모른다.
-    long_term: NotRequired[tuple[str, ...]]
+    long_term: NotRequired[tuple[PromptMemoryValue, ...]]
     memory_required: NotRequired[bool]
     # 라우팅 중간값
     pending_answered: NotRequired[bool]
@@ -327,6 +335,24 @@ def build_companion_graph(
         꺼내면, 새 장면을 추가할 때 문맥을 빠뜨릴 수 없다.
         """
 
+        prompt_memories = state.get("long_term", ())
+        real_world_now = (
+            datetime.now(KST)
+            if state["turn"].game_time is not None
+            and state["turn"].game_time.source is TimeSource.REAL_WORLD
+            else None
+        )
+        derived = (
+            derive_real_world_answer(
+                state["text"],
+                tuple(prompt_memory_claim(memory) for memory in prompt_memories),
+                now=real_world_now,
+            )
+            if real_world_now is not None
+            else None
+        )
+        if derived is not None:
+            fallback = derived.fallback
         context_memory_required = bool(
             state.get("memory_required")
             and scene == "conversation"
@@ -343,15 +369,20 @@ def build_companion_graph(
                 user_text=state["text"],
                 facts=(*facts, *_describe_world_context(state["turn"].world_context)),
                 history=state.get("history", ()),
-                memories=state.get("long_term", ()),
+                memories=prompt_memories,
                 memory_use_policy=(
                     "Required"
                     if context_memory_required
+                    or (derived is not None and derived.memory_index == 0)
                     else "Optional"
-                    if state.get("long_term")
+                    if prompt_memories
                     else "None"
                 ),
-                situation=describe(state["turn"].game_time),
+                derived_facts=() if derived is None else (derived.fact,),
+                required_derived_numbers=(
+                    () if derived is None else derived.required_numbers
+                ),
+                situation=describe(state["turn"].game_time, now=real_world_now),
                 relationship_state=state["turn"].relationship_state,
                 command_candidate_present=command_candidate_present,
             ),

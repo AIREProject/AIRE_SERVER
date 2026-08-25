@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from .contract import SituationTurn
-from .dialogue import SURFACE_PROFILES, DialogueSpec
+from .dialogue import SURFACE_PROFILES, DialogueSpec, PromptMemoryValue
 from .gametime import describe
 from .store import ConversationTurn
 
@@ -16,7 +16,7 @@ def build_spec(
     turn: SituationTurn,
     *,
     history: tuple[ConversationTurn, ...],
-    memories: tuple[str, ...],
+    memories: tuple[PromptMemoryValue, ...],
 ) -> DialogueSpec:
     """클라이언트가 보낸 상황과 게임 시계를 하나의 `[상황]` 블록으로 합친다."""
 

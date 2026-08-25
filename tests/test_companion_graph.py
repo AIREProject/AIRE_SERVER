@@ -4,6 +4,9 @@
 그래프 실행은 모든 터미널 노드가 대사를 채운다는 불변식을 확인한다.
 """
 
+from datetime import datetime
+from unittest.mock import patch
+
 import pytest
 from langgraph.graph.state import CompiledStateGraph
 
@@ -16,8 +19,9 @@ from app.brain.contract import (
     WorkFacts,
     WorldContextFacts,
 )
-from app.brain.dialogue import SURFACE_PROFILES, DialogueOutput, DialogueSpec
+from app.brain.dialogue import SURFACE_PROFILES, DialogueOutput, DialogueSpec, PromptMemory
 from app.brain.enemies import EnemyRepository
+from app.brain.gametime import KST
 from app.brain.graph import (
     CompanionState,
     _request_query_mode,
@@ -523,6 +527,41 @@ async def test_llm_can_answer_from_a_declared_long_term_memory_candidate() -> No
 
     assert final["display_text"] == "네 이름은 대통령 윤 석열이야."
     assert final["top_intent"] is TopIntent.CONVERSATION
+
+
+class RepeatingScheduleProvider(MemoryAnswerProvider):
+    async def generate_dialogue(self, spec: DialogueSpec) -> DialogueOutput:
+        return DialogueOutput(
+            text="네가 알려준 내용: 출근시간은 9시 반이야.",
+            purpose="conversation",
+            fact_references=(),
+            memory_references=(0,),
+            situation_references=(),
+            accepts_command=False,
+        )
+
+
+async def test_remaining_time_rejects_schedule_repetition_and_uses_exact_fallback() -> None:
+    fixed_now = datetime(2026, 8, 26, 0, 55, 37, tzinfo=KST)
+    turn = make_turn(
+        "출근까지 몇시간 남았지",
+        surface=Surface.MOBILE,
+        game_time=TimeContext(
+            source=TimeSource.REAL_WORLD, day=26, hour=0, period="Midnight"
+        ),
+    )
+    memory = PromptMemory(
+        prompt_text="[M0] type=ProfileFact; source=RealWorld; 출근시간은 9시 반이야",
+        claim_text="출근시간은 9시 반이야",
+    )
+
+    with patch("app.brain.graph.datetime") as clock:
+        clock.now.return_value = fixed_now
+        final = await make_graph(RepeatingScheduleProvider()).ainvoke(
+            {"turn": turn, "text": turn.text, "long_term": (memory,)}
+        )
+
+    assert final["display_text"] == "출근까지 8시간 35분 남았어."
 
 
 async def test_provider_cannot_answer_a_pending_resource_with_unrelated_text() -> None:

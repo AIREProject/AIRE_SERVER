@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
+from html import unescape
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -90,6 +91,27 @@ class MemoryConversationDialogueOutput(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class PromptMemory:
+    """LLM용 추적 표현과 대사 검증용 실제 기억 문장을 분리한다."""
+
+    prompt_text: str
+    claim_text: str
+    memory_id: str | None = None
+    required: bool = False
+
+
+PromptMemoryValue = PromptMemory | str
+
+
+def prompt_memory_text(memory: PromptMemoryValue) -> str:
+    return memory.prompt_text if isinstance(memory, PromptMemory) else memory
+
+
+def prompt_memory_claim(memory: PromptMemoryValue) -> str:
+    return memory.claim_text if isinstance(memory, PromptMemory) else memory
+
+
+@dataclass(frozen=True, slots=True)
 class DialogueSpec:
     """LLM에 전달할 장면과 코드가 확정한 사실, 실패 시 복구 대사를 묶는다."""
 
@@ -105,8 +127,12 @@ class DialogueSpec:
     history: tuple[ConversationTurn, ...] = ()
     # 지난 세션들에서 알게 된 것(`memory.py`). `history` 와 같은 취급이다 — 확정 사실이
     # 아니다. 숫자를 담지 않으므로(`build_memory`) `sanitize` 의 숫자 검사와 충돌하지 않는다.
-    memories: tuple[str, ...] = ()
+    memories: tuple[PromptMemoryValue, ...] = ()
     memory_use_policy: Literal["None", "Optional", "Required"] = "None"
+    # Backend가 현재 시각과 검증된 기억으로 직접 계산한 사실. LLM이 다른 숫자를 만들거나
+    # 계산 대신 기억 원문만 되풀이하면 아래 fallback으로 복구한다.
+    derived_facts: tuple[str, ...] = ()
+    required_derived_numbers: tuple[str, ...] = ()
     # 게임이 현재 턴에 알려 준 상황. 게임 시계는 서버가 신뢰하는 값이지만 장면의 확정
     # 사실과는 다른 블록으로 보여 준다.
     situation: tuple[str, ...] = ()
@@ -249,6 +275,19 @@ _FACT_CLAIM_PATTERN = re.compile(r"(?:레시피|제작법|재료|필요량|작�
 _FACT_GROUNDED_SCENES: frozenset[DialogueScene] = frozenset(
     {"recipe", "enemy", "lore", "unsupported", "event_completed", "event_failed"}
 )
+_META_PREFIX_PATTERN = re.compile(
+    r"^(?:(?:네가|니가|사용자가|플레이어가)\s*(?:나(?:한테|에게)\s*)?"
+    r"(?:알려|말해|제공해)\s*준\s*(?:내용|정보)|"
+    r"(?:저장된|회상한)\s*(?:기억|내용|정보))\s*[:\uFF1A-]?\s*",
+    re.IGNORECASE,
+)
+_HTML_ENTITY_PATTERN = re.compile(r"&(?:#[xX]?[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);")
+_HTML_TAG_PATTERN = re.compile(r"<\s*/?\s*[A-Za-z][^>]*>")
+_INTERNAL_OUTPUT_PATTERN = re.compile(
+    r"(?:\[(?:기억|최근\s*대화|확정\s*사실|계산된\s*사실|상황|지시|플레이어|(?:M)?\d+)\]|"
+    r"\b(?:type|source|occurred_at|priority)\s*=|\bmemory\s*[:=]|Command\s+Candidate)",
+    re.IGNORECASE,
+)
 _sanitizer_context: ContextVar[list[bool] | None] = ContextVar("sanitizer_results", default=None)
 _memory_reference_context: ContextVar[list[tuple[int, ...]] | None] = ContextVar(
     "memory_reference_results", default=None
@@ -282,7 +321,15 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
 
     text = output.text if isinstance(output, DialogueOutput) else output
 
-    normalized = _WHITESPACE_PATTERN.sub(" ", text).strip()
+    normalized = unescape(text)
+    normalized = _META_PREFIX_PATTERN.sub("", normalized)
+    normalized = _WHITESPACE_PATTERN.sub(" ", normalized).strip()
+    if (
+        _HTML_ENTITY_PATTERN.search(normalized)
+        or _HTML_TAG_PATTERN.search(normalized)
+        or _INTERNAL_OUTPUT_PATTERN.search(normalized)
+    ):
+        return None
     # 모델이 persona 예시를 말버릇으로 복제하지 못하게 한다. 사용자가 웃음을 먼저 쓴
     # 턴에만 한 번 허용하고, 그때도 과장된 연속 문자는 두 글자로 줄인다.
     user_laughed = bool(spec.user_text and _LAUGHTER_PATTERN.search(spec.user_text))
@@ -312,11 +359,12 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
             return None
         if not _references_are_valid(output.fact_references, spec.facts, normalized):
             return None
-        if not _references_are_valid(output.memory_references, spec.memories, normalized):
+        memory_claims = tuple(prompt_memory_claim(memory) for memory in spec.memories)
+        if not _references_are_valid(output.memory_references, memory_claims, normalized):
             return None
         if spec.memory_use_policy == "Required" and 0 not in output.memory_references:
             return None
-        if not _memory_claims_are_valid(output.memory_references, spec.memories, normalized):
+        if not _memory_claims_are_valid(output.memory_references, memory_claims, normalized):
             return None
         if not _references_are_valid(output.situation_references, spec.situation, normalized):
             return None
@@ -332,6 +380,16 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
         allowed_numbers = set(_NUMBER_PATTERN.findall(" ".join(spec.facts)))
         allowed_numbers.update(_NUMBER_PATTERN.findall(" ".join(spec.situation)))
         output_numbers = set(_NUMBER_PATTERN.findall(normalized))
+        if not output_numbers.issubset(allowed_numbers):
+            return None
+    if spec.derived_facts:
+        output_numbers = set(_NUMBER_PATTERN.findall(normalized))
+        allowed_numbers = set(_NUMBER_PATTERN.findall(" ".join(spec.derived_facts)))
+        required_numbers = set(spec.required_derived_numbers)
+        if not required_numbers:
+            return None
+        if not required_numbers.issubset(output_numbers):
+            return None
         if not output_numbers.issubset(allowed_numbers):
             return None
     if isinstance(output, DialogueOutput):
