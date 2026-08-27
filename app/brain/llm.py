@@ -7,7 +7,9 @@ from collections.abc import Awaitable
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
 from time import perf_counter
+from typing import Any
 
+from openai.types.shared_params import ResponseFormatJSONObject, ResponseFormatJSONSchema
 from pydantic import ValidationError
 
 from app.models import Surface
@@ -76,6 +78,20 @@ _provider_observation_suppressed: ContextVar[bool] = ContextVar(
 
 class _EmptyOutputError(ValueError):
     pass
+
+
+def _is_unsupported_memory_response_format(error: BaseException) -> bool:
+    """Recognize provider capability errors without hiding ordinary bad requests."""
+
+    message = str(error).lower()
+    format_mentioned = "response_format" in message or "json_schema" in message
+    capability_rejection = (
+        "not support" in message
+        or "unsupported" in message
+        or "unrecognized" in message
+        or "unknown" in message
+    )
+    return format_mentioned and capability_rejection
 
 
 def begin_provider_trace() -> Token[list[ProviderCallProvenance] | None]:
@@ -264,6 +280,9 @@ _DIALOGUE_PROMPT_TEMPLATE = """[prompt_version] {prompt_version}
 - 헉, 앗, 오, 음~, 아하 같은 감탄사도 매 응답의 습관적인 서두로 쓰지 않는다. 최근 마코
   답변에서 쓴 표현은 이어서 반복하지 않는다. 이모지는 꼭 감정 전달에 필요할 때 하나만 쓴다.
 - 물론입니다, 좋은 질문입니다, 도움이 되었기를 바랍니다 같은 상투적인 AI 문구를 쓰지 않는다.
+- 플레이어가 개인 정보·취향·경험을 새로 말하면 그 내용 자체에 먼저 반응한다. "기억했어",
+  "저장했어", "기억해둘게", "새겨둘게" 같은 표현은 필요할 때 쓸 수 있지만 그 말만 단독으로
+  답하지 않는다. 구체적인 내용에 대한 반응이나 이후 대화에서 어떻게 이어갈지를 함께 말한다.
 - 사용자가 힘들어하면 감정을 짧게 인정하고 실제 해결 방향으로 이어 간다. 해결을 원하지 않는
   가벼운 투덜거림에는 조언을 강요하지 않는다.
 
@@ -1282,24 +1301,36 @@ class LocalLLMProvider(LLMProvider):
             return result
 
     async def classify_memory(self, text: str) -> MemoryClassification:
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=[
+        request: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
                 {"role": "system", "content": _MEMORY_CLASSIFIER_PROMPT},
                 {"role": "user", "content": text},
             ],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "memory_classification",
-                    "strict": True,
-                    "schema": MemoryClassification.model_json_schema(),
-                },
+            "temperature": self._classify_temperature,
+            "max_tokens": self._classify_max_tokens,
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        }
+        strict_format: ResponseFormatJSONSchema = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "memory_classification",
+                "strict": True,
+                "schema": MemoryClassification.model_json_schema(),
             },
-            temperature=self._classify_temperature,
-            max_tokens=self._classify_max_tokens,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-        )
+        }
+        try:
+            response = await self._client.chat.completions.create(
+                **request, response_format=strict_format
+            )
+        except Exception as error:
+            if not _is_unsupported_memory_response_format(error):
+                raise
+            # Some OpenAI-compatible runtimes implement JSON mode but not strict schemas.
+            json_object_format: ResponseFormatJSONObject = {"type": "json_object"}
+            response = await self._client.chat.completions.create(
+                **request, response_format=json_object_format
+            )
         content = response.choices[0].message.content
         if content is None or not content.strip():
             raise _EmptyOutputError

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from app.brain.dialogue import DialogueOutput, DialogueScene, DialogueSpec
 from app.brain.intent import CommandLabel, ResourceSlot, TopIntent
@@ -17,6 +18,7 @@ from app.brain.llm import (
     _dialogue_user_message,
     build_llm_provider,
 )
+from app.brain.memory import MemoryClassification
 from app.brain.recipes import RecipeSelectionOption
 from app.brain.store import ConversationTurn
 from app.models import Surface
@@ -410,6 +412,69 @@ async def test_local_top_classification_falls_back_on_invalid_output() -> None:
         provider = LocalLLMProvider(local_config())
 
     assert await provider.classify_top("따라와", clarification_pending=False) is TopIntent.COMMAND
+
+
+@pytest.mark.asyncio
+async def test_local_memory_classifier_retries_json_object_only_for_unsupported_schema() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        side_effect=[
+            ValueError("response_format json_schema is not supported"),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content='{"decision":"Preference","importance":6,"confidence":0.9}'
+                        )
+                    )
+                ]
+            ),
+        ]
+    )
+
+    with patch("openai.AsyncOpenAI", return_value=client):
+        provider = LocalLLMProvider(local_config())
+
+    result = await provider.classify_memory("나는 비 오는 날을 좋아해")
+
+    assert result == MemoryClassification(decision="Preference", importance=6, confidence=0.9)
+    assert client.chat.completions.create.await_count == 2
+    assert client.chat.completions.create.await_args_list[0].kwargs["response_format"]["type"] == (
+        "json_schema"
+    )
+    assert client.chat.completions.create.await_args_list[1].kwargs["response_format"] == {
+        "type": "json_object"
+    }
+
+
+@pytest.mark.asyncio
+async def test_local_memory_classifier_does_not_retry_or_fallback_malformed_output() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="not json"))]
+        )
+    )
+
+    with patch("openai.AsyncOpenAI", return_value=client):
+        provider = LocalLLMProvider(local_config())
+
+    with pytest.raises(ValidationError):
+        await provider.classify_memory("나는 비 오는 날을 좋아해")
+    client.chat.completions.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_local_memory_classifier_propagates_provider_timeout() -> None:
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(side_effect=TimeoutError)
+
+    with patch("openai.AsyncOpenAI", return_value=client):
+        provider = LocalLLMProvider(local_config())
+
+    with pytest.raises(TimeoutError):
+        await provider.classify_memory("나는 비 오는 날을 좋아해")
+    client.chat.completions.create.assert_awaited_once()
 
 
 @pytest.mark.asyncio

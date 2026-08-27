@@ -404,6 +404,8 @@ def build_companion_graph(
                     if prompt_memories
                     else "None"
                 ),
+                contextual_memory_ack_required=state.get("query_mode")
+                in {ConversationMode.MEMORY_SHARE, ConversationMode.PREFERENCE_SHARE},
                 derived_facts=() if derived is None else (derived.fact,),
                 required_derived_numbers=(
                     () if derived is None else derived.required_numbers
@@ -828,9 +830,13 @@ def build_companion_graph(
         elif state.get("query_mode") is ConversationMode.MEMORY_RECALL:
             fallback = "그 부분은 아직 확실히 기억나는 게 없어. 네가 다시 알려 주면 좋겠어."
         elif state.get("query_mode") is ConversationMode.PREFERENCE_SHARE:
-            fallback = "그걸 좋아하는구나. 지금 대화에서는 잘 새겨들을게."
+            fallback = (
+                "그 취향은 기억해둘게. 다음에 비슷한 얘기가 나오면 네 쪽에 맞춰볼게."
+            )
         elif state.get("query_mode") is ConversationMode.MEMORY_SHARE:
-            fallback = "그렇구나. 네 이야기로 잘 새겨들을게."
+            fallback = (
+                "알겠어. 다음에 이 얘기와 이어지는 일이 생기면 방금 말해 준 것부터 떠올려볼게."
+            )
         elif state.get("query_mode") is ConversationMode.AMBIGUOUS:
             fallback = "그 말은 내가 제대로 이해했는지 조금 애매해. 한마디만 더 이어서 말해 줄래?"
         else:

@@ -41,6 +41,15 @@ uv run python -m scripts.recover_recent_memory_sources --apply --days 7
 Local LLM 장애가 계속되면 source는 lease 만료 뒤 재시도되며 최대 시도 횟수를 넘었다는 이유만으로
 `Completed` 처리되지 않습니다. 복구 전에는 classifier 실제 호출 성공을 먼저 확인합니다.
 
+```powershell
+uv run python -m scripts.memory_classification_smoke
+```
+
+Smoke는 실제 설정 provider의 Memory strict JSON Schema 분류를 호출합니다. Local runtime이
+`json_schema` 자체를 지원하지 않는다고 명확히 응답할 때만 `json_object`로 한 번 재시도하고,
+두 형식 모두 같은 Pydantic model로 검증합니다. timeout·malformed output·기타 provider 오류는
+실패로 반환하며 Mock `Reject`로 바꾸지 않습니다.
+
 ## 배포 순서
 
 1. 서비스와 DB/WAL 백업

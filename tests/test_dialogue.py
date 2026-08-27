@@ -154,6 +154,54 @@ def test_sanitize_does_not_reject_normal_thanks_for_information() -> None:
     assert sanitize("알려줘서 고마워.", spec) == "알려줘서 고마워."
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "기억했어.",
+        "응, 저장했어!",
+        "알겠어. 기억해둘게.",
+        "그렇구나, 새겨 둘게.",
+        "기억했어. 저장했어.",
+    ],
+)
+def test_memory_share_rejects_a_bare_storage_acknowledgement(text: str) -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="다음에 관련된 이야기가 나오면 자연스럽게 이어볼게.",
+        user_text="나는 비 오는 날을 좋아해",
+        contextual_memory_ack_required=True,
+    )
+
+    assert sanitize(generated(text, "conversation"), spec) is None
+
+
+def test_memory_share_allows_acknowledgement_connected_to_the_shared_content() -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="다음에 관련된 이야기가 나오면 자연스럽게 이어볼게.",
+        user_text="나는 비 오는 날을 좋아해",
+        contextual_memory_ack_required=True,
+    )
+    text = "비 오는 날을 좋아하는구나. 다음에 날씨 얘기할 때 기억해둘게."
+
+    assert sanitize(generated(text, "conversation"), spec) == text
+
+
+@pytest.mark.asyncio
+async def test_memory_share_bare_acknowledgement_uses_contextual_fallback() -> None:
+    provider = AsyncMock()
+    provider.generate_dialogue.return_value = generated("기억해둘게.", "conversation")
+    fallback = "다음에 이 얘기와 이어지는 일이 생기면 방금 말해 준 것부터 떠올려볼게."
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback=fallback,
+        user_text="나는 비 오는 날을 좋아해",
+        contextual_memory_ack_required=True,
+    )
+
+    assert await render(provider, spec) == fallback
+
+
 def test_sanitize_rejects_a_player_name_as_the_companion_self_identity() -> None:
     spec = DialogueSpec(scene="conversation", fallback="내 이름은 마코야.")
 

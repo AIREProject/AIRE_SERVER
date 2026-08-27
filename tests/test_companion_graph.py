@@ -740,7 +740,10 @@ async def test_llm_memory_share_does_not_receive_an_old_memory_as_reply_material
     assert source_memory.direct_recall_values == [False]
     assert provider.dialogue_specs[-1].memories == ()
     assert provider.dialogue_specs[-1].memory_use_policy == "None"
-    assert reply.text == "그렇구나. 네 이야기로 잘 새겨들을게."
+    assert provider.dialogue_specs[-1].contextual_memory_ack_required is True
+    assert reply.text == (
+        "알겠어. 다음에 이 얘기와 이어지는 일이 생기면 방금 말해 준 것부터 떠올려볼게."
+    )
     assert source_memory.used_memory_ids == []
     assert reply.provenance is not None
     assert reply.provenance.query_mode == "MemoryShare"

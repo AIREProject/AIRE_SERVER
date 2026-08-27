@@ -2,10 +2,11 @@
 
 현행 HTTP 계약의 코드 권위는 `app/models.py`, `app/offline_task_models.py`,
 `app/pairing_models.py`와 `app/routes/`입니다. 실행 중인 서버에서는 `/openapi.json`과 `/docs`를
-최우선으로 확인합니다. 2026-08-25 배포 OpenAPI와 현재 source가 생성한 OpenAPI는 57개 path와
-121개 schema가 구조적으로 일치합니다. 배포 `ChatRequest.game_context`도 아래 strict
-`GameContextV1`을 노출합니다. 기존 Game client의 `{}` 요청은 거부되므로 full Context v1을
-생성해야 합니다.
+최우선으로 확인합니다. 2026-08-25 배포 OpenAPI는 당시 source와 57개 path, 121개 schema가
+구조적으로 일치했습니다. 현재 source는 배포 전 Kakao Adapter endpoint를 더해 58개 path와
+123개 schema를 생성하므로 Production OpenAPI와 아직 일치하지 않습니다. 기존 UE/Web 계약과
+배포 `ChatRequest.game_context`의 strict `GameContextV1`은 그대로이며, 기존 Game client의 `{}`
+요청은 거부되므로 full Context v1을 생성해야 합니다.
 
 이 OpenAPI 정합성 확인은 모든 endpoint의 정상·오류 runtime smoke, 실제 LLM 또는 UE/Web
 왕복 검증을 대신하지 않습니다.
@@ -16,6 +17,7 @@
 |---|---|
 | Base URL | 로컬 예시 `http://127.0.0.1:8010` |
 | 제품 인증 | UE `Bearer AIRE_GAME`, Web `Bearer AIRE_WEB` |
+| Kakao Adapter 인증 | `Bearer KAKAO_ADAPTER_TOKEN` (서비스 전용) |
 | Profile | `AIRE_OPEN` |
 | Save Slot | `demo-slot-1` |
 | Companion | `mako` |
@@ -41,6 +43,7 @@ HTTP/WS에서 같은 payload를 재전송하면 최초 응답을 재생하며, �
 | GET | `/health` | 프로세스·설정 확인 |
 | GET | `/ready` | DB revision 필수 readiness, LLM degraded 상태 확인 |
 | POST | `/api/v1/chat` | UE/Web Chat |
+| POST | `/api/v1/integrations/kakao/chat` | Kakao Adapter 전용 Chat |
 | POST | `/api/v1/situations` | UE가 관찰한 상황에 대한 선제 대사 |
 | WS | `/api/v1/chat` | 호환용 WebSocket Chat/Situation |
 | POST/GET | `/api/v1/tasks` | Web 작업 생성, UE/Web 목록 조회 |
@@ -374,6 +377,25 @@ canonical 원문을 바꾸지 않고 append-only correction으로 남깁니다. 
 결과를 반환하고 다른 결정은 `409 MemoryCandidateTransitionNotAllowed`입니다. 다른 profile scope,
 만료·종료 후보는 목록과 상세에서 노출하지 않습니다. 공개 후보에는 confidence, Provider 정보,
 내부 source ID가 포함되지 않습니다.
+
+### 4.8 Kakao Adapter 요청
+
+```http
+POST /api/v1/integrations/kakao/chat
+Authorization: Bearer <KAKAO_ADAPTER_TOKEN>
+Content-Type: application/json
+X-Request-ID: kakao-chat-1
+```
+
+Body는 `bot_id`, `user`, 기존 `ChatRequest`를 담은 `chat`으로 구성합니다. `user.type`은
+`botUserKey`만 허용하며 `chat`은 `surface=mobile`, `save_slot_id=demo-slot-1`,
+`companion_id=mako`, `session_id=kakao`로 고정합니다. Profile/Device claim, Game Context,
+Command와 Recent Event는 허용하지 않습니다.
+
+Backend는 `KAKAO_IDENTITY_PEPPER`로 `bot_id + user.type + user.id`를 HMAC 처리해 결정적인
+Profile/Device를 원자적으로 생성합니다. 원본 카카오 식별자는 DB나 요청 로그에 저장하지 않고,
+응답은 내부 Profile ID가 없는 기존 `ChatResponse`입니다. 이 Profile은 UE/Web의 `AIRE_OPEN`과
+분리됩니다. `KAKAO_ADAPTER_TOKEN` 또는 pepper가 없으면 503, token이 틀리면 401입니다.
 
 ## 5. GameEvent와 Command Result
 

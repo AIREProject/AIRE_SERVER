@@ -25,7 +25,8 @@ LLM은 게임 상태를 직접 수정하지 않습니다. 대사와 구조화된
 | AI | LangGraph, Gemma Local LLM, OpenAI-compatible Structured Output |
 | Data | SQLAlchemy Async, SQLite, Alembic 17개 Migration |
 | API | Chat, Event, Command Result, Memory, Offline Task, Game State, Admin |
-| Client Scope | `AIRE_OPEN / demo-slot-1 / mako` |
+| UE/Web Scope | `AIRE_OPEN / demo-slot-1 / mako` |
+| Kakao Scope | HMAC 사용자별 Profile / `demo-slot-1 / mako / kakao` |
 | Provider | Mock, OpenAI, OpenAI-compatible Local LLM |
 
 ## 전체 구조
@@ -192,6 +193,7 @@ migrations/versions/
 | --- | --- | --- |
 | System | `GET /health`, `GET /ready` | Liveness와 배포 Readiness |
 | Chat | `POST /api/v1/chat`, `WS /api/v1/chat` | 대화, Context, Command Candidate |
+| Kakao | `POST /api/v1/integrations/kakao/chat` | Adapter 인증과 사용자별 독립 Chat |
 | Event | `POST /api/v1/events`, `POST /api/v1/command-results` | 검증된 게임 사건과 명령 결과 |
 | Memory | `/api/v1/memories/*` | 목록·검색·정정·고정·삭제·초기화 |
 | Review | `/api/v1/memory-candidates/*` | 기억 후보 조회와 승인·거절 |

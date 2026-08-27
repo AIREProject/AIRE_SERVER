@@ -153,6 +153,9 @@ class DialogueSpec:
     # 아니다. 숫자를 담지 않으므로(`build_memory`) `sanitize` 의 숫자 검사와 충돌하지 않는다.
     memories: tuple[PromptMemoryValue, ...] = ()
     memory_use_policy: Literal["None", "Optional", "Required"] = "None"
+    # 새 개인 정보·취향을 받은 턴에서는 기억/저장 확인만 단독으로 말하지 않는다.
+    # 표현 자체는 허용하되, 내용에 대한 반응이나 이후 활용 맥락이 함께 있어야 한다.
+    contextual_memory_ack_required: bool = False
     # Backend가 현재 시각과 검증된 기억으로 직접 계산한 사실. LLM이 다른 숫자를 만들거나
     # 계산 대신 기억 원문만 되풀이하면 아래 fallback으로 복구한다.
     derived_facts: tuple[str, ...] = ()
@@ -371,6 +374,12 @@ _COMPANION_SELF_NAME_PATTERN = re.compile(r"(?:내|제)\s*이름(?:은|이)\s*")
 _COMPANION_REVERSE_SELF_NAME_PATTERN = re.compile(
     r"[0-9A-Za-z가-힣][^.!?]{0,20}(?:내|제)\s*이름(?:이야|입니다|이다)"
 )
+_BARE_MEMORY_ACK_PATTERN = re.compile(
+    r"^(?:(?:응|어|그래|좋아|알겠어|오케이|그렇구나)[,.!~\s]*)?"
+    r"(?:(?:잘\s*)?"
+    r"(?:기억했어|저장했어|기억해\s*둘게|기억해둘게|새겨\s*둘게|새겨둘게)"
+    r"[,.!~\s]*)+$"
+)
 _sanitizer_context: ContextVar[list[bool] | None] = ContextVar("sanitizer_results", default=None)
 _memory_reference_context: ContextVar[list[tuple[int, ...]] | None] = ContextVar(
     "memory_reference_results", default=None
@@ -431,6 +440,8 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
         normalized = _LAUGHTER_PATTERN.sub("", normalized)
     normalized = _WHITESPACE_PATTERN.sub(" ", normalized).strip()
     if not normalized or len(normalized) > 200:
+        return None
+    if spec.contextual_memory_ack_required and _BARE_MEMORY_ACK_PATTERN.fullmatch(normalized):
         return None
     claims_companion_name = bool(
         _COMPANION_SELF_NAME_PATTERN.search(normalized)

@@ -22,6 +22,7 @@ from app.routes.chat import router as chat_router
 from app.routes.devices import router as devices_router
 from app.routes.events import router as events_router
 from app.routes.game_state import router as game_state_router
+from app.routes.kakao import router as kakao_router
 from app.routes.memories import router as memories_router
 from app.routes.memory_candidates import router as memory_candidates_router
 from app.routes.offline_tasks import router as offline_tasks_router
@@ -226,6 +227,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(devices_router)
     app.include_router(events_router)
     app.include_router(game_state_router)
+    app.include_router(kakao_router)
     app.include_router(memories_router)
     app.include_router(memory_candidates_router)
     app.include_router(offline_tasks_router)

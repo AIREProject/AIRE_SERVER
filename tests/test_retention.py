@@ -290,6 +290,39 @@ async def test_audit_expiry_removes_purged_source_but_not_memory_source(
 
 
 @pytest.mark.asyncio
+async def test_claimed_source_does_not_block_following_pending_source(
+    retention_database: object,
+) -> None:
+    scope = await _scope(retention_database)
+    first = await _message(
+        retention_database,
+        scope=scope,
+        message_id="message-claimed-first",
+        expires_at=_NOW + timedelta(days=1),
+    )
+    second = await _message(
+        retention_database,
+        scope=scope,
+        message_id="message-pending-second",
+        expires_at=_NOW + timedelta(days=1),
+        sequence=2,
+    )
+    async with retention_database.session_factory() as session:  # type: ignore[attr-defined]
+        repository = SourceRepository(session)
+        await repository.enqueue(SOURCE_MESSAGE, first.row_id)
+        await repository.enqueue(SOURCE_MESSAGE, second.row_id)
+        await session.commit()
+
+    async with retention_database.session_factory() as session:  # type: ignore[attr-defined]
+        repository = SourceRepository(session)
+        first_claim = await repository.claim_next(now=_NOW, lease_seconds=60)
+        second_claim = await repository.claim_next(now=_NOW, lease_seconds=60)
+
+    assert first_claim is not None and first_claim.source_id == first.row_id
+    assert second_claim is not None and second_claim.source_id == second.row_id
+
+
+@pytest.mark.asyncio
 async def test_expired_claim_is_repaired_and_stale_ack_is_rejected(
     retention_database: object,
 ) -> None:

@@ -314,20 +314,15 @@ class SourceRepository:
             await self._advance_cursor(cursor)
             result = await self._session.execute(
                 select(SourceOutboxModel)
-                .where(SourceOutboxModel.source_seq > cursor.last_completed_seq)
+                .where(
+                    SourceOutboxModel.source_seq > cursor.last_completed_seq,
+                    SourceOutboxModel.state == OUTBOX_PENDING,
+                )
                 .order_by(SourceOutboxModel.source_seq)
                 .limit(1)
             )
             row = result.scalar_one_or_none()
             if row is None:
-                cursor.updated_at = moment
-                await self._session.commit()
-                return None
-            if row.state in {OUTBOX_COMPLETED, OUTBOX_TOMBSTONE}:
-                cursor.last_completed_seq = row.source_seq
-                cursor.updated_at = moment
-                continue
-            if row.state != OUTBOX_PENDING:
                 cursor.updated_at = moment
                 await self._session.commit()
                 return None

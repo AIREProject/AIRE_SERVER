@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # 관리자 CRUD(app/routes/admin.py) 전용 고정 토큰. 비어 있으면 해당 라우터 전체가
     # AdminAuthenticationUnavailableError(503) 로 실패한다 — dev_game_device_token 과 같은 이유다.
     admin_api_token: SecretStr | None = None
+    # Kakao adapter 전용 service-to-service 인증과 익명 사용자 ID 파생에 사용한다.
+    # 두 값이 모두 설정되어야 integration route가 동작한다.
+    kakao_adapter_token: SecretStr | None = None
+    kakao_identity_pepper: SecretStr | None = None
 
     # 마코 두뇌의 LLM 공급자 설정. mock 은 외부 호출이 없다.
     llm_provider: Literal["mock", "openai", "local"] = "mock"

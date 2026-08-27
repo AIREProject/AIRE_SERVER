@@ -155,6 +155,17 @@ Profile과 해당 고정 Device 행이 자동 생성됩니다.
 
 Chat 예시는 [API 사용법](api-endpoints.md)을 따릅니다.
 
+### 3.1 Kakao Adapter
+
+Kakao는 공개 `AIRE_WEB` bearer를 사용하지 않습니다. Backend와 Adapter 양쪽에 같은
+`KAKAO_ADAPTER_TOKEN`을 주입하고, Backend에는 별도로 백업 가능한 고정
+`KAKAO_IDENTITY_PEPPER`를 주입합니다. 두 값이 없으면 전용 endpoint가 fail-closed됩니다.
+
+pepper를 바꾸면 기존 카카오 사용자가 새 Profile로 인식되므로 DB와 함께 백업하고 임의로
+rotation하지 않습니다. 배포 순서는 Backend 코드 → Backend 환경변수 → Backend readiness 및
+전용 endpoint 확인 → Kakao Adapter 환경변수와 코드입니다. Backend 전용 endpoint가 준비되지
+않았을 때 Adapter를 `AIRE_WEB` 공유 경로로 되돌리지 말고 Kakao Skill을 일시 중지합니다.
+
 ## 4. LLM 연결
 
 먼저 `mock`으로 서버·DB·Chat이 정상인지 확인한 뒤 OpenAI 또는 Local LLM을 연결합니다.

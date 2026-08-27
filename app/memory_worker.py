@@ -96,7 +96,8 @@ class MemoryWorker:
                         )
                     # Claimed 상태를 유지한다. lease 만료 뒤 같은 source를 다시 시도하며,
                     # LLM 장애를 처리 완료로 위장하거나 cursor를 전진시키지 않는다.
-                    break
+                    # claim_next는 이 lease를 건너뛰므로 같은 batch의 후속 source는 계속 처리한다.
+                    continue
             return processed
         finally:
             self._running = False
