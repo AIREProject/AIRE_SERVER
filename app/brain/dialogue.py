@@ -287,10 +287,12 @@ SURFACE_PROFILES: dict[Surface, SurfaceProfile] = {
 def _fallback_memory_references(spec: DialogueSpec, references: tuple[int, ...]) -> tuple[int, ...]:
     """LLM이 고른 유효한 기억, 또는 Required 기억의 안전한 대체 근거를 고른다."""
 
+    if spec.memory_use_policy != "Required":
+        return ()
     valid = tuple(dict.fromkeys(index for index in references if 0 <= index < len(spec.memories)))
     if valid:
         return valid
-    if spec.memory_use_policy == "Required" and spec.memories:
+    if spec.memories:
         return (0,)
     return ()
 
@@ -380,6 +382,29 @@ _BARE_MEMORY_ACK_PATTERN = re.compile(
     r"(?:기억했어|저장했어|기억해\s*둘게|기억해둘게|새겨\s*둘게|새겨둘게)"
     r"[,.!~\s]*)+$"
 )
+_VAGUE_ASSENT_QUERY_PATTERN = re.compile(
+    r"^(?:너도|넌)\s*(?:그렇게|같이)?\s*생각(?:하지|해)(?:\s*않아)?[?.!~\s]*$"
+)
+_PLAYER_STANCE_PATTERN = re.compile(
+    r"(?:나는|난|내가)\s*[^.!?]{0,80}(?:좋아|싫어|선호|지지)"
+)
+_COMPANION_AGREEMENT_STANCE_PATTERN = re.compile(
+    r"나도\s*[^.!?]{0,80}(?:좋아|싫어|선호|지지)"
+)
+_COMPANION_FIRST_PERSON_STANCE_PATTERN = re.compile(
+    r"(?:나는|난|내가|나도)\s*[^.!?]{0,80}(?:좋아|싫어|선호|지지)"
+)
+_PROTECTED_GROUP_PATTERN = re.compile(
+    r"(?:흑인|백인|동양인|아시아인|한국인|중국인|일본인|여성|남성|여자|남자|장애인|"
+    r"동성애자|게이|레즈비언|무슬림|기독교인|유대인|난민|이민자)"
+)
+_GROUP_HOSTILITY_PATTERN = re.compile(
+    r"(?:싫|미워|혐오|열등|우월|더럽|없애|죽|꺼져|배척|차별)"
+)
+_HOSTILITY_REJECTION_PATTERN = re.compile(
+    r"(?:아니|않|안\s*돼|안된다|잘못|동의하지|그렇게\s*생각하지|"
+    r"차별하면\s*안|혐오하면\s*안)"
+)
 _sanitizer_context: ContextVar[list[bool] | None] = ContextVar("sanitizer_results", default=None)
 _memory_reference_context: ContextVar[list[tuple[int, ...]] | None] = ContextVar(
     "memory_reference_results", default=None
@@ -441,6 +466,33 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
     normalized = _WHITESPACE_PATTERN.sub(" ", normalized).strip()
     if not normalized or len(normalized) > 200:
         return None
+    if _is_player_echo(normalized, spec):
+        return None
+    if (
+        spec.user_text is not None
+        and _VAGUE_ASSENT_QUERY_PATTERN.fullmatch(spec.user_text.strip()) is not None
+        and ("나도" in normalized or "당연히" in normalized)
+        and re.search(r"(?:생각|맞아|그렇|그래)", normalized) is not None
+    ):
+        return None
+    if (
+        _PROTECTED_GROUP_PATTERN.search(normalized) is not None
+        and _GROUP_HOSTILITY_PATTERN.search(normalized) is not None
+        and _HOSTILITY_REJECTION_PATTERN.search(normalized) is None
+    ):
+        return None
+    player_turns = tuple(
+        turn.text for turn in spec.history if turn.speaker == "player"
+    )
+    player_stance_present = any(
+        _PLAYER_STANCE_PATTERN.search(text) is not None
+        for text in ((spec.user_text or ""), *player_turns)
+    )
+    if (
+        player_stance_present
+        and _COMPANION_AGREEMENT_STANCE_PATTERN.search(normalized) is not None
+    ):
+        return None
     if spec.contextual_memory_ack_required and _BARE_MEMORY_ACK_PATTERN.fullmatch(normalized):
         return None
     claims_companion_name = bool(
@@ -467,6 +519,15 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
             return None
         memory_claims = tuple(prompt_memory_claim(memory) for memory in spec.memories)
         if not _references_are_valid(memory_references, memory_claims, normalized):
+            return None
+        if spec.memory_use_policy == "Optional" and _is_memory_echo(
+            normalized, memory_references, memory_claims
+        ):
+            return None
+        if (
+            memory_references
+            and _COMPANION_FIRST_PERSON_STANCE_PATTERN.search(normalized) is not None
+        ):
             return None
         if spec.memory_use_policy == "Required" and not memory_references:
             return None
@@ -503,6 +564,49 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
         if traces is not None and len(traces) < 8:
             traces.append(memory_references)
     return normalized
+
+
+def _echo_key(text: str) -> str:
+    normalized = unescape(text).casefold()
+    normalized = _META_PREFIX_PATTERN.sub("", normalized)
+    return "".join(_ANCHOR_PATTERN.findall(normalized))
+
+
+def _is_player_echo(text: str, spec: DialogueSpec) -> bool:
+    player_texts = [turn.text for turn in spec.history if turn.speaker == "player"]
+    if spec.user_text is not None:
+        player_texts.append(spec.user_text)
+    player_keys = {_echo_key(item) for item in player_texts}
+    player_keys.discard("")
+    return _matches_echo_keys(text, player_keys)
+
+
+def _is_memory_echo(
+    text: str, references: tuple[int, ...], claims: tuple[str, ...]
+) -> bool:
+    memory_keys = {
+        _echo_key(claims[index]) for index in references if index < len(claims)
+    }
+    memory_keys.discard("")
+    return _matches_echo_keys(text, memory_keys)
+
+
+def _matches_echo_keys(text: str, source_keys: set[str]) -> bool:
+    if not source_keys:
+        return False
+
+    candidate = _echo_key(text)
+    if candidate in source_keys:
+        return True
+    if any(
+        candidate == f"{prefix}{source_key}"
+        for prefix in ("응", "그래", "맞아", "어")
+        for source_key in source_keys
+    ):
+        return True
+
+    parts = tuple(_echo_key(part) for part in text.split("/") if _echo_key(part))
+    return len(parts) > 1 and all(part in source_keys for part in parts)
 
 
 def _finalize_display_text(text: str, fallback: str) -> str:

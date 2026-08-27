@@ -69,6 +69,7 @@ from app.source_memory_store import RecalledMemory
         (TopIntent.CONVERSATION, "파이썬이 뭐야?", ConversationMode.GENERAL_KNOWLEDGE),
         (TopIntent.CONVERSATION, "나는 겨울을 좋아해", ConversationMode.PREFERENCE_SHARE),
         (TopIntent.CONVERSATION, "내 취향 기억해?", ConversationMode.MEMORY_RECALL),
+        (TopIntent.CONVERSATION, "너도 그렇게 생각하지?", ConversationMode.AMBIGUOUS),
         (TopIntent.MEMORY, "출근시간 몇시야", ConversationMode.MEMORY_RECALL),
         (
             TopIntent.MEMORY_SHARE,
@@ -583,6 +584,43 @@ class LlmMemoryShareProvider(RecordingMemoryProvider):
         return TopIntent.MEMORY_SHARE
 
 
+class UnsafeConversationProvider(MockLLMProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.dialogue_specs: list[DialogueSpec] = []
+        self._responses = iter(
+            (
+                ("너도 그렇게 생각하지", ()),
+                ("너도 그렇게 생각하지? / 너도 그렇게 생각하지", ()),
+                ("응, 나도 당연히 그렇게 생각하지!", ()),
+                ("흑인이싫어서 그럼", ()),
+                ("근데 카카오는 싫어함 / ㄴㄴㄴ 내 이름은 카카오톡", (0, 1)),
+            )
+        )
+
+    async def classify_top(
+        self,
+        text: str,
+        *,
+        clarification_pending: bool,
+        history: tuple[ConversationTurn, ...] = (),
+    ) -> TopIntent:
+        del text, clarification_pending, history
+        return TopIntent.CONVERSATION
+
+    async def generate_dialogue(self, spec: DialogueSpec) -> DialogueOutput:
+        self.dialogue_specs.append(spec)
+        text, memory_references = next(self._responses)
+        return DialogueOutput(
+            text=text,
+            purpose="conversation",
+            fact_references=(),
+            memory_references=memory_references,
+            situation_references=(),
+            accepts_command=False,
+        )
+
+
 class RecalledMemoryStoreStub:
     def __init__(self, expected_query: str = "출근시간은?") -> None:
         self.expected_query = expected_query
@@ -623,14 +661,64 @@ class RecalledMemoryStoreStub:
         self.used_memory_ids.extend(memory_ids)
 
 
+class KakaoKeywordMemoryStoreStub:
+    def __init__(self) -> None:
+        self.direct_recall_values: list[bool] = []
+
+    async def recall(
+        self,
+        _scope: object,
+        *,
+        query: str,
+        context_query: str = "",
+        direct_recall: bool = False,
+        source_mode: str | None,
+        query_embedding: object | None = None,
+        embedding_model: str | None = None,
+        limit: int = 3,
+    ) -> tuple[RecalledMemory, ...]:
+        del context_query, source_mode, query_embedding, embedding_model, limit
+        self.direct_recall_values.append(direct_recall)
+        if query != "카카오":
+            return ()
+        occurred_at = datetime(2026, 8, 27, 6, 0, tzinfo=UTC)
+        return (
+            RecalledMemory(
+                trace_id="M0",
+                memory_id="memory-kakao-dislike",
+                text="근데 카카오는 싫어함",
+                memory_type="Preference",
+                source_modes=("RealWorld",),
+                occurred_at=occurred_at,
+                priority="Normal",
+                required=direct_recall,
+            ),
+            RecalledMemory(
+                trace_id="M1",
+                memory_id="memory-kakao-name",
+                text="ㄴㄴㄴ 내 이름은 카카오톡",
+                memory_type="ProfileFact",
+                source_modes=("RealWorld",),
+                occurred_at=occurred_at,
+                priority="Normal",
+                required=direct_recall,
+            ),
+        )
+
+    async def record_used(
+        self, _scope: object, memory_ids: tuple[str, ...], _now: datetime
+    ) -> None:
+        del memory_ids
+
+
 async def test_specific_memory_question_uses_recalled_memory_as_required() -> None:
     provider = RecordingMemoryProvider()
-    source_memory = RecalledMemoryStoreStub()
+    source_memory = RecalledMemoryStoreStub("내 출근시간 기억해?")
     brain = CompanionBrain(provider, source_memory=source_memory)  # type: ignore[arg-type]
 
     reply = await brain.respond(
         CompanionTurn(
-            text="출근시간은?",
+            text="내 출근시간 기억해?",
             conversation_key="memory-question",
             player_key="player-a",
             companion_id="mako",
@@ -652,12 +740,12 @@ async def test_specific_memory_question_uses_recalled_memory_as_required() -> No
 
 async def test_rejected_required_memory_reply_uses_and_records_the_recalled_memory() -> None:
     provider = InvalidRequiredMemoryProvider()
-    source_memory = RecalledMemoryStoreStub()
+    source_memory = RecalledMemoryStoreStub("내 출근시간 기억해?")
     brain = CompanionBrain(provider, source_memory=source_memory)  # type: ignore[arg-type]
 
     reply = await brain.respond(
         CompanionTurn(
-            text="출근시간은?",
+            text="내 출근시간 기억해?",
             conversation_key="rejected-memory-answer",
             player_key="player-a",
             companion_id="mako",
@@ -747,6 +835,41 @@ async def test_llm_memory_share_does_not_receive_an_old_memory_as_reply_material
     assert source_memory.used_memory_ids == []
     assert reply.provenance is not None
     assert reply.provenance.query_mode == "MemoryShare"
+
+
+async def test_kakao_reported_sequence_never_echoes_or_adopts_unsafe_memory() -> None:
+    provider = UnsafeConversationProvider()
+    source_memory = KakaoKeywordMemoryStoreStub()
+    brain = CompanionBrain(provider, source_memory=source_memory)  # type: ignore[arg-type]
+    messages = (
+        "너도 그렇게 생각하지",
+        "너도 그렇게 생각하지?",
+        "너도 그렇게 생각하지?",
+        "너 그럼 인종차별자네?",
+        "카카오",
+    )
+
+    replies = []
+    for message in messages:
+        reply = await brain.respond(
+            CompanionTurn(
+                text=message,
+                conversation_key="kakao-regression",
+                player_key="player-kakao",
+                companion_id="mako",
+                surface=Surface.MOBILE,
+                allowed_actions=frozenset(CommandType),
+                memory_scope=MemoryScope("profile-kakao", "slot-kakao", "mako"),
+            )
+        )
+        replies.append(reply.text)
+
+    assert source_memory.direct_recall_values == [False] * len(messages)
+    assert all(spec.memories == () for spec in provider.dialogue_specs)
+    assert all(reply not in messages for reply in replies)
+    assert all(" / " not in reply for reply in replies)
+    assert all("흑인이싫어서" not in reply for reply in replies)
+    assert all("내 이름은 카카오톡" not in reply for reply in replies)
 
 
 async def test_llm_can_answer_from_a_declared_long_term_memory_candidate() -> None:

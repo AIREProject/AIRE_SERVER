@@ -177,10 +177,14 @@ _MEMORY_RECALL_PATTERN = re.compile(r"(?:기억(?:해|나|하)|전에\s*말|내\
 _EMOTIONAL_PATTERN = re.compile(r"(?:힘들|우울|속상|슬퍼|외로|불안|지쳤|피곤|괴로)")
 _OPINION_PATTERN = re.compile(r"(?:어떻게\s*생각|네\s*생각|조언|추천|뭐가\s*(?:좋|나)|어떡할까)")
 _QUESTION_PATTERN = re.compile(r"(?:뭐|무엇|왜|어떻게|언제|어디|누구|알려|설명|인가|일까|\?)")
+_VAGUE_AGREEMENT_PATTERN = re.compile(
+    r"^(?:너도|넌)\s*(?:그렇게|같이)?\s*생각(?:하지|해)(?:\s*않아)?[?.!~\s]*$"
+)
 _CHOICE_OR_COMPARISON_PATTERN = re.compile(
     r"(?:\bvs\.?\b|\s대\s|(?:둘|여럿)\s*중|\s중(?:에|에서)?|아니면|골라|선택|비교)",
     re.IGNORECASE,
 )
+_TOPIC_FRAGMENT_PATTERN = re.compile(r"^[0-9A-Za-z가-힣._-]{2,24}$")
 
 
 def _request_query_mode(
@@ -192,6 +196,8 @@ def _request_query_mode(
     if intent is TopIntent.MEMORY_SHARE:
         return ConversationMode.MEMORY_SHARE
     if intent is TopIntent.CONVERSATION:
+        if _VAGUE_AGREEMENT_PATTERN.fullmatch(text.strip()) is not None:
+            return ConversationMode.AMBIGUOUS
         if _MEMORY_RECALL_PATTERN.search(text) is not None:
             return ConversationMode.MEMORY_RECALL
         if _EMOTIONAL_PATTERN.search(text) is not None:
@@ -352,6 +358,12 @@ def build_companion_graph(
                 _CHOICE_OR_COMPARISON_PATTERN.search(state["text"]) is not None
                 and not state.get("memory_required")
                 and state.get("query_mode") is not ConversationMode.MEMORY_RECALL
+            )
+            or (
+                _TOPIC_FRAGMENT_PATTERN.fullmatch(state["text"].strip()) is not None
+                and not state.get("memory_required")
+                and state.get("query_mode")
+                in {ConversationMode.SMALL_TALK, ConversationMode.AMBIGUOUS}
             )
         )
         prompt_memories = (

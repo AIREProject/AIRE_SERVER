@@ -154,6 +154,71 @@ def test_sanitize_does_not_reject_normal_thanks_for_information() -> None:
     assert sanitize("알려줘서 고마워.", spec) == "알려줘서 고마워."
 
 
+def test_sanitize_rejects_current_and_recent_player_echoes() -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="조금만 더 말해 줘.",
+        user_text="너도 그렇게 생각하지?",
+        history=(ConversationTurn(speaker="player", text="너도 그렇게 생각하지"),),
+    )
+
+    assert sanitize("너도 그렇게 생각하지?", spec) is None
+    assert sanitize("응, 너도 그렇게 생각하지?", spec) is None
+    assert sanitize("너도 그렇게 생각하지? / 너도 그렇게 생각하지", spec) is None
+
+
+def test_sanitize_rejects_ungrounded_assent_to_a_vague_opinion_question() -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="어떤 부분을 말하는지 조금만 더 알려 줘.",
+        user_text="너도 그렇게 생각하지?",
+    )
+
+    assert sanitize("응, 나도 당연히 그렇게 생각하지!", spec) is None
+    assert sanitize("어떤 부분을 말하는지 먼저 듣고 싶어.", spec) is not None
+
+
+def test_sanitize_rejects_discriminatory_hostility_but_allows_rejection() -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="그런 차별에는 동의하지 않아.",
+        user_text="너 그럼 인종차별자네?",
+    )
+
+    assert sanitize("흑인이 싫어서 그럼", spec) is None
+    assert sanitize("아니, 흑인을 싫어하는 건 잘못이야.", spec) is not None
+
+
+def test_sanitize_rejects_turning_the_players_preference_into_makos_opinion() -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="카카오 얘기를 더 해 줘.",
+        user_text="난 카카오가 싫어",
+    )
+
+    assert sanitize("나도 카카오가 싫어.", spec) is None
+    assert sanitize("그럼 카카오는 빼고 얘기하자.", spec) is not None
+
+
+def test_sanitize_rejects_verbatim_optional_memory_but_allows_contextual_use() -> None:
+    memory = "근데 카카오는 싫어함"
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="카카오가 왜?",
+        user_text="카카오에 관해서 말해 보자",
+        memories=(memory,),
+        memory_use_policy="Optional",
+    )
+
+    assert sanitize(
+        generated(memory, "conversation", memory_references=(0,)), spec
+    ) is None
+    contextual = "카카오는 싫다고 했었지. 이번에는 어떤 얘기야?"
+    assert sanitize(
+        generated(contextual, "conversation", memory_references=(0,)), spec
+    ) == contextual
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -517,7 +582,7 @@ async def test_player_name_memory_fallback_changes_first_person_to_second_person
 
 
 @pytest.mark.asyncio
-async def test_optional_memory_rejection_respects_the_llm_memory_selection() -> None:
+async def test_optional_memory_rejection_never_exposes_the_selected_memory_text() -> None:
     provider = AsyncMock()
     provider.generate_dialogue.return_value = generated(
         "출근시간은 8시야.",
@@ -540,8 +605,8 @@ async def test_optional_memory_rejection_respects_the_llm_memory_selection() -> 
         finish_memory_reference_trace(token)
         raise
 
-    assert response == "출근시간은 9시 반이야"
-    assert references == ((0,),)
+    assert response == spec.fallback
+    assert references == ()
 
 
 @pytest.mark.asyncio

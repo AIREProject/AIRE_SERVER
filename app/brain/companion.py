@@ -118,7 +118,8 @@ _SWEEP_INTERVAL_SECONDS = 3600.0
 logger = logging.getLogger("aire.backend")
 
 _DIRECT_MEMORY_RECALL_PATTERN = re.compile(
-    r"(?:기억(?:해|나|하)|전에\s*말|내\s*(?:취향|약속|이름)|\?)"
+    r"(?:기억(?:해|나|하)|전에\s*(?:말|얘기)|내\s*(?:취향|약속|이름|일정)|"
+    r"(?:내가|나는|난)\s*뭐라고\s*(?:했|말했))"
 )
 
 

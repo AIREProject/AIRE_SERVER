@@ -659,7 +659,7 @@ async def test_recalled_memories_reach_the_dialogue_prompt(tmp_path: Path) -> No
     llm = RecordingLLMProvider()
     brain = CompanionBrain(llm, long_term=store)
 
-    await brain.respond(make_turn())
+    await brain.respond(make_turn("밤에는 어떻게 지내는 게 좋을까?"))
 
     assert tuple(
         prompt_memory_claim(memory) for memory in llm.dialogue_specs[-1].memories
@@ -932,7 +932,7 @@ async def test_a_brain_without_a_transcript_never_extracts(tmp_path: Path) -> No
     await store.remember("player-a", [make_memory("플레이어는 밤을 싫어한다")])
     brain = CompanionBrain(llm, long_term=store, extract_every_n_turns=1)
 
-    await brain.respond(make_turn())
+    await brain.respond(make_turn("밤에는 어떻게 지내는 게 좋을까?"))
     await brain.aclose()
 
     assert llm.extraction_specs == []
