@@ -1,0 +1,5 @@
+KAKAO_ADAPTER_TOKEN=<공유 인증키 A>
+HIbcDz6FwiAPW9jUJTCVECn7qU/gLhmL+twDfIV6EtQ=
+
+KAKAO_ADAPTER_TOKEN=<Backend와 동일한 인증키 A>
+10N+y/xCKIVHnSetkWY/j95wv3ZTlN83enq9WO6/bL0=
