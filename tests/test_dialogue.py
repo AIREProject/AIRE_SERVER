@@ -9,6 +9,7 @@ from app.brain.dialogue import (
     DialogueSpec,
     PromptMemory,
     begin_memory_reference_trace,
+    finalize_display_text,
     finish_memory_reference_trace,
     is_companion_name_query,
     provider_failure_fallback,
@@ -165,6 +166,128 @@ def test_sanitize_rejects_current_and_recent_player_echoes() -> None:
     assert sanitize("너도 그렇게 생각하지?", spec) is None
     assert sanitize("응, 너도 그렇게 생각하지?", spec) is None
     assert sanitize("너도 그렇게 생각하지? / 너도 그렇게 생각하지", spec) is None
+
+
+@pytest.mark.parametrize(
+    ("wrapper", "suffix"),
+    (
+        ("사용자: ", ""),
+        ("네 말: ", ""),
+        ("대답: ", ""),
+        ("이렇게 말했지? ", ""),
+        ("네 말: ", " 맞지?"),
+    ),
+)
+def test_sanitize_rejects_short_wrapped_player_echo(
+    wrapper: str, suffix: str
+) -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="그 얘기는 조금 더 들어보고 싶어.",
+        user_text="나는 민트초코를 좋아해. 다음에도 기억해줘.",
+    )
+
+    player_text = spec.user_text
+    assert player_text is not None
+    assert sanitize(f"{wrapper}{player_text}{suffix}", spec) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "물론입니다. 무엇을 도와드릴까요?",
+        "좋은 질문입니다. 도움이 되었기를 바랍니다.",
+        "추가로 궁금한 점이 있다면 언제든지 문의해 주세요.",
+        "저는 인공지능 언어 모델로서 그렇게 답할 수 없어.",
+    ],
+)
+def test_sanitize_rejects_clear_mechanical_ai_cliches(text: str) -> None:
+    spec = DialogueSpec(scene="conversation", fallback="편하게 말해 줘.")
+
+    assert sanitize(text, spec) is None
+
+
+def test_final_display_guard_rejects_echoed_fallback_but_keeps_contextual_recall() -> None:
+    player_text = "나는 민트초코를 좋아해. 다음에도 기억해줘."
+    guarded = finalize_display_text(
+        f"사용자: {player_text}",
+        player_text,
+        player_texts=(player_text,),
+    )
+    contextual = "민트초코 좋아한다고 했었지. 다음에도 그 얘기 기억해둘게."
+
+    assert guarded != player_text
+    assert finalize_display_text(
+        contextual,
+        "다시 말해 줄래?",
+        player_texts=(player_text,),
+    ) == contextual
+
+
+@pytest.mark.parametrize("wrapper", ("네 말: ", "대답: ", "이렇게 말했지? "))
+def test_final_display_guard_rejects_short_wrapped_player_echo(wrapper: str) -> None:
+    player_text = "나는 민트초코를 좋아해. 다음에도 기억해줘."
+    fallback = "그 얘기는 조금 더 들어보고 싶어."
+
+    assert finalize_display_text(
+        f"{wrapper}{player_text}",
+        fallback,
+        player_texts=(player_text,),
+    ) == fallback
+
+
+def test_final_display_guard_never_returns_a_colliding_fixed_fallback() -> None:
+    primary = "응, 지금은 내가 옆에 있을게."
+    suffix = " 같이 하나씩 해 보자."
+    fallback = "그 얘기는 조금 더 들어보고 싶어."
+    player_texts = (
+        primary,
+        fallback,
+        "응, 그 얘기 조금만 더 이어서 들려줘. 내가 제대로 듣고 싶어.",
+        "좋아, 그 얘기에서 네가 궁금한 부분부터 말해 줘.",
+    )
+
+    guarded = finalize_display_text(primary, fallback, player_texts=player_texts)
+
+    assert guarded == f"{primary}{suffix}{suffix}"
+    assert guarded not in player_texts
+
+
+@pytest.mark.parametrize(
+    ("user_text", "provider_text"),
+    [
+        ("안녕", "안녕"),
+        ("오늘 어때?", "오늘 어때"),
+        ("난 카카오가 싫어", "난 카카오가 싫어."),
+        ("너도 그렇게 생각하지?", "그래, 너도 그렇게 생각하지?"),
+        ("배고파", "배고파!"),
+        ("돌 캐줘", "돌 캐줘."),
+        ("철광석을 캐 줘", "철광석을 캐 줘!"),
+        ("나무를 가져와", "나무를 가져와"),
+        ("여기서 기다려", "여기서 기다려."),
+        ("나를 따라와", "나를 따라와!"),
+        ("오늘 힘들었어", "오늘 힘들었어"),
+        ("비 오는 날이 좋아", "비 오는 날이 좋아."),
+        ("내 이름은 하나야", "내 이름은 하나야"),
+        ("민트초코를 좋아해", "민트초코를 좋아해!"),
+        ("다음에도 기억해줘", "다음에도 기억해줘."),
+        ("마코 고마워", "마코 고마워!"),
+        ("마을로 돌아가자", "마을로 돌아가자"),
+        ("지금 몇 시야?", "지금 몇 시야"),
+        ("보스가 무서워", "보스가 무서워."),
+        ("오늘은 쉬고 싶어", "오늘은 쉬고 싶어!"),
+    ],
+)
+def test_sanitize_rejects_fixed_booth_echo_corpus(
+    user_text: str, provider_text: str
+) -> None:
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="조금만 더 이야기해 줘.",
+        user_text=user_text,
+    )
+
+    assert sanitize(provider_text, spec) is None
 
 
 def test_sanitize_rejects_ungrounded_assent_to_a_vague_opinion_question() -> None:

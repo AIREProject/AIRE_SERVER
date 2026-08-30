@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from app.brain.memory import classify_explicit_memory_request
 from app.db.connection import Database
 from app.db.models import GameEventModel, MessageModel
 from app.db.source_repository import SOURCE_EVENT, SOURCE_MESSAGE, SourceRepository, SourceScope
@@ -115,9 +116,22 @@ class MemoryWorker:
                 or message.content is None
             ):
                 return None
-            classification = await self._companion.classify_memory(message.content)
+            try:
+                classification = await self._companion.classify_memory(message.content)
+            except Exception:
+                explicit_classification = classify_explicit_memory_request(message.content)
+                if explicit_classification is None:
+                    raise
+                logger.warning(
+                    "explicit_memory_classifier_fallback",
+                    extra={"event": "explicit_memory_classifier_fallback"},
+                )
+                classification = explicit_classification
             if classification.decision == "Reject":
-                return None
+                explicit_classification = classify_explicit_memory_request(message.content)
+                if explicit_classification is None:
+                    return None
+                classification = explicit_classification
             embedding, embedding_model = await self._companion.embed_memory_text(message.content)
             return MemoryCandidate(
                 memory_type=classification.decision,

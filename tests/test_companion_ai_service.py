@@ -667,7 +667,6 @@ async def test_game_client_gather_does_not_create_offline_task(
         "나무 1.5개 캐 줘",
         "나무 -1개 캐 줘",
         "나무 많이 캐 줘",
-        "돌 캐 줘",
         "나무를 어떻게 캐?",
         "나무 캐는 방법 알려 줘",
     ],
@@ -688,6 +687,31 @@ async def test_game_gather_strict_slice_returns_no_candidate_for_rejected_inputs
 
     assert result.display_text
     assert result.command_candidates == []
+
+
+@pytest.mark.parametrize(
+    ("text", "resource"),
+    [("돌 캐 줘", "stone"), ("철광석을 캐 줘", "iron_ore")],
+)
+async def test_game_gather_returns_booth_resource_candidate(
+    text: str,
+    resource: str,
+    identity: AuthenticatedDevice,
+    session: AsyncSession,
+) -> None:
+    service = make_service()
+
+    result = await respond(
+        service,
+        identity,
+        session,
+        text,
+        allowed_commands=[CommandType.GATHER_RESOURCE],
+        surface=Surface.GAME,
+    )
+
+    assert len(result.command_candidates) == 1
+    assert result.command_candidates[0].parameters == {"resource": resource}
 
 
 async def test_mobile_gather_without_allowlist_creates_no_task(
@@ -803,6 +827,34 @@ async def test_service_maps_time_context_into_dialogue(
     )
 
     assert provider.dialogue_specs[-1].situation == ("지금은 게임 세계 기준 2일차 새벽, 6시다.",)
+
+
+async def test_game_chat_real_world_time_is_used_and_preserved(
+    identity: AuthenticatedDevice, session: AsyncSession
+) -> None:
+    provider = RecordingProvider()
+    service = make_service(llm=provider)
+
+    await respond(
+        service,
+        identity,
+        session,
+        "안녕, 마코",
+        time_context=TimeContext(
+            source=TimeSource.REAL_WORLD,
+            day=31,
+            hour=12,
+            period="Afternoon",
+        ),
+    )
+
+    message = (
+        await session.execute(select(MessageModel).where(MessageModel.speaker == "player"))
+    ).scalar_one()
+    assert message.source_mode == "RealWorld"
+    assert message.time_context is not None
+    assert message.time_context["source"] == "RealWorld"
+    assert provider.dialogue_specs[-1].situation[0].startswith("지금은 현실 시간(KST) 기준")
 
 
 async def test_conversation_returns_dialogue_without_command(
@@ -976,6 +1028,33 @@ async def test_completed_chat_replays_after_service_restart(
 
     assert replay == first
     assert replay_provider.dialogue_specs == []
+
+
+async def test_completed_chat_replay_repairs_a_previously_echoed_display_text(
+    identity: AuthenticatedDevice,
+    session: AsyncSession,
+) -> None:
+    request = make_request(
+        "나는 민트초코를 좋아해. 다음에도 기억해줘.",
+        request_id="req-echoed-replay",
+    )
+    service = make_service()
+    first = await service.create_response(request, identity, session, PROTECTOR)
+    message = (
+        await session.execute(
+            select(MessageModel).where(MessageModel.message_id == first.response_id)
+        )
+    ).scalar_one()
+    echoed = f"사용자: {request.user_message}"
+    message.content = echoed
+    await session.commit()
+
+    replay = await service.create_response(request, identity, session, PROTECTOR)
+
+    await session.refresh(message)
+    assert replay.display_text != echoed
+    assert replay.display_text != request.user_message
+    assert message.content == replay.display_text
 
 
 async def test_conversation_key_carries_multi_turn_state(

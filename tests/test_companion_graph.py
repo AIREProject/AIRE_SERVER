@@ -1047,14 +1047,13 @@ async def test_game_gather_rejects_any_quantity(text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "돌 캐 줘",
         "나무를 어떻게 캐?",
         "나무 캐는 방법 알려 줘",
         "나무 채집하는 법 알려 줘",
         "돌 캐는 방법 알려 줘",
     ],
 )
-async def test_game_gather_rejects_stone_and_questions(text: str) -> None:
+async def test_game_gather_rejects_questions(text: str) -> None:
     final = await make_graph().ainvoke(
         {"turn": make_turn(text, surface=Surface.GAME), "text": text}
     )
@@ -1068,7 +1067,6 @@ async def test_game_gather_rejects_stone_and_questions(text: str) -> None:
     [
         "저것 좀 캐 줘",  # 자원 미지정
         "부싯돌 캐 줘",  # 허용 목록 밖 자원
-        "철광석을 캐 줘",  # 허용 목록 밖 자원
         "돌이랑 나무를 모아 줘",  # 자원을 여럿 말해 되물어야 한다
         f"나무 {MAX_GATHER_QUANTITY + 1}개 캐 줘",  # 상한 초과
     ],
@@ -1078,6 +1076,21 @@ async def test_gather_withholds_action_outside_supported_range(text: str) -> Non
 
     assert final["display_text"]
     assert final.get("action") is None
+
+
+@pytest.mark.parametrize(
+    ("text", "resource"),
+    [("돌 캐 줘", "stone"), ("철광석을 캐 줘", "iron_ore")],
+)
+async def test_game_gather_supports_booth_resources(text: str, resource: str) -> None:
+    final = await make_graph().ainvoke(
+        {"turn": make_turn(text, surface=Surface.GAME), "text": text}
+    )
+
+    action = final.get("action")
+    assert action is not None
+    assert action.type is CommandType.GATHER_RESOURCE
+    assert action.parameters == {"resource": resource}
 
 
 async def test_attack_resolves_target_from_the_utterance() -> None:

@@ -317,7 +317,7 @@ RECIPES: tuple[Recipe, ...] = (
         "recipe-9",
         "IronIngot",
         1,
-        "Blacksmith Anvil/Furnace",
+        "Workbench.Smelter",
         2.0,
         (Ingredient("IronOre", 2),),
     ),
@@ -352,6 +352,14 @@ RECIPES: tuple[Recipe, ...] = (
         "Alchemy Table",
         2.0,
         (Ingredient("Herb", 3), Ingredient("ClearWater", 1)),
+    ),
+    Recipe(
+        "recipe-14",
+        "WoodHandle",
+        1,
+        "Basic Workbench",
+        1.0,
+        (Ingredient("PlantStem", 2),),
     ),
 )
 

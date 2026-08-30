@@ -98,7 +98,7 @@ uv run alembic upgrade head
 uv run alembic current
 ```
 
-정상 기준 Alembic revision은 `0017`입니다. Migration은 Profile, Device, Save Slot,
+정상 기준 Alembic revision은 `0018`입니다. Migration은 Profile, Device, Save Slot,
 Offline Task, 장기기억과 게임 데이터 테이블을 만들고 기본 Item/Recipe/Enemy 데이터를
 적재합니다.
 

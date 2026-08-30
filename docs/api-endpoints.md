@@ -77,7 +77,7 @@ GET /health
 
 Health는 DB migration, DB query와 실제 LLM 호출을 검사하지 않습니다.
 
-`GET /ready`는 DB 연결과 Alembic `0017` head를 검사합니다. 연결 실패나 revision 불일치는
+`GET /ready`는 DB 연결과 Alembic `0018` head를 검사합니다. 연결 실패나 revision 불일치는
 HTTP 503 `not_ready`입니다. DB가 준비된 상태에서 Memory worker의 최근 LLM 분류가 실패하면
 Mock fallback이 가능한 HTTP 200 `degraded`로 반환합니다.
 
@@ -103,8 +103,8 @@ X-Request-ID: chat-game-1
   "user_message": "안녕",
   "surface": "game",
   "time_context": {
-    "source": "GameWorld",
-    "day": 1,
+    "source": "RealWorld",
+    "day": 31,
     "hour": 12,
     "period": "Afternoon"
   },
@@ -138,25 +138,25 @@ X-Request-ID: chat-game-1
 AX-I02 대사 표시 단계에서는 `allowed_commands`를 빈 배열로 보냅니다. 이후 UE Command
 Gateway가 준비된 명령만 allowlist에 추가합니다.
 
-`Command.GatherResource`의 Game 첫 수직 슬라이스는 LLM이 채집 행동으로 판정하고 stable
-resource를 `wood`로 고른 요청만 후보로 만든다. 띄어쓰기·어미·구어체를 정규식 allowlist로
-제한하지 않는다.
-`나무를 모아 줘`처럼 자원만 지정한 요청의 후보 parameters는 정확히 다음과 같으며,
+`Command.GatherResource`의 Game 부스 범위는 LLM이 채집 행동으로 판정하고 stable
+resource를 `wood`, `stone`, `iron_ore` 중 하나로 고른 요청만 후보로 만든다.
+띄어쓰기·어미·구어체를 정규식 allowlist로 제한하지 않는다.
+`철광석을 캐 줘`처럼 자원만 지정한 요청의 후보 parameters는 정확히 다음과 같으며,
 `quantity` key를 포함하지 않는다.
 
 ```json
 {
   "type": "Command.GatherResource",
   "target_id": null,
-  "parameters": {"resource": "wood"}
+  "parameters": {"resource": "iron_ore"}
 }
 ```
 
-`돌`, 나무·돌을 함께 말한 모호한 요청, 채집 방법·가능 여부 질문, 그리고 정수·소수·음수·
+서로 다른 자원을 함께 말한 모호한 요청, 채집 방법·가능 여부 질문, 그리고 정수·소수·음수·
 한글 수사·`많이`처럼 어떤 형태로든 수량을 말한 요청은 Game 후보를 만들지 않는다. 주변
 `game_context.nearby_resources` facts만으로 후보를 추가하지 않으며, 후보를 받은 UE Gateway가
-fresh bounded query로 실제 wood 대상을 다시 검증한다. Mobile surface의 `GatherResource`는
-이 strict Game 범위와 별개로 기존 `OfflineTask/Gathering` 계약(wood·stone, 수량 1~50,
+fresh bounded query로 해당 자원의 실제 대상을 다시 검증한다. Mobile surface의 `GatherResource`는
+이 strict Game 범위와 별개로 기존 `OfflineTask/Gathering` 계약(wood·stone·iron_ore, 수량 1~50,
 미지정 시 50)을 유지한다.
 
 LLM은 최근 대화와 현재 발화를 보고 의도와 Command 계열을 의미적으로 판정한다. Backend는
@@ -165,22 +165,24 @@ LLM은 최근 대화와 현재 발화를 보고 의도와 Command 계열을 의�
 사용하며 질문, 복수·손상 수량과 허용되지 않은 Command는 후보로 승격하지 않는다. 따라서 LLM이
 자연어 의미를 담당하고 Backend와 UE Command Gateway가 실행 권한과 gameplay 상태를 담당한다.
 
-`Command.CraftItem`은 AX-I06의 첫 제작 수직 슬라이스다. UE가 이 명령을 allowlist에 넣은
-경우에만 명시적인 `철검`/`Sword_Iron`/`IronSword` 제작 요청이 후보가 된다. 후보 parameters는
-항상 다음과 같고, 다른 Recipe ID나 수량은 후보를 만들지 않는다.
+`Command.CraftItem`은 UE가 이 명령을 allowlist에 넣은 Game surface에서만 사용한다.
+명시적인 붕대·철괴·철검·나무 손잡이 제작 요청은 각각 `recipe-1`, `recipe-9`,
+`recipe-11`, `recipe-14`로 매핑하며 수량은 항상 1이다. 이 allowlist 밖의 Recipe ID와
+다른 수량은 후보를 만들지 않는다.
 
 ```json
 {
   "type": "Command.CraftItem",
   "target_id": null,
   "parameters": {
-    "recipe_id": "recipe-11",
+    "recipe_id": "recipe-9",
     "quantity": 1
   }
 }
 ```
 
-`철검 만드는 법`, 재료·레시피 질문은 검증된 제작법 facts-only 대사로 남으며 `CraftItem`
+`철괴 만드는 법`, `철검 만드는 법`, 재료·레시피 질문은 검증된 제작법 facts-only
+대사로 남으며 `CraftItem`
 후보를 만들지 않는다. `game_context`의 위치·위협·작업·인벤토리 사실만으로도 후보를 만들지
 않으며, 후보를 받은 UE Command Gateway가 Recipe·재료·상태·작업대를 최종 검증한다.
 
@@ -192,8 +194,9 @@ Recipe 질문은 먼저 stable ID와 검증 alias를 결정론적으로 찾는�
 않으며, 등록되지 않은 ID와 낮은 confidence는 거부한다.
 
 최종 Recipe 응답은 어느 경로에서도 검증된 Recipe fact를 그대로 반환하며 LLM이 재료·수량·
-작업대·시간을 생성하거나 재작성하지 않는다. 명시적 제작 요청의 `display_text`도 `알겠어. 철검
-하나를 만들게.`로 고정하고, 같은 응답에 위 `CraftItem` 후보를 반드시 포함한다. 두 대사 경로에는
+작업대·시간을 생성하거나 재작성하지 않는다. 명시적 제작 요청의 `display_text`도
+`알겠어. {result_name} 하나를 만들게.`로 고정하고, 같은 응답에 위 `CraftItem` 후보를 반드시
+포함한다. 두 대사 경로에는
 Inventory·주변 자원 같은 World Context fact를 섞지 않아 다른 Item을 Recipe 재료처럼 말하거나
 Command 후보가 대사와 분리되는 일을 막는다.
 
@@ -243,6 +246,8 @@ Mobile Web은 Offline Gathering/Crafting 변환을 위해 `Command.GatherResourc
 `recipe-1` 엉성한 붕대와 수량 1~50만 허용하고 제작법 질문은 Task로 바꾸지 않는다.
 
 현재 `TimeContext`는 `GameWorld`와 `RealWorld` 모두 `day/hour/period` 구조를 사용합니다.
+신규 Game·Mobile 직접 Chat은 모두 `RealWorld`를 보내며, 게임의 Event와 Situation은
+`GameWorld`를 사용합니다. 서버는 구버전 Game Chat의 `GameWorld` 입력도 계속 허용합니다.
 `observed_at`, `timezone`, `interaction_mode`는 계약 field가 아닙니다.
 
 ### 4.3 Game Context v1
@@ -274,7 +279,7 @@ Mobile Web은 Offline Gathering/Crafting 변환을 위해 `Command.GatherResourc
 ```
 
 - 최상위 7개 field는 모두 필수다. `location_id`, `threat.nearest_kind`,
-  `current_work`만 `null`을 허용한다. GameWorld 시간은 최상위 `time_context`가 단일
+  `current_work`만 `null`을 허용한다. 직접 Chat의 현실 시간은 최상위 `time_context`가 단일
   권위이며 Context에 중복하지 않는다.
 - 모든 stable ID는 1~128자, `[A-Za-z0-9][A-Za-z0-9._:-]*`다. UObject/class path,
   credential key와 임의 key는 `400 InvalidRequest`로 거부한다. ID의 catalogue 존재 여부는
@@ -345,11 +350,12 @@ memory는 허용하지 않으며, Archived memory는 검색·목록·상세에 �
 canonical Message/Event 원문은 변경하지 않습니다.
 
 각 `MemoryView.sources[]`는 내부 ID나 원문 없이 `source_type`, `source_mode`, `occurred_at`만
-제공합니다. 직접 발화는 Chat surface에 따라 `Message + RealWorld` 또는
-`Message + GameWorld`로 구분하며, `LegacyUnknown` Message는 공개 응답에서 `Legacy` source로
-표시됩니다. `last_used_at`과 `use_count`는 검색 후보가 아니라 sanitizer를 통과해 실제 대사에서
-참조된 경우에만 갱신됩니다. 최신 정정문은 목록·검색뿐 아니라 실제 Prompt 회상에도 동일하게
-사용됩니다.
+제공합니다. 직접 발화의 `source_mode`는 surface에서 추정하지 않고 요청의
+`time_context.source`를 보존합니다. 신규 Game·Mobile Chat은 모두 `Message + RealWorld`이며,
+구버전 Game Chat의 `GameWorld`와 `LegacyUnknown`도 호환을 위해 원래 source로 유지합니다.
+`LegacyUnknown` Message는 공개 응답에서 `Legacy` source로 표시됩니다. `last_used_at`과
+`use_count`는 검색 후보가 아니라 sanitizer를 통과해 실제 대사에서 참조된 경우에만 갱신됩니다.
+최신 정정문은 목록·검색뿐 아니라 실제 Prompt 회상에도 동일하게 사용됩니다.
 
 `DELETE /api/v1/memories/{memory_id}?reason={reason}`와
 `POST /api/v1/memories/reset`은 memory를 `Archived`로 전이합니다. 이는 legal erasure가 아니라

@@ -17,6 +17,7 @@ class ResourceId(StrEnum):
 
     WOOD = "wood"
     STONE = "stone"
+    IRON_ORE = "iron_ore"
 
 
 # 정식 식별자 → 플레이어가 실제로 쓰는 표현. 허용 목록이므로 여기에 없으면 미지원이다.
@@ -24,12 +25,14 @@ class ResourceId(StrEnum):
 _ALIASES: dict[ResourceId, tuple[str, ...]] = {
     ResourceId.WOOD: ("나무", "목재", "장작", "통나무", "나뭇가지", "땔감"),
     ResourceId.STONE: ("돌", "바위", "석재", "자갈"),
+    ResourceId.IRON_ORE: ("철광석", "철 광석", "철광", "철 원석"),
 }
 
 # 대사에서 자원을 부를 때 쓰는 이름. 되묻기 대사의 확정 사실을 만드는 데 쓴다.
 _DISPLAY_NAMES: dict[ResourceId, str] = {
     ResourceId.WOOD: "나무",
     ResourceId.STONE: "돌",
+    ResourceId.IRON_ORE: "철광석",
 }
 
 # 한국어는 교착어라 "나무를"처럼 조사가 붙는다. 단순 부분 문자열 검색은
@@ -84,6 +87,8 @@ class ResourceRepository:
             return ResourceId.WOOD
         if slot is ResourceSlot.STONE:
             return ResourceId.STONE
+        if slot is ResourceSlot.IRON_ORE:
+            return ResourceId.IRON_ORE
         return None
 
     def allows_quantity(self, quantity: int | None) -> bool:

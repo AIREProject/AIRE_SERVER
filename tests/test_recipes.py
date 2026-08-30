@@ -33,7 +33,7 @@ def test_iron_and_steel_ingots_include_both_crafting_paths() -> None:
     fact = repository.fact_for("철괴 만드는 법")
 
     assert fact is not None
-    assert "대장간 화로" in fact.text
+    assert "제련소" in fact.text
     assert "용광로" in fact.text
     assert "철광석 2개" in fact.text
     assert "석탄 1개" in fact.text

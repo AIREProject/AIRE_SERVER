@@ -330,7 +330,7 @@ async def test_mock_provider_classifies_command(text: str, expected: CommandLabe
         # 지시대명사는 자원 미지정, 허용 목록 밖 자원은 미지원으로 나뉜다.
         ("저것 좀 캐 줘", ResourceSlot.UNSPECIFIED, None),
         ("부싯돌 캐 줘", ResourceSlot.OTHER, None),
-        ("철광석을 캐 줘", ResourceSlot.OTHER, None),
+        ("철광석을 캐 줘", ResourceSlot.IRON_ORE, None),
         # 정수로 옮길 수 없는 수량 표현은 반드시 None으로 떨어져야 한다.
         ("나무 가방 찰 때까지 모아 줘", ResourceSlot.WOOD, None),
         ("나무 많이 캐 줘", ResourceSlot.WOOD, None),
@@ -518,6 +518,7 @@ async def test_local_provider_parses_structured_command_classification() -> None
     assert schema["$defs"]["ResourceSlot"]["enum"] == [
         "wood",
         "stone",
+        "iron_ore",
         "other",
         "unspecified",
     ]

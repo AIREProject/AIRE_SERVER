@@ -82,17 +82,17 @@ class CommandCandidate(StrictModel):
         if len(self.parameters) > 16:
             raise ValueError("Command parameters must contain at most 16 properties.")
         if self.type is CommandType.CRAFT_ITEM:
-            # AX-I06의 첫 수직 슬라이스는 철검 한 개만 허용한다. UE Gateway가 다시
-            # 검증하더라도 Backend 후보 경계에서 다른 Recipe·수량이 섞이지 않게 한다.
+            # Game surface의 부스 제작 allowlist. UE Gateway가 Recipe 내용을 다시 검증한다.
             if self.target_id is not None:
                 raise ValueError("CraftItem must not contain a target_id.")
             if (
                 set(self.parameters) != {"recipe_id", "quantity"}
-                or self.parameters.get("recipe_id") != "recipe-11"
+                or self.parameters.get("recipe_id")
+                not in {"recipe-1", "recipe-9", "recipe-11", "recipe-14"}
                 or type(self.parameters.get("quantity")) is not int
                 or self.parameters.get("quantity") != 1
             ):
-                raise ValueError("CraftItem parameters must be recipe_id=recipe-11 and quantity=1.")
+                raise ValueError("CraftItem recipe_id is unsupported or quantity is not 1.")
         return self
 
 

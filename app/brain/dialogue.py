@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from html import unescape
@@ -23,6 +24,7 @@ DialogueScene = Literal[
     "cancel",
     "gather_wood",
     "gather_stone",
+    "gather_iron_ore",
     "gather_ambiguous",
     "attack",
     "return_to_player",
@@ -179,7 +181,8 @@ SCENE_GUIDE: dict[DialogueScene, str] = {
     "cancel": "직전 요청을 없던 일로 하겠다는 것을 알린다.",
     "gather_wood": "근처에서 나무를 찾아 채집하러 간다는 것을 알린다.",
     "gather_stone": "근처에서 돌을 찾아 채집하러 간다는 것을 알린다.",
-    "gather_ambiguous": "무엇을 캘지 되묻는다. 나무와 돌 중에서만 고르게 한다.",
+    "gather_iron_ore": "근처에서 철광석을 찾아 채집하러 간다는 것을 알린다.",
+    "gather_ambiguous": "무엇을 캘지 되묻는다. 나무, 돌, 철광석 중에서만 고르게 한다.",
     "attack": "지금 적을 공격하러 나선다는 것을 알린다.",
     "return_to_player": "플레이어 곁으로 돌아간다는 것을 알린다.",
     "recipe": "확정 사실의 제작법을 전한다. 재료·수량·제작 장소를 빠뜨리지 않는다.",
@@ -364,6 +367,18 @@ _META_PREFIX_PATTERN = re.compile(
     r"(?:저장된|회상한)\s*(?:기억|내용|정보))\s*[:\uFF1A-]?\s*",
     re.IGNORECASE,
 )
+_ROLE_ECHO_PREFIX_PATTERN = re.compile(
+    r"^(?:(?:사용자|유저|플레이어|user|player)\s*[:\uFF1A-]\s*)+",
+    re.IGNORECASE,
+)
+_MECHANICAL_AI_CLICHE_PATTERN = re.compile(
+    r"(?:좋은\s*질문(?:이야|입니다)|물론(?:입니다|이에요)|"
+    r"도움이\s*되었(?:기를|으면)\s*바랍니다|"
+    r"추가(?:로)?\s*궁금한\s*점(?:이|이\s*있다면)|"
+    r"언제든지\s*(?:말씀|문의)해\s*주세요|무엇을\s*도와드릴까요|"
+    r"(?:AI|인공지능)(?:\s*언어\s*모델)?(?:로서|입니다))",
+    re.IGNORECASE,
+)
 _HTML_ENTITY_PATTERN = re.compile(r"&(?:#[xX]?[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);")
 _HTML_TAG_PATTERN = re.compile(r"<\s*/?\s*[A-Za-z][^>]*>")
 _INTERNAL_OUTPUT_PATTERN = re.compile(
@@ -468,6 +483,8 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
         return None
     if _is_player_echo(normalized, spec):
         return None
+    if _is_mechanical_ai_cliche(normalized):
+        return None
     if (
         spec.user_text is not None
         and _VAGUE_ASSENT_QUERY_PATTERN.fullmatch(spec.user_text.strip()) is not None
@@ -569,6 +586,7 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
 def _echo_key(text: str) -> str:
     normalized = unescape(text).casefold()
     normalized = _META_PREFIX_PATTERN.sub("", normalized)
+    normalized = _ROLE_ECHO_PREFIX_PATTERN.sub("", normalized)
     return "".join(_ANCHOR_PATTERN.findall(normalized))
 
 
@@ -604,27 +622,104 @@ def _matches_echo_keys(text: str, source_keys: set[str]) -> bool:
         for source_key in source_keys
     ):
         return True
+    for source_key in source_keys:
+        if len(source_key) < 2:
+            continue
+        source_start = candidate.find(source_key)
+        if source_start < 0:
+            continue
+        # 전체 문장이 사용자 발화를 포함하고 앞뒤의 역할/인용 표식만 짧으면,
+        # "네 말: 원문"처럼 실질적으로는 복창인 경우다. 반대로 기억을 자연스럽게
+        # 언급한 응답은 원문 전체가 연속으로 들어가지 않아 이 조건을 통과한다.
+        wrapper_size = len(candidate) - len(source_key)
+        if wrapper_size <= _MAX_ECHO_WRAPPER_ANCHORS:
+            return True
 
     parts = tuple(_echo_key(part) for part in text.split("/") if _echo_key(part))
     return len(parts) > 1 and all(part in source_keys for part in parts)
 
 
-def _finalize_display_text(text: str, fallback: str) -> str:
-    """최종 반환 직전 내부 표현 불변식을 다시 적용한다."""
+def _normalize_display_text(text: str) -> str | None:
+    normalized = unescape(text)
+    normalized = _META_PREFIX_PATTERN.sub("", normalized)
+    normalized = _WHITESPACE_PATTERN.sub(" ", normalized).strip()
+    if (
+        not normalized
+        or len(normalized) > 200
+        or _HTML_ENTITY_PATTERN.search(normalized) is not None
+        or _HTML_TAG_PATTERN.search(normalized) is not None
+        or _INTERNAL_OUTPUT_PATTERN.search(normalized) is not None
+    ):
+        return None
+    return normalized
 
-    for candidate in (text, fallback):
-        normalized = unescape(candidate)
-        normalized = _META_PREFIX_PATTERN.sub("", normalized)
-        normalized = _WHITESPACE_PATTERN.sub(" ", normalized).strip()
-        if (
-            normalized
-            and len(normalized) <= 200
-            and _HTML_ENTITY_PATTERN.search(normalized) is None
-            and _HTML_TAG_PATTERN.search(normalized) is None
-            and _INTERNAL_OUTPUT_PATTERN.search(normalized) is None
-        ):
+
+def _is_mechanical_ai_cliche(text: str) -> bool:
+    return _MECHANICAL_AI_CLICHE_PATTERN.search(text) is not None
+
+
+def finalize_display_text(
+    text: str,
+    fallback: str,
+    *,
+    player_texts: Iterable[str] = (),
+) -> str:
+    """모든 Chat 반환 경계에서 대사 형식·복창·상투어를 다시 막는다.
+
+    그래프의 고정 대사와 이미 저장된 canonical replay는 ``sanitize`` 를 다시 거치지
+    않을 수 있다. 이 함수는 그 마지막 경계에서도 현재/최근 player 발화를 그대로
+    되말하거나 명백한 챗봇 상투어를 노출하지 않게 한다. 부분 인용과 기억을 활용한
+    자연스러운 답변은 정규화된 전체 문장이 같을 때만 거절하므로 보존한다.
+    """
+
+    player_keys = {_echo_key(item) for item in player_texts}
+    player_keys.discard("")
+    for candidate in (text, fallback, *_DISPLAY_GUARD_FALLBACKS):
+        normalized = _normalize_display_text(candidate)
+        if normalized is None:
+            continue
+        if _matches_echo_keys(normalized, player_keys):
+            continue
+        if _is_mechanical_ai_cliche(normalized):
+            continue
+        return normalized
+    return _safe_display_guard_fallback(player_keys)
+
+
+def _player_texts(spec: DialogueSpec) -> tuple[str, ...]:
+    history = tuple(turn.text for turn in spec.history if turn.speaker == "player")
+    return (*history, spec.user_text) if spec.user_text is not None else history
+
+
+_DISPLAY_GUARD_FALLBACKS: tuple[str, str] = (
+    "응, 그 얘기 조금만 더 이어서 들려줘. 내가 제대로 듣고 싶어.",
+    "좋아, 그 얘기에서 네가 궁금한 부분부터 말해 줘.",
+)
+_DISPLAY_GUARD_LAST_RESORT = "응, 지금은 내가 옆에 있을게."
+_DISPLAY_GUARD_LAST_RESORT_SUFFIX = " 같이 하나씩 해 보자."
+_MAX_ECHO_WRAPPER_ANCHORS = 12
+
+
+def _safe_display_guard_fallback(player_keys: set[str]) -> str:
+    """모든 고정 fallback까지 복창인 경우에도 사용자 발화를 되돌려 주지 않는다."""
+
+    candidate = _DISPLAY_GUARD_LAST_RESORT
+    while len(candidate) <= 200:
+        normalized = _normalize_display_text(candidate)
+        if normalized is not None and not _matches_echo_keys(normalized, player_keys):
             return normalized
-    return "잠깐, 다시 말해 줄래?"
+        # 짧은 역할/인용 래퍼로 볼 수 있는 길이를 넘어설 때까지 자연스러운 동료
+        # 대사를 덧붙인다. 과거 발화가 여러 후보와 우연히 같아도 다음 후보를 고른다.
+        candidate = f"{candidate}{_DISPLAY_GUARD_LAST_RESORT_SUFFIX}"
+    # 위 모든 자연어 후보를 과거 발화로 만든 비정상 입력에서도 빈 문자열이나 복창을
+    # 노출하지 않는 마지막 안전값이다. 문장으로 도달하는 정상 경로는 위 loop에서 끝난다.
+    return "…"
+
+
+def _finalize_display_text(text: str, fallback: str, spec: DialogueSpec) -> str:
+    """`render` 전용 wrapper로 현재 장면의 player 발화를 전달한다."""
+
+    return finalize_display_text(text, fallback, player_texts=_player_texts(spec))
 
 
 def _infer_memory_references(
@@ -728,7 +823,7 @@ async def render_observed(llm: LLMProvider, spec: DialogueSpec) -> RenderedDialo
         if fallback_references:
             _record_memory_references(fallback_references)
         return RenderedDialogue(
-            text=_finalize_display_text(result.text, spec.fallback),
+            text=_finalize_display_text(result.text, spec.fallback, spec),
             sanitizer_succeeded=result.sanitizer_succeeded,
         )
     sanitized = sanitize(generated, spec)
@@ -756,7 +851,7 @@ async def render_observed(llm: LLMProvider, spec: DialogueSpec) -> RenderedDialo
         _record_memory_references(fallback_references)
     _record_sanitizer_result(sanitizer_succeeded)
     return RenderedDialogue(
-        text=_finalize_display_text(result.text, spec.fallback),
+        text=_finalize_display_text(result.text, spec.fallback, spec),
         sanitizer_succeeded=result.sanitizer_succeeded,
     )
 

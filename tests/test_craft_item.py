@@ -69,6 +69,47 @@ async def test_explicit_allowlisted_iron_sword_request_emits_fixed_candidate(tex
     assert result["display_text"] == "알겠어. 철검 하나를 만들게."
 
 
+@pytest.mark.parametrize(
+    ("text", "recipe_id", "display_name"),
+    [
+        ("붕대 만들어줘", "recipe-1", "붕대"),
+        ("철괴 제련해줘", "recipe-9", "철괴"),
+        ("나무 손잡이 제작해줘", "recipe-14", "나무 손잡이"),
+    ],
+)
+async def test_game_surface_booth_recipes_emit_one_item_candidate(
+    text: str, recipe_id: str, display_name: str
+) -> None:
+    turn = CompanionTurn(
+        text=text,
+        conversation_key="craft-test",
+        allowed_actions=frozenset({CommandType.CRAFT_ITEM}),
+    )
+
+    result = await _graph().ainvoke({"turn": turn, "text": text})
+
+    assert result["action"].parameters == {"recipe_id": recipe_id, "quantity": 1}
+    assert result["display_text"] == f"알겠어. {display_name} 하나를 만들게."
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["붕대랑 철괴 같이 만들어줘", "철괴 만들지 마", "나무 손잡이 재료 알려줘"],
+)
+async def test_game_surface_booth_recipes_reject_multiple_negative_and_question(
+    text: str,
+) -> None:
+    turn = CompanionTurn(
+        text=text,
+        conversation_key="craft-test",
+        allowed_actions=frozenset({CommandType.CRAFT_ITEM}),
+    )
+
+    result = await _graph().ainvoke({"turn": turn, "text": text})
+
+    assert result.get("action") is None
+
+
 async def test_recipe_question_returns_complete_fact_without_context_contamination() -> None:
     text = "철검 제작법 알려줘"
     turn = CompanionTurn(

@@ -153,8 +153,9 @@ TRANSCRIPT_RETENTION_DAYS=1
 - LLM 출력은 저장 text로 사용하지 않고 `decision`과 `importance`만 사용합니다.
 - Recipe·Command·현재 게임 상태·companion 발화는 Message 기억으로 저장하지 않습니다.
 - 기억은 profile + save-slot + companion scope에서 UE/Web에 공유됩니다.
-- 인게임 직접 발화는 `Message + GameWorld`, 모바일 직접 발화는 `Message + RealWorld` 출처로
-  저장됩니다.
+- 신규 인게임·모바일 직접 발화는 모두 `Message + RealWorld` 출처로 저장됩니다. 게임의
+  Event·Situation은 `GameWorld`로 별도 유지하며 구버전 Game Chat의 `GameWorld` source도
+  원래 값으로 보존합니다.
 - Web 정정 후에는 최신 정정문만 검색과 Prompt 회상에 사용됩니다.
 - delete/reset된 기억과 source가 삭제된 기억은 Prompt에 들어가지 않습니다.
 - 기억은 확정 게임 사실이 아니라 대화 참고 정보로만 Prompt에 들어갑니다.

@@ -20,16 +20,26 @@ _WORKBENCH_NAMES = {
     "Blacksmith Anvil/Furnace": "대장간 화로",
     "Alchemy Table": "연금술 탁자",
     "Workbench.BlastFurnace": "용광로",
+    "Workbench.Smelter": "제련소",
 }
 
-# AX-I06의 첫 제작 수직 슬라이스는 이 안정 Recipe 하나만 광고한다. 표시 이름이나
-# UObject 경로를 Command parameter로 흘리지 않고, UE가 로컬 Recipe로 다시 매핑할 ID만
-# 반환한다.
-_CRAFT_RECIPE_ID = "recipe-11"
+# Game surface에 광고하는 안정 Recipe ID만 유지한다. 표시 이름이나 UObject
+# 경로를 Command parameter로 흘리지 않고 UE가 로컬 Recipe로 다시 매핑할 ID만 반환한다.
+_GAME_CRAFT_RECIPE_BY_RESULT = {
+    "ShoddyBandage": "recipe-1",
+    "IronIngot": "recipe-9",
+    "Sword_Iron": "recipe-11",
+    "WoodHandle": "recipe-14",
+}
 _MOBILE_CRAFT_RECIPE_ID = "recipe-1"
 _CRAFT_RESULT_ITEM_IDS = frozenset(("Sword_Iron", "IronSword"))
 _CRAFT_RESULT_ALIASES = ("철검", "철 검", "쇠검", "Sword_Iron", "IronSword")
-_CRAFT_VERB_PATTERN = re.compile(r"(?:만들|제작|craft|forge)", re.IGNORECASE)
+_CRAFT_VERB_PATTERN = re.compile(r"(?:만들|제작|제련|craft|forge|smelt)", re.IGNORECASE)
+_CRAFT_NEGATION_PATTERN = re.compile(
+    r"(?:만들|제작|제련).{0,8}(?:말아|마|하지\s*마|필요\s*없)|"
+    r"(?:안|못)\s*(?:만들|제작|제련)",
+    re.IGNORECASE,
+)
 _CRAFT_FACT_PATTERN = re.compile(
     r"(?:만드는?\s*(?:법|방법)|만들\s*기|제작\s*(?:법|방법|하기)|레시피|재료|"
     r"어떻게|알려|가능|할\s*수|만들\s*(?:면|까|지)|제작\s*까|몇|많이|잔뜩|전부|"
@@ -202,10 +212,11 @@ class RecipeRepository:
 
     def __init__(self, dataset: GameDataSet = DATASET) -> None:
         self._items: dict[str, Item] = {item.item_id: item for item in dataset.items}
-        self._craft_recipe_available = any(
-            recipe.recipe_id == _CRAFT_RECIPE_ID and recipe.result_item_id in _CRAFT_RESULT_ITEM_IDS
+        self._available_game_craft_recipes = {
+            recipe.result_item_id: recipe.recipe_id
             for recipe in dataset.recipes
-        )
+            if _GAME_CRAFT_RECIPE_BY_RESULT.get(recipe.result_item_id) == recipe.recipe_id
+        }
         result_items: dict[str, Item] = {
             item.item_id: item
             for item in dataset.items
@@ -472,7 +483,7 @@ class RecipeRepository:
         return "어떤 제작법을 말하는지 대상 하나만 알려 줘."
 
     def craft_recipe_id_for(self, query: str) -> str | None:
-        """명시적인 철검 제작 요청만 AX-I06 Recipe ID로 해석한다.
+        """명시적인 단일 제작 요청만 Game Recipe ID로 해석한다.
 
         제작법·재료 질문은 ``fact_for``가 담당하는 facts-only 경로에 남긴다. 이 메서드는
         요청형 동사와 allowlist된 결과물 이름, 수량 1을 모두 확인하고, 어느 하나라도
@@ -480,7 +491,7 @@ class RecipeRepository:
         `CraftItem` 후보가 생기지 않는다.
         """
 
-        if not self._craft_recipe_available:
+        if not self._available_game_craft_recipes:
             return None
         if not self.is_craft_request(query):
             return None
@@ -501,7 +512,7 @@ class RecipeRepository:
             if assigned_quantity != 1:
                 return None
         recipe_tokens = {token.casefold() for token in _CRAFT_RECIPE_TOKEN_PATTERN.findall(query)}
-        if recipe_tokens and recipe_tokens != {_CRAFT_RECIPE_ID}:
+        if len(recipe_tokens) > 1:
             return None
         if _CRAFT_BARE_NUMBER_PATTERN.search(query) is not None:
             return None
@@ -512,9 +523,15 @@ class RecipeRepository:
             return None
 
         matched_result_ids = self._craft_result_ids_in(query)
-        if matched_result_ids != {"Sword_Iron"}:
+        if len(matched_result_ids) != 1:
             return None
-        return _CRAFT_RECIPE_ID
+        result_item_id = next(iter(matched_result_ids))
+        recipe_id = self._available_game_craft_recipes.get(result_item_id)
+        if recipe_id is None:
+            return None
+        if recipe_tokens and recipe_tokens != {recipe_id}:
+            return None
+        return recipe_id
 
     def mobile_craft_request_for(self, query: str) -> CraftRequest | None:
         """모바일에서 지원하는 엉성한 붕대 제작 요청만 구조화한다.
@@ -583,6 +600,7 @@ class RecipeRepository:
         return (
             _CRAFT_VERB_PATTERN.search(query) is not None
             and _CRAFT_FACT_PATTERN.search(query) is None
+            and _CRAFT_NEGATION_PATTERN.search(query) is None
         )
 
     @staticmethod

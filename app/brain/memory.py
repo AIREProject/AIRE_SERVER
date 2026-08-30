@@ -62,6 +62,29 @@ class MemoryClassification(BaseModel):
 
 REJECT_MEMORY = MemoryClassification(decision="Reject", importance=1, confidence=1.0)
 
+_EXPLICIT_MEMORY_REQUEST = re.compile(r"(?:기억해\s*줘|기억해\s*둬|잊지\s*마)")
+_FIRST_PERSON = re.compile(r"(?:^|\s)(?:나는|난|내가|저는|전|제가)(?:\s|$)")
+_PREFERENCE = re.compile(r"(?:좋아해|좋아한다|좋아해요|선호해|싫어해|싫어한다|싫어해요)")
+
+
+def classify_explicit_memory_request(text: str) -> MemoryClassification | None:
+    """Recognize only an explicit, first-person preference memory request.
+
+    This is a booth-safe fallback for an unavailable classifier. It returns metadata
+    only; the authenticated Message row remains the sole source of stored text.
+    """
+
+    normalized = " ".join(text.strip().split())
+    if not normalized or len(normalized) > MAX_MEMORY_TEXT or _DIGIT_PATTERN.search(normalized):
+        return None
+    if (
+        _EXPLICIT_MEMORY_REQUEST.search(normalized) is None
+        or _FIRST_PERSON.search(normalized) is None
+        or _PREFERENCE.search(normalized) is None
+    ):
+        return None
+    return MemoryClassification(decision="Preference", importance=8, confidence=1.0)
+
 # 회수 동점을 가를 때의 종류 우선순위. 플레이어 자체에 대한 사실이 지난 세션 요약보다 먼저다.
 _KIND_ORDER: dict[MemoryKind, int] = {"profile": 0, "episode": 1, "session_summary": 2}
 

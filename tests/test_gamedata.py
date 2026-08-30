@@ -11,7 +11,7 @@ def test_dataset_has_expected_erd_row_counts() -> None:
     assert DATASET.items is ITEMS
     assert DATASET.recipes is RECIPES
     assert len(ITEMS) == 26
-    assert len(RECIPES) == 13
+    assert len(RECIPES) == 14
     assert len(SMELTING_RECIPES) == 4
     assert len(ENEMIES) == 3
     assert DATASET.locations == ()
@@ -69,6 +69,7 @@ def test_all_workbench_values_have_display_names() -> None:
         "Blacksmith Anvil/Furnace",
         "Alchemy Table",
         "Workbench.BlastFurnace",
+        "Workbench.Smelter",
     }
     actual = {recipe.required_workbench for recipe in RECIPES} | {
         recipe.required_workbench for recipe in SMELTING_RECIPES

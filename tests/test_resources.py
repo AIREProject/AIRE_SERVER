@@ -33,6 +33,9 @@ def resources() -> ResourceRepository:
         ("돌을 캐 줘", ResourceId.STONE),
         ("바위 좀 캐 줘", ResourceId.STONE),
         ("자갈 모아 줘", ResourceId.STONE),
+        ("철광석을 캐 줘", ResourceId.IRON_ORE),
+        ("철 광석 가져와", ResourceId.IRON_ORE),
+        ("철 원석 채집해 줘", ResourceId.IRON_ORE),
     ],
 )
 def test_resolves_supported_aliases(
@@ -49,7 +52,6 @@ def test_resolves_supported_aliases(
         "조약돌 모아 줘",
         "흑요석 캐 줘",
         # 허용 목록에 없으므로 거부 목록 없이도 미지원으로 떨어진다.
-        "철광석을 캐 줘",
         "석탄 좀 캐 줘",
         "풀을 캐 줘",
     ],
@@ -77,6 +79,7 @@ def test_finds_every_resource_mentioned(resources: ResourceRepository, text: str
     [
         (ResourceSlot.WOOD, ResourceId.WOOD),
         (ResourceSlot.STONE, ResourceId.STONE),
+        (ResourceSlot.IRON_ORE, ResourceId.IRON_ORE),
         (ResourceSlot.OTHER, None),
         (ResourceSlot.UNSPECIFIED, None),
     ],
@@ -105,7 +108,7 @@ def test_quantity_policy(
 
 
 def test_supported_names_backs_dialogue_facts(resources: ResourceRepository) -> None:
-    assert resources.supported_names() == ("나무", "돌")
+    assert resources.supported_names() == ("나무", "돌", "철광석")
 
 
 def test_gather_parameters_omit_absent_quantity() -> None:

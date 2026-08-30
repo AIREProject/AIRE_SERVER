@@ -60,7 +60,7 @@ def test_game_state_migration_creates_snapshot_and_operation_tables(
         ).fetchone()[0]
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
-    assert revision == ("0017",)
+    assert revision == ("0018",)
     assert snapshot_columns == {
         "row_id": ("VARCHAR(36)", 1),
         "profile_id": ("VARCHAR(128)", 1),

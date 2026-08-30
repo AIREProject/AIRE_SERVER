@@ -43,16 +43,18 @@ from app.brain import (
     WorldContextFacts,
 )
 from app.brain.contract import BrainProvenance, ResponseProvenance
+from app.brain.dialogue import finalize_display_text
 from app.brain.enemies import EnemyRepository
 from app.brain.gametime import KST, period_code_for_hour
 from app.brain.llm import build_llm_provider
 from app.brain.memory import MemoryClassification
 from app.brain.recipes import RecipeRepository
 from app.brain.resources import MAX_GATHER_QUANTITY, ResourceId
-from app.brain.store import InMemoryConversationStore
+from app.brain.store import ConversationTurn, InMemoryConversationStore
 from app.brain.transcript import FileTranscriptStore, TranscriptStore
 from app.db.canonical_repository import CanonicalChatRepository
 from app.db.connection import Database
+from app.db.models import ChatOperationModel
 from app.db.offline_task_repository import SqlAlchemyOfflineTaskRepository
 from app.db.save_slot_repository import SaveSlotRepository
 from app.embedding import build_embedding_provider
@@ -100,6 +102,7 @@ if TYPE_CHECKING:
 _GATHER_ITEM_IDS: dict[ResourceId, str] = {
     ResourceId.WOOD: "PlantStem",
     ResourceId.STONE: "Stone",
+    ResourceId.IRON_ORE: "IronOre",
 }
 
 
@@ -226,17 +229,23 @@ class CompanionService:
             )
             if start.operation.request_digest != _chat_request_digest(request, identity.role):
                 raise DuplicateRequestError
+            history = await repository.history_before(start.input_message)
             if start.operation.state == "Completed":
                 replay = await repository.build_response(start.operation)
                 if replay is None:
                     raise IdempotencyRecordExpiredError
-                return replay
+                return await self._guard_chat_display_text(
+                    repository,
+                    start.operation,
+                    request,
+                    history,
+                    replay,
+                )
 
             prepared = None
             task_created = False
             response = await repository.build_response(start.operation)
             if response is None:
-                history = await repository.history_before(start.input_message)
                 game_time = request.time_context
                 if request.surface is Surface.MOBILE or (
                     game_time is not None and game_time.source is TimeSource.REAL_WORLD
@@ -331,6 +340,13 @@ class CompanionService:
                     offline_task_id=offline_task_id,
                     ai_metadata=self._metadata,
                 )
+                response = await self._guard_chat_display_text(
+                    repository,
+                    start.operation,
+                    request,
+                    history,
+                    response,
+                )
                 await repository.save_generated(
                     start,
                     response,
@@ -342,6 +358,14 @@ class CompanionService:
                     brain=reply.provenance,
                     started_at=started_at,
                 )
+
+            response = await self._guard_chat_display_text(
+                repository,
+                start.operation,
+                request,
+                history,
+                response,
+            )
 
             if response.offline_task_id is not None and not task_created:
                 offline_task_plan = repository.offline_task_plan(start.operation)
@@ -372,7 +396,6 @@ class CompanionService:
         코드로 이미 판단해 보냈다. 그래서 명령 후보도, `_assert_within_allowlist` 도 없다
         — 낼 수 있는 행동이 없다.
         """
-
         started_at = perf_counter()
         identity.validate_claims(request.profile_id, request.device_id)
         if request.companion_id not in COMPANION_PROFILES:
@@ -426,7 +449,10 @@ class CompanionService:
             save_slot_id=request.save_slot_id,
             companion_id=request.companion_id,
             response_id=f"response-{uuid4()}",
-            display_text=reply.text,
+            display_text=finalize_display_text(
+                reply.text,
+                "잠깐, 같이 상황을 다시 볼게.",
+            ),
             ai_metadata=self._metadata,
         )
         self._log_provenance(
@@ -436,6 +462,33 @@ class CompanionService:
             started_at=started_at,
         )
         return response
+
+    async def _guard_chat_display_text(
+        self,
+        repository: CanonicalChatRepository,
+        operation: ChatOperationModel,
+        request: ChatRequest,
+        history: tuple[ConversationTurn, ...],
+        response: ChatResponse,
+    ) -> ChatResponse:
+        """Chat 생성·draft 재개·완료 replay를 같은 표시 안전 경계로 통과시킨다."""
+
+        player_texts = tuple(
+            turn.text
+            for turn in history
+            if turn.speaker == "player"
+        )
+        guarded_text = finalize_display_text(
+            response.display_text,
+            "응, 그 얘기 조금만 더 이어서 들려줘. 내가 제대로 듣고 싶어.",
+            player_texts=(*player_texts, request.user_message),
+        )
+        if guarded_text == response.display_text:
+            return response
+        guarded = response.model_copy(update={"display_text": guarded_text})
+        if operation.response_message_id is not None:
+            await repository.replace_response_display_text(operation, guarded_text)
+        return guarded
 
     def _log_provenance(
         self,

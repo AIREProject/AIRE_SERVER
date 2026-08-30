@@ -100,7 +100,11 @@ class CanonicalChatRepository:
             request_id=request.request_id,
             sequence=sequence,
             speaker="player",
-            source_mode="GameWorld" if request.surface.value == "game" else "RealWorld",
+            source_mode=(
+                request.time_context.source.value
+                if request.time_context is not None
+                else "RealWorld"
+            ),
             content=request.user_message,
             content_digest=_content_digest(request.user_message),
             time_context=(
@@ -285,6 +289,22 @@ class CanonicalChatRepository:
         metadata.pop("_offline_task_plan", None)
         metadata["display_text"] = message.content
         return ChatResponse.model_validate(metadata)
+
+    async def replace_response_display_text(
+        self,
+        operation: ChatOperationModel,
+        display_text: str,
+    ) -> None:
+        """기존 draft/replay의 안전하지 않은 표시 대사를 canonical 행에서도 교정한다."""
+
+        message = await self.response_message(operation)
+        if message is None or message.content is None:
+            raise RuntimeError("Canonical response message is missing.")
+        if message.content == display_text:
+            return
+        message.content = display_text
+        message.content_digest = _content_digest(display_text)
+        await self._session.commit()
 
     def offline_task_plan(self, operation: ChatOperationModel) -> dict[str, object] | None:
         if operation.response_metadata is None:

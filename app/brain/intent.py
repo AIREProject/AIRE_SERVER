@@ -74,6 +74,7 @@ class ResourceSlot(StrEnum):
 
     WOOD = "wood"
     STONE = "stone"
+    IRON_ORE = "iron_ore"
     OTHER = "other"  # 자원은 특정됐으나 서버가 지원하지 않는다
     UNSPECIFIED = "unspecified"  # "저것 좀 캐 줘"처럼 자원이 특정되지 않았다
 

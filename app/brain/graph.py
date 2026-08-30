@@ -83,6 +83,7 @@ _COMMANDS: dict[CommandLabel, tuple[CommandType, DialogueScene, str]] = {
 _GATHER_SCENES: dict[ResourceId, tuple[DialogueScene, str]] = {
     ResourceId.WOOD: ("gather_wood", "알겠어. 근처의 나무를 찾아볼게."),
     ResourceId.STONE: ("gather_stone", "알겠어. 근처의 돌을 찾아볼게."),
+    ResourceId.IRON_ORE: ("gather_iron_ore", "알겠어. 근처의 철광석을 찾아볼게."),
 }
 
 # 못 하는 일을 알리는 대사와 사실은 **창구마다 다르다** — `dialogue.py` 의 `SURFACE_PROFILES`
@@ -585,16 +586,23 @@ def build_companion_graph(
             }
         if (
             not state.get("craft_requested")
-            or recipe_id != "recipe-11"
+            or recipe_id not in {"recipe-1", "recipe-9", "recipe-11", "recipe-14"}
+            or quantity not in {None, 1}
             or CommandType.CRAFT_ITEM not in turn.allowed_actions
         ):
             return await decline(state)
 
+        craft_names = {
+            "recipe-1": "붕대",
+            "recipe-9": "철괴",
+            "recipe-11": "철검",
+            "recipe-14": "나무 손잡이",
+        }
         return {
             # 명령 수락 대사는 Recipe 설명 장면이 아니다. LLM 재작성이나 World Context를
             # 거치면 Inventory 사실을 재료로 섞거나 실행 대신 제작법을 설명할 수 있으므로
             # 검증된 고정 문구를 Candidate와 함께 반환한다.
-            "display_text": "알겠어. 철검 하나를 만들게.",
+            "display_text": f"알겠어. {craft_names[recipe_id]} 하나를 만들게.",
             "action": CompanionAction(
                 type=CommandType.CRAFT_ITEM,
                 parameters={"recipe_id": recipe_id, "quantity": 1},
@@ -711,12 +719,11 @@ def build_companion_graph(
             }
 
         if turn.surface is Surface.GAME and (
-            resource is not ResourceId.WOOD
-            or quantity is not None
+            quantity is not None
             or CommandIntentParser.has_gather_quantity(state["text"])
         ):
-            # InGame 첫 수직 슬라이스는 명시적 wood 한 그루 WorkOrder 요청만 허용한다. 수량을
-            # 해석하지 못한 malformed/vague 표현도 `has_gather_quantity`가 잡는다.
+            # InGame WorkOrder는 자원 종류와 무관하게 한 번에 가장 가까운 노드 하나만
+            # 대상으로 한다. malformed/vague 수량도 `has_gather_quantity`가 잡는다.
             return await decline(state)
 
         if not resources.allows_quantity(quantity):

@@ -9,7 +9,7 @@ from app.settings import Settings, get_settings
 
 router = APIRouter(tags=["System"])
 
-EXPECTED_DATABASE_REVISION = "0017"
+EXPECTED_DATABASE_REVISION = "0018"
 
 
 class HealthResponse(BaseModel):
