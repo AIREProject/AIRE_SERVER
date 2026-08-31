@@ -2,6 +2,9 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
+from app.brain.companion import CompanionBrain
+from app.brain.contract import CompanionTurn, MemoryScope
+from app.brain.llm import MockLLMProvider
 from app.db.models import (
     ConversationModel,
     MemoryModel,
@@ -11,6 +14,7 @@ from app.db.models import (
     SaveSlotModel,
 )
 from app.db.source_repository import SOURCE_MESSAGE, SourceScope
+from app.models import CommandType, Surface
 from app.source_memory_store import SourceBackedMemoryStore, render_prompt_memory
 from tests.conftest import make_database, make_settings
 
@@ -191,6 +195,62 @@ async def test_explicit_promise_question_recalls_only_promise_memories() -> None
     )
 
     assert [item.memory_id for item in recalled] == ["memory-promise"]
+
+
+async def test_explicit_recall_matches_korean_tense_inflection_without_embeddings() -> None:
+    database = await make_database(make_settings())
+    await _memory(
+        database,
+        memory_id="memory-wake-plan",
+        text="6시반에 일어날거야 기억해",
+        memory_type="Promise",
+    )
+
+    recalled = await SourceBackedMemoryStore(database).recall(
+        SourceScope("profile-a", "slot-a", "mako"),
+        query="나 몇시에 일어났지",
+        direct_recall=True,
+        source_mode="RealWorld",
+    )
+
+    assert [item.memory_id for item in recalled] == ["memory-wake-plan"]
+    assert recalled[0].required is True
+
+
+async def test_wake_plan_is_recalled_safely_and_records_actual_use_end_to_end() -> None:
+    database = await make_database(make_settings())
+    await _memory(
+        database,
+        memory_id="memory-wake-plan",
+        text="6시반에 일어날거야 기억해",
+        memory_type="Promise",
+    )
+    brain = CompanionBrain(
+        MockLLMProvider(),
+        source_memory=SourceBackedMemoryStore(database),
+    )
+
+    reply = await brain.respond(
+        CompanionTurn(
+            text="나 몇시에 일어났지",
+            conversation_key="wake-plan-recall",
+            player_key="player-a",
+            companion_id="mako",
+            surface=Surface.MOBILE,
+            allowed_actions=frozenset(CommandType),
+            memory_scope=MemoryScope("profile-a", "slot-a", "mako"),
+        )
+    )
+
+    assert reply.text == (
+        "6시반에 일어날거라고 했던 계획은 기억해. "
+        "실제로 그렇게 됐는지는 확인하지 못했어."
+    )
+    async with database.session_factory() as session:
+        memory = await session.get(MemoryModel, "memory-wake-plan")
+    assert memory is not None
+    assert memory.recall_count == 1
+    assert memory.recalled_at is not None
 
 
 async def test_unrelated_personal_question_does_not_offer_a_name_memory() -> None:

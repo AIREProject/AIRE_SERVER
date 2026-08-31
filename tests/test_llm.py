@@ -278,6 +278,7 @@ async def test_timing_provider_logs_step_duration() -> None:
         ("너는 오늘 뭐 하고 싶어?", TopIntent.CONVERSATION),
         ("오늘은 조금 힘들었어", TopIntent.CONVERSATION),
         ("나는 비 오는 날의 조용한 소리를 좋아해", TopIntent.CONVERSATION),
+        ("나 몇시에 일어났지", TopIntent.MEMORY),
         ("미확인 보스의 체력이 몇이야?", TopIntent.UNKNOWN),
     ],
 )

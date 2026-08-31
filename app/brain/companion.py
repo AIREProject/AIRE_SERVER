@@ -61,6 +61,7 @@ from .dialogue import (
 from .embedding import EmbeddingProvider
 from .enemies import EnemyRepository
 from .graph import CompanionState, build_companion_graph, selected_route
+from .intent import TopIntent, looks_like_personal_memory_recall
 from .llm import LLMProvider, begin_provider_trace, finish_provider_trace
 from .lore import LoreRepository
 from .memory import (
@@ -299,18 +300,10 @@ class CompanionBrain:
 
     async def respond(self, turn: CompanionTurn) -> CompanionReply:
         turn = replace(turn, relationship_state=await self._relationship_state(turn.memory_scope))
-        recalled = await self._recall(
-            turn.memory_scope,
-            turn.player_key,
-            turn.text,
-            turn.game_time,
-            turn.world_context,
-        )
         async with self._conversation_lock(turn.conversation_key):
             prepared = await self._prepare_response_locked(
                 turn,
                 history=None,
-                recalled=recalled,
             )
             self._store.save(prepared.conversation_key, prepared.saved_memory)
         await self._record(
@@ -330,20 +323,10 @@ class CompanionBrain:
         """Generate a reply without mutating process memory or debug transcript."""
 
         turn = replace(turn, relationship_state=await self._relationship_state(turn.memory_scope))
-        # 회수는 락 밖에서 한다. 이 발화만 보고 고르므로 대화 기억과 경합할 것이 없고,
-        # 파일을 읽는 동안 같은 대화의 다음 턴을 막을 이유도 없다.
-        recalled = await self._recall(
-            turn.memory_scope,
-            turn.player_key,
-            turn.text,
-            turn.game_time,
-            turn.world_context,
-        )
         async with self._conversation_lock(turn.conversation_key):
             return await self._prepare_response_locked(
                 turn,
                 history=history,
-                recalled=recalled,
             )
 
     async def _prepare_response_locked(
@@ -351,34 +334,61 @@ class CompanionBrain:
         turn: CompanionTurn,
         *,
         history: Sequence[ConversationTurn] | None,
-        recalled: tuple[PromptMemory, ...],
     ) -> PreparedCompanionReply:
         memory = self._store.load(turn.conversation_key)
         prompt_memory = (
             replace(memory, recent_turns=tuple(history)) if history is not None else memory
         )
-        prompt_sources = self._merge_recent_evidence(
-            turn.text,
-            prompt_memory.recent_turns,
-            recalled,
-        )
         provider_token = begin_provider_trace()
         sanitizer_token = begin_sanitizer_trace()
         memory_reference_token = begin_memory_reference_trace()
         try:
+            preclassified_intent = (
+                None
+                if prompt_memory.pending is not None
+                else await self._llm.classify_top(
+                    turn.text,
+                    clarification_pending=False,
+                    history=prompt_memory.recent_turns,
+                )
+            )
+            direct_recall = (
+                preclassified_intent is TopIntent.MEMORY
+                or _DIRECT_MEMORY_RECALL_PATTERN.search(turn.text) is not None
+                or looks_like_personal_memory_recall(turn.text)
+            )
+            recalled = (
+                ()
+                if preclassified_intent is TopIntent.MEMORY_SHARE
+                else await self._recall(
+                    turn.memory_scope,
+                    turn.player_key,
+                    turn.text,
+                    turn.game_time,
+                    turn.world_context,
+                    direct_recall=direct_recall,
+                )
+            )
+            prompt_sources = self._merge_recent_evidence(
+                turn.text,
+                prompt_memory.recent_turns,
+                recalled,
+                direct_recall=direct_recall,
+            )
+            graph_input: CompanionState = {
+                "turn": turn,
+                "text": turn.text,
+                "pending": prompt_memory.pending,
+                "recipe_reference": prompt_memory.recipe_reference,
+                "history": prompt_memory.recent_turns,
+                "long_term": prompt_sources,
+                "memory_required": any(item.required for item in prompt_sources),
+            }
+            if preclassified_intent is not None:
+                graph_input["preclassified_top_intent"] = preclassified_intent
             final = cast(
                 CompanionState,
-                await self._graph.ainvoke(
-                    {
-                        "turn": turn,
-                        "text": turn.text,
-                        "pending": prompt_memory.pending,
-                        "recipe_reference": prompt_memory.recipe_reference,
-                        "history": prompt_memory.recent_turns,
-                        "long_term": prompt_sources,
-                        "memory_required": any(item.required for item in prompt_sources),
-                    }
-                ),
+                await self._graph.ainvoke(graph_input),
             )
         finally:
             provider_calls = finish_provider_trace(provider_token)
@@ -424,11 +434,13 @@ class CompanionBrain:
         query: str,
         history: Sequence[ConversationTurn],
         recalled: tuple[PromptMemory, ...],
+        *,
+        direct_recall: bool,
     ) -> tuple[PromptMemory, ...]:
         """Promote only directly relevant same-session player statements to evidence."""
 
         recent: list[PromptMemory] = []
-        if _DIRECT_MEMORY_RECALL_PATTERN.search(query) is not None:
+        if direct_recall:
             for turn in reversed(history):
                 if turn.speaker != "player" or not has_memory_lexical_overlap(query, turn.text):
                     continue
@@ -569,6 +581,8 @@ class CompanionBrain:
         query: str,
         game_time: TimeContext | None,
         world_context: WorldContextFacts,
+        *,
+        direct_recall: bool | None = None,
     ) -> tuple[PromptMemory, ...]:
         """이번 발화(또는 상황)와 관련 있는 장기기억을 문장으로만 꺼낸다.
 
@@ -588,7 +602,11 @@ class CompanionBrain:
             )
             source_mode = None if game_time is None else game_time.source.value
             context_query = self._context_memory_query(game_time, world_context)
-            direct_recall = _DIRECT_MEMORY_RECALL_PATTERN.search(query) is not None
+            direct_recall = (
+                _DIRECT_MEMORY_RECALL_PATTERN.search(query) is not None
+                if direct_recall is None
+                else direct_recall
+            )
             source_recalled = await self._source_memory.recall(
                 scope,
                 query=query,
@@ -652,6 +670,7 @@ class CompanionBrain:
             claim_text=memory.text,
             memory_id=memory.memory_id,
             required=memory.required,
+            memory_type=memory.memory_type,
         )
 
     async def _record_used(

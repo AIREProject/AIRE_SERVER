@@ -236,6 +236,16 @@ def test_final_display_guard_rejects_short_wrapped_player_echo(wrapper: str) -> 
     ) == fallback
 
 
+def test_final_display_guard_rejects_a_substantial_clause_copied_from_player() -> None:
+    result = finalize_display_text(
+        "6시반에 일어날거야",
+        "응, 일정을 다시 확인해볼게.",
+        player_texts=("6시반에 일어날거야 라고했잖아 참고안하냐?",),
+    )
+
+    assert result == "응, 일정을 다시 확인해볼게."
+
+
 def test_final_display_guard_never_returns_a_colliding_fixed_fallback() -> None:
     primary = "응, 지금은 내가 옆에 있을게."
     suffix = " 같이 하나씩 해 보자."
@@ -680,6 +690,40 @@ async def test_memory_fallback_does_not_repeat_a_raw_storage_request() -> None:
 
     assert response == "출근시간은 9시 반이야"
     assert "기억해" not in response
+
+
+@pytest.mark.asyncio
+async def test_promise_memory_does_not_become_a_past_event() -> None:
+    provider = AsyncMock()
+    provider.generate_dialogue.return_value = generated(
+        "6시반에 일어날거야",
+        "conversation",
+        memory_references=(0,),
+    )
+    spec = DialogueSpec(
+        scene="conversation",
+        fallback="기억나는 게 없어.",
+        user_text="나 몇시에 일어났지",
+        memories=(
+            PromptMemory(
+                prompt_text=(
+                    "[M0] owner=Player; type=Promise; source=RealWorld; "
+                    "player_statement=6시반에 일어날거야 기억해"
+                ),
+                claim_text="6시반에 일어날거야 기억해",
+                memory_type="Promise",
+                required=True,
+            ),
+        ),
+        memory_use_policy="Required",
+    )
+
+    response = await render(provider, spec)
+
+    assert response == (
+        "6시반에 일어날거라고 했던 계획은 기억해. "
+        "실제로 그렇게 됐는지는 확인하지 못했어."
+    )
 
 
 @pytest.mark.asyncio

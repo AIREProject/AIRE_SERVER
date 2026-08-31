@@ -1,3 +1,4 @@
+import re
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
@@ -14,6 +15,24 @@ class TopIntent(StrEnum):
     MEMORY_SHARE = "memory_share"
     CONVERSATION = "conversation"
     UNKNOWN = "unknown"
+
+
+_PERSONAL_PAST_RECALL_PATTERN = re.compile(
+    r"(?:내가|나는|난|나|내)\s*[^.!?]{0,80}"
+    r"(?:(?:았|었|했|였|됐|났|갔|왔)(?:지|더라)|"
+    r"(?:뭐|무엇|언제|어디|누구|몇\s*시)였지)"
+)
+
+
+def looks_like_personal_memory_recall(text: str) -> bool:
+    """Fallback recognition for a player's naturally inflected past-recall question.
+
+    The LLM remains the primary intent classifier.  This narrow linguistic guard
+    keeps provider fallback from turning ``나 몇시에 일어났지`` into general
+    knowledge merely because the sentence does not literally contain ``기억``.
+    """
+
+    return _PERSONAL_PAST_RECALL_PATTERN.search(text) is not None
 
 
 class RecipeQueryMode(StrEnum):

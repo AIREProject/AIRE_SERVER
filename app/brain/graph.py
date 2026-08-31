@@ -41,6 +41,7 @@ from .intent import (
     RequestQueryMode,
     ResourceSlot,
     TopIntent,
+    looks_like_personal_memory_recall,
 )
 from .llm import LLMProvider
 from .lore import LoreRepository
@@ -114,6 +115,10 @@ class CompanionState(TypedDict):
     # 저장소가 아니라 이미 회수된 문장만 들어오므로 노드는 기억이 어디서 왔는지 모른다.
     long_term: NotRequired[tuple[PromptMemoryValue, ...]]
     memory_required: NotRequired[bool]
+    # CompanionBrain classifies the current turn before retrieval so the retriever
+    # can treat explicit memory questions differently.  The graph consumes that
+    # same decision instead of paying for and risking a second, divergent result.
+    preclassified_top_intent: NotRequired[TopIntent]
     # 라우팅 중간값
     pending_answered: NotRequired[bool]
     top_intent: NotRequired[TopIntent]
@@ -199,7 +204,10 @@ def _request_query_mode(
     if intent is TopIntent.CONVERSATION:
         if _VAGUE_AGREEMENT_PATTERN.fullmatch(text.strip()) is not None:
             return ConversationMode.AMBIGUOUS
-        if _MEMORY_RECALL_PATTERN.search(text) is not None:
+        if (
+            _MEMORY_RECALL_PATTERN.search(text) is not None
+            or looks_like_personal_memory_recall(text)
+        ):
             return ConversationMode.MEMORY_RECALL
         if _EMOTIONAL_PATTERN.search(text) is not None:
             return ConversationMode.EMOTIONAL_SUPPORT
@@ -475,11 +483,13 @@ def build_companion_graph(
         }
 
     async def classify_top_node(state: CompanionState) -> CompanionUpdate:
-        intent = await llm.classify_top(
-            state["text"],
-            clarification_pending=False,
-            history=state.get("history", ()),
-        )
+        intent = state.get("preclassified_top_intent")
+        if intent is None:
+            intent = await llm.classify_top(
+                state["text"],
+                clarification_pending=False,
+                history=state.get("history", ()),
+            )
         # LLM이 먼저 발화 목적을 판정한다. 검증된 아이템 이름이 포함됐다는 이유만으로
         # conversation을 recipe로 덮어쓰지 않는다(`안녕 돌도끼?` 경계).
         craft_requested = False

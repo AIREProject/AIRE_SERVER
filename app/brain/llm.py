@@ -43,6 +43,7 @@ from .intent import (
     ResourceSlot,
     TopClassification,
     TopIntent,
+    looks_like_personal_memory_recall,
 )
 from .memory import (
     EMPTY_CONSOLIDATION,
@@ -317,6 +318,9 @@ source, occurred_at, priority, player_statement 같은 내부 표기도 대사�
 기억 원문을 인용하거나 '전에 네가 이렇게 알려줬어'라고 서두를 붙이지 말고,
 현재 질문에 맞는 자연스러운 답으로 바꿔 말한다. 여러 기억을 비교·계산·조합해야 하면
 관련된 기억을 모두 사용해 질문의 결론을 내고, 결과만 말하지 말고 사용한 값도 짧게 보여 준다.
+기억 type이 Promise이거나 원문이 미래 계획인데 플레이어가 과거의 실제 결과를 물으면,
+계획했던 내용은 알려 주되 실제로 그렇게 됐는지는 확인하지 못했다고 명시한다.
+미래 계획을 이미 일어난 사건이나 현재 상태로 바꾸지 않는다.
 답에 필요한 정보가 충분하면 추가 조건을 되묻거나 추측성 질문을 덧붙이지 않는다.
 플레이어 자신에 관한 답을 물었는데 관련 [기억]이 없으면 이름·취향·지지 대상·약속을 추측하지
 말고, 아직 기억하지 못한다고 자연스럽게 말한다.
@@ -640,6 +644,8 @@ class MockLLMProvider(LLMProvider):
             result = TopIntent.RECIPE
         elif LORE_PATTERN.search(text):
             result = TopIntent.LORE
+        elif looks_like_personal_memory_recall(text):
+            result = TopIntent.MEMORY
         elif (
             history
             and history[-1].speaker == "companion"

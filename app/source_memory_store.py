@@ -137,6 +137,30 @@ def _lexical_hits(query_tokens: set[str], memory_text: str) -> int:
     )
 
 
+def _fuzzy_lexical_hits(query_tokens: set[str], memory_text: str) -> int:
+    """Count Korean inflection matches without pretending to be a semantic model.
+
+    Korean predicates keep a useful two-syllable stem across many tense and ending
+    changes (``일어났지`` / ``일어날거야``).  The ordinary lexical matcher is
+    deliberately strict for ambient recall; an explicit memory question may use
+    this bounded prefix match so a grammatical ending does not hide an otherwise
+    relevant memory.  Requiring both tokens to contain at least three characters
+    avoids matching on particles or a lone word such as ``시``.
+    """
+
+    memory_tokens = set(_tokens(memory_text))
+    hits = 0
+    for query_token in query_tokens:
+        if len(query_token) < 3:
+            continue
+        if any(
+            len(memory_token) >= 3 and query_token[:2] == memory_token[:2]
+            for memory_token in memory_tokens
+        ):
+            hits += 1
+    return hits
+
+
 def has_memory_lexical_overlap(query: str, memory_text: str) -> bool:
     """Return whether a concrete query term overlaps a candidate memory statement."""
 
@@ -223,13 +247,16 @@ class SourceBackedMemoryStore:
         ranked: list[tuple[float, SourceBackedMemory, bool]] = []
         for memory in memories:
             keyword_hits = _lexical_hits(query_tokens, memory.text)
+            fuzzy_hits = (
+                _fuzzy_lexical_hits(query_tokens, memory.text) if direct_recall else 0
+            )
             context_hits = _lexical_hits(context_tokens, memory.text)
             semantic = _semantic_similarity(memory, normalized_embedding, embedding_model)
             type_match = memory.memory_type in explicit_types
             # LLM은 주어진 후보를 자연스럽게 사용할지 판단하지만, 관련 없는 기억을 Prompt에
             # 넣어 추측의 재료로 만들지는 않는다. 직접 어휘, 검증된 embedding, 명시적인 기억
             # 종류 중 하나가 맞아야 후보가 된다.
-            user_relevant = bool(keyword_hits or type_match) or (
+            user_relevant = bool(keyword_hits or fuzzy_hits or type_match) or (
                 semantic is not None and semantic >= MIN_SEMANTIC_RELEVANCE
             )
             context_only = not user_relevant and context_hits > 0
@@ -245,6 +272,7 @@ class SourceBackedMemoryStore:
                 continue
             if (
                 not keyword_hits
+                and not fuzzy_hits
                 and not type_match
                 and not context_only
                 and (semantic is None or semantic < MIN_SEMANTIC_RELEVANCE)
@@ -258,6 +286,7 @@ class SourceBackedMemoryStore:
             )
             score = (
                 keyword_hits * 10.0
+                + fuzzy_hits * 6.0
                 + semantic_score * 5.0
                 + (8.0 if type_match else 0.0)
                 + (memory.importance * 0.5 if direct_recall else _decayed_strength(memory, moment))

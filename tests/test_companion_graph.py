@@ -778,7 +778,7 @@ async def test_llm_memory_intent_does_not_require_a_hardcoded_question_shape() -
         )
     )
 
-    assert source_memory.direct_recall_values == [False]
+    assert source_memory.direct_recall_values == [True]
     assert provider.dialogue_specs[-1].memory_use_policy == "Required"
     assert reply.text == "출근시간은 9시 반이야"
     assert source_memory.used_memory_ids == ["memory-commute-time"]
@@ -825,7 +825,7 @@ async def test_llm_memory_share_does_not_receive_an_old_memory_as_reply_material
         )
     )
 
-    assert source_memory.direct_recall_values == [False]
+    assert source_memory.direct_recall_values == []
     assert provider.dialogue_specs[-1].memories == ()
     assert provider.dialogue_specs[-1].memory_use_policy == "None"
     assert provider.dialogue_specs[-1].contextual_memory_ack_required is True

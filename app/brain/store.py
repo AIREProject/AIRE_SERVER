@@ -38,7 +38,10 @@ class PendingSlot:
     asked_at: datetime
 
     def is_expired(self, *, now: datetime, ttl_seconds: float) -> bool:
-        return now - self.asked_at > timedelta(seconds=ttl_seconds)
+        # ``0`` is used by tests and by callers that want clarification disabled.
+        # Windows clock granularity can make ``now`` equal ``asked_at`` on the next
+        # turn, so equality must expire as well.
+        return now - self.asked_at >= timedelta(seconds=ttl_seconds)
 
     def asked_again(self, *, now: datetime) -> PendingSlot:
         return replace(self, ask_count=self.ask_count + 1, asked_at=now)
@@ -159,7 +162,7 @@ class InMemoryConversationStore:
         memory, saved_at = entry
         now = datetime.now(UTC)
         # 대화 자체가 낡았으면 기록까지 통째로 버린다. 기억이 대화보다 오래 살면 안 된다.
-        if now - saved_at > timedelta(seconds=self._idle_ttl_seconds):
+        if now - saved_at >= timedelta(seconds=self._idle_ttl_seconds):
             del self._entries[key]
             return EMPTY_MEMORY
 

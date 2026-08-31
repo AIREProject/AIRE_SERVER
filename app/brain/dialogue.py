@@ -100,6 +100,7 @@ class PromptMemory:
     claim_text: str
     memory_id: str | None = None
     required: bool = False
+    memory_type: str | None = None
 
 
 PromptMemoryValue = PromptMemory | str
@@ -116,6 +117,10 @@ def prompt_memory_claim(memory: PromptMemoryValue) -> str:
     if body.startswith("[") and "]" in body:
         body = body.split("]", maxsplit=1)[1].strip()
     return body
+
+
+def prompt_memory_type(memory: PromptMemoryValue) -> str | None:
+    return memory.memory_type if isinstance(memory, PromptMemory) else None
 
 
 _COMPANION_NAME_QUERY_PATTERN = re.compile(r"(?:니|네|너(?:의)?)\s*이름")
@@ -317,12 +322,48 @@ def _memory_body(memory: PromptMemoryValue) -> str | None:
     return body[:160] or None
 
 
+_PAST_ACTUAL_QUERY_PATTERN = re.compile(
+    r"(?:실제로|정말)이?\s*[^.!?]{0,40}(?:했|됐|났|었)|"
+    r"(?:했|됐|났|었)(?:지|어|나|니|을까)"
+)
+_PROMISE_UNCERTAINTY_PATTERN = re.compile(
+    r"(?:계획|예정|하기로|한다고|거라고|"
+    r"실제로[^.!?]{0,40}(?:모르|확인)|"
+    r"(?:되|했)을지[^.!?]{0,30}(?:모르|확인))"
+)
+
+
+def _is_past_actual_query(text: str | None) -> bool:
+    return bool(text and _PAST_ACTUAL_QUERY_PATTERN.search(text))
+
+
+def _safe_promise_fallback(memory: PromptMemoryValue) -> str | None:
+    body = _memory_body(memory)
+    if body is None:
+        return None
+    body = re.sub(r"^(?:나는|난|내가)\s*", "네가 ", body).strip()
+    # ``일어날거야`` -> ``일어날거라고``. The plan stays a plan.
+    body = re.sub(r"거야\s*$", "거", body)
+    return f"{body}라고 했던 계획은 기억해. 실제로 그렇게 됐는지는 확인하지 못했어."[:200]
+
+
 def _memory_grounded_fallback(spec: DialogueSpec, references: tuple[int, ...]) -> str | None:
     """Provider 실패 시 선택된 근거를 그대로 드러내는 안전한 마지막 폴백을 만든다."""
 
     selected = _fallback_memory_references(spec, references)
     if not selected:
         return None
+    if _is_past_actual_query(spec.user_text):
+        promise = next(
+            (
+                spec.memories[index]
+                for index in selected
+                if prompt_memory_type(spec.memories[index]) == "Promise"
+            ),
+            None,
+        )
+        if promise is not None:
+            return _safe_promise_fallback(promise)
     bodies = tuple(
         body for index in selected if (body := _memory_body(spec.memories[index])) is not None
     )
@@ -528,6 +569,14 @@ def sanitize(output: DialogueOutput | str, spec: DialogueSpec) -> str | None:
         memory_references = output.memory_references
         if spec.memory_use_policy == "Required" and not memory_references:
             memory_references = _infer_memory_references(normalized, spec.memories)
+        if _is_past_actual_query(spec.user_text):
+            referenced_promise = any(
+                reference < len(spec.memories)
+                and prompt_memory_type(spec.memories[reference]) == "Promise"
+                for reference in memory_references
+            )
+            if referenced_promise and _PROMISE_UNCERTAINTY_PATTERN.search(normalized) is None:
+                return None
         if output.purpose != spec.scene:
             return None
         if output.accepts_command != spec.command_candidate_present:
@@ -625,6 +674,15 @@ def _matches_echo_keys(text: str, source_keys: set[str]) -> bool:
     for source_key in source_keys:
         if len(source_key) < 2:
             continue
+        # Reject a substantial answer clause copied out of a longer player turn.
+        # The old one-way check caught ``네 말: <원문>`` but missed
+        # ``<정답 절> 라고 했잖아?`` -> ``<정답 절>``.
+        if (
+            len(candidate) >= _MIN_ECHO_CLAUSE_ANCHORS
+            and candidate in source_key
+            and len(candidate) * 3 >= len(source_key)
+        ):
+            return True
         source_start = candidate.find(source_key)
         if source_start < 0:
             continue
@@ -634,7 +692,6 @@ def _matches_echo_keys(text: str, source_keys: set[str]) -> bool:
         wrapper_size = len(candidate) - len(source_key)
         if wrapper_size <= _MAX_ECHO_WRAPPER_ANCHORS:
             return True
-
     parts = tuple(_echo_key(part) for part in text.split("/") if _echo_key(part))
     return len(parts) > 1 and all(part in source_keys for part in parts)
 
@@ -698,6 +755,7 @@ _DISPLAY_GUARD_FALLBACKS: tuple[str, str] = (
 _DISPLAY_GUARD_LAST_RESORT = "응, 지금은 내가 옆에 있을게."
 _DISPLAY_GUARD_LAST_RESORT_SUFFIX = " 같이 하나씩 해 보자."
 _MAX_ECHO_WRAPPER_ANCHORS = 12
+_MIN_ECHO_CLAUSE_ANCHORS = 8
 
 
 def _safe_display_guard_fallback(player_keys: set[str]) -> str:
